@@ -45,44 +45,42 @@ impl Pipeline {
         // or a half turn, which drew nothing.
         let scale = transform.sx.hypot(transform.ky);
 
+        // The rotation of `transform` about the center of the image.
+        let rotation = transform.pre_scale(1.0 / scale, 1.0 / scale);
+        let one = |v: f32| (v - 1.0).abs() < 1e-4;
+        let upright = one(rotation.sx)
+            && one(rotation.sy)
+            && rotation.kx == 0.0
+            && rotation.ky == 0.0;
+
+        // beeper-rs: Chromium paints the box of an image on whole pixels, each
+        // edge on the nearest one, and so does the GPU renderer. The pixel and
+        // the length of a side that starts `from` and is `length` long.
+        let side = |from: f32, length: f32, shift: f32| {
+            if !upright {
+                return ((from * scale) as i32, (length * scale) as u32);
+            }
+            let start = (from * scale + shift).round();
+            let end = ((from + length) * scale + shift).round();
+            (start as i32, (end - start) as u32)
+        };
+        let (x, width) = side(bounds.x, bounds.width, rotation.tx);
+        let (y, height) = side(bounds.y, bounds.height, rotation.ty);
+
         if let Some(image) = self.cache.borrow_mut().draw(
             handle,
             color,
-            Size::new(
-                (bounds.width * scale) as u32,
-                (bounds.height * scale) as u32,
-            ),
+            Size::new(width, height),
         ) {
-            // The rotation of `transform` about the center of the image.
-            let rotation = transform.pre_scale(1.0 / scale, 1.0 / scale);
-            let (x, y) = ((bounds.x * scale) as i32, (bounds.y * scale) as i32);
-
-            // Without a turn, and at a whole pixel, the icon is a plain copy.
-            let r = rotation;
-            let one = |v: f32| (v - 1.0).abs() < 1e-4;
-            let whole = |v: f32| (v - v.round()).abs() < 1e-3 && v.abs() < 1e9;
-            if one(r.sx)
-                && one(r.sy)
-                && r.kx == 0.0
-                && r.ky == 0.0
-                && whole(r.tx)
-                && whole(r.ty)
-            {
-                let (dx, dy) = (r.tx.round() as i32, r.ty.round() as i32);
-                crate::blit::draw(
-                    pixels,
-                    x + dx,
-                    y + dy,
-                    image,
-                    opacity,
-                    clip_mask,
-                );
+            // Without a turn the icon is a plain copy.
+            if upright {
+                crate::blit::draw(pixels, x, y, image, opacity, clip_mask);
                 return;
             }
 
             pixels.draw_pixmap(
-                (bounds.x * scale) as i32,
-                (bounds.y * scale) as i32,
+                x,
+                y,
                 image,
                 &tiny_skia::PixmapPaint {
                     opacity,

@@ -1,5 +1,17 @@
 use std::fmt::Write;
 
+/// Whether a JSON value is true in JavaScript.
+pub fn truthy(v: &serde_json::Value) -> bool {
+    use serde_json::Value;
+    match v {
+        Value::Null => false,
+        Value::Bool(b) => *b,
+        Value::Number(n) => n.as_f64().is_some_and(|n| n != 0.0),
+        Value::String(s) => !s.is_empty(),
+        _ => true,
+    }
+}
+
 pub fn url_encode(input: &str) -> String {
     input.bytes().fold(String::with_capacity(input.len()), |mut s, b| {
         match b.is_ascii_alphanumeric() || b"-_.~".contains(&b) {
