@@ -6845,6 +6845,23 @@ fn another_chat_drops_the_pending_reveal() {
     drop(simulator(app.view_conversation()));
 }
 
+/// Desktop's pins of 116 px: the title within the 12 px padding, and a bubble wider than the avatar centered on it.
+#[test]
+fn pins_place_their_title_and_bubble_like_desktop() {
+    fn text(sim: &mut Simulator<'_, UiMessage>, start: &'static str) -> Rectangle {
+        sim.find(move |c: iced_test::selector::Candidate<'_>| match c {
+            iced_test::selector::Candidate::Text { content, bounds, .. } if content.starts_with(start) => Some(bounds),
+            _ => None,
+        })
+        .expect(start)
+    }
+    let app = demo_app("pin-places");
+    let mut sim = simulator(app.view_sidebar());
+    let (eric, bubble) = (text(&mut sim, "Eric"), text(&mut sim, "Welcome to"));
+    assert!((bubble.center_x() - eric.center_x()).abs() < 0.5, "the bubble centers on the pin");
+    assert!(text(&mut sim, "Beeper Rust").width <= 116.0 - 24.0, "the title fits in the padding");
+}
+
 #[test]
 fn pinned_grid_and_range_selection_like_desktop() {
     let cols = [(232.0, 1), (500.0, 3), (232.0, 4), (1000.0, 7), (232.0, 0)].map(|(w, n)| pin_columns(w, n));
