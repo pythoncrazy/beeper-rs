@@ -220,76 +220,81 @@ impl Engine {
 
         // beeper-rs: a quad with a clear fill or border has nothing to
         // draw there, but tiny-skia ran its whole path through the pipeline.
-        let clear = matches!(background, Background::Color(c) if c.a <= 0.0);
-        let opaque = match background {
-            Background::Color(c) if c.a >= 1.0 => fill_opaque(
-                pixels,
-                physical_bounds,
-                fill_border_radius.map(|r| r * transformation.scale_factor()),
-                into_color(*c),
-                clip_bounds,
-                clip_mask,
-            ),
-            _ => false,
-        };
-
-        if !clear && !opaque {
-            pixels.fill_path(
-                &path,
-                &tiny_skia::Paint {
-                    shader: match background {
-                        Background::Color(color) => {
-                            tiny_skia::Shader::SolidColor(into_color(*color))
-                        }
-                        Background::Gradient(Gradient::Linear(linear)) => {
-                            let (start, end) =
-                                linear.angle.to_distance(&quad.bounds);
+        if !matches!(background, Background::Color(c) if c.a <= 0.0) {
+            let paint = tiny_skia::Paint {
+                shader: match background {
+                Background::Color(color) => {
+                    tiny_skia::Shader::SolidColor(into_color(*color))
+                }
+                Background::Gradient(Gradient::Linear(linear)) => {
+                    let (start, end) =
+                        linear.angle.to_distance(&quad.bounds);
     
-                            let stops: Vec<tiny_skia::GradientStop> = linear
-                                .stops
-                                .into_iter()
-                                .flatten()
-                                .map(|stop| {
-                                    tiny_skia::GradientStop::new(
-                                        stop.offset,
-                                        tiny_skia::Color::from_rgba(
-                                            stop.color.b,
-                                            stop.color.g,
-                                            stop.color.r,
-                                            stop.color.a,
-                                        )
-                                        .expect("Create color"),
-                                    )
-                                })
-                                .collect();
-    
-                            tiny_skia::LinearGradient::new(
-                                tiny_skia::Point {
-                                    x: start.x,
-                                    y: start.y,
-                                },
-                                tiny_skia::Point { x: end.x, y: end.y },
-                                if stops.is_empty() {
-                                    vec![tiny_skia::GradientStop::new(
-                                        0.0,
-                                        tiny_skia::Color::BLACK,
-                                    )]
-                                } else {
-                                    stops
-                                },
-                                tiny_skia::SpreadMode::Pad,
-                                tiny_skia::Transform::identity(),
+                    let stops: Vec<tiny_skia::GradientStop> = linear
+                        .stops
+                        .into_iter()
+                        .flatten()
+                        .map(|stop| {
+                            tiny_skia::GradientStop::new(
+                                stop.offset,
+                                tiny_skia::Color::from_rgba(
+                                    stop.color.b,
+                                    stop.color.g,
+                                    stop.color.r,
+                                    stop.color.a,
+                                )
+                                .expect("Create color"),
                             )
-                            .expect("Create linear gradient")
-                        }
-                    },
-                    anti_alias: true,
-                    ..tiny_skia::Paint::default()
-                },
-                tiny_skia::FillRule::EvenOdd,
-                transform,
-                clip_mask,
-            );
+                        })
+                        .collect();
+    
+                    tiny_skia::LinearGradient::new(
+                        tiny_skia::Point {
+                            x: start.x,
+                            y: start.y,
+                        },
+                        tiny_skia::Point { x: end.x, y: end.y },
+                        if stops.is_empty() {
+                            vec![tiny_skia::GradientStop::new(
+                                0.0,
+                                tiny_skia::Color::BLACK,
+                            )]
+                        } else {
+                            stops
+                        },
+                        tiny_skia::SpreadMode::Pad,
+                        tiny_skia::Transform::identity(),
+                    )
+                    .expect("Create linear gradient")
+                }
+            },
+                anti_alias: true,
+                ..tiny_skia::Paint::default()
+            };
+            let rows = Rows::new(background, quad.bounds, transformation);
+            let radii =
+                fill_border_radius.map(|r| r * transformation.scale_factor());
+            let filled = rows.is_some_and(|rows| {
+                fill_rows(
+                    pixels,
+                    physical_bounds,
+                    radii,
+                    &rows,
+                    (&paint, transformation),
+                    clip_bounds,
+                    clip_mask,
+                )
+            });
+
+            if !filled {
+                pixels.fill_path(
+                    &path,
+                    &paint,
+                    tiny_skia::FillRule::EvenOdd,
+                    transform,
+                    clip_mask,
+                );
+            }
         }
 
         if border_width > 0.0 && quad.border.color.a > 0.0 {
@@ -820,16 +825,107 @@ fn into_transform(transformation: Transformation) -> tiny_skia::Transform {
     }
 }
 
-/// beeper-rs: fills an opaque quad that is on whole pixels as plain rows, and
-/// only its corners as anti-aliased paths. The path fill of tiny-skia sends
-/// each span of the whole quad through its pipeline, which was a quarter of a
-/// frame of the whole window for the card of the open chat alone. Returns
-/// whether it filled the quad.
-fn fill_opaque(
+/// beeper-rs: the colors of the rows of a quad whose fill is one color in
+/// each row of pixels: a color, or a gradient straight down or up with a stop
+/// at each end. Each is the pixel that tiny-skia's pipeline draws there.
+enum Rows {
+    Same([u8; 4]),
+    /// The colors at the ends, and the place of a pixel between them from
+    /// its row: `at + (row + 0.5) * step`, as tiny-skia computes it.
+    Ramp { from: [f32; 4], to: [f32; 4], at: (f32, f32), step: f32 },
+}
+
+impl Rows {
+    fn new(
+        background: &Background,
+        bounds: Rectangle,
+        transformation: Transformation,
+    ) -> Option<Self> {
+        match background {
+            Background::Color(color) => {
+                let pixel = into_color(*color).premultiply().to_color_u8();
+
+                Some(Self::Same([
+                    pixel.red(),
+                    pixel.green(),
+                    pixel.blue(),
+                    pixel.alpha(),
+                ]))
+            }
+            Background::Gradient(Gradient::Linear(linear)) => {
+                let (start, end) = linear.angle.to_distance(&bounds);
+                let mut stops = linear.stops.into_iter().flatten();
+                let (first, last) = (stops.next()?, stops.next()?);
+                let (dx, dy) = (end.x - start.x, end.y - start.y);
+                let ends = first.offset == 0.0 && last.offset == 1.0;
+
+                if stops.next().is_some() || !ends || dx.abs() > dy.abs() * 1e-3 {
+                    return None;
+                }
+
+                // The transform of tiny-skia's gradient, step by step: its
+                // `points_to_unit_ts` after the inverse of the quad's.
+                let inverse = 1.0 / (dx * dx + dy * dy).sqrt();
+                let (sin, cos) = (-dy * inverse, dx * inverse);
+                let unit = tiny_skia::Transform::from_row(
+                    cos,
+                    sin,
+                    -sin,
+                    cos,
+                    sin * start.y + (1.0 - cos) * start.x,
+                    -sin * start.x + (1.0 - cos) * start.y,
+                )
+                .post_translate(-start.x, -start.y)
+                .post_scale(inverse, inverse);
+                let ts = into_transform(transformation).invert()?.post_concat(unit);
+                let middle = (bounds * transformation).center_x();
+                let channels = |c: Color| [c.b, c.g, c.r, c.a];
+
+                Some(Self::Ramp {
+                    from: channels(first.color),
+                    to: channels(last.color),
+                    at: (middle * ts.sx, ts.tx),
+                    step: ts.kx,
+                })
+            }
+        }
+    }
+
+    /// The pixel of row `y`, from the middle of the row like the pipeline.
+    fn at(&self, y: u32) -> [u8; 4] {
+        match self {
+            Self::Same(pixel) => *pixel,
+            Self::Ramp { from, to, at, step } => {
+                let t = at.0 + ((y as f32 + 0.5) * step + at.1);
+                let t = t.clamp(0.0, 1.0);
+                let [b, g, r, a] = std::array::from_fn(|i| {
+                    let channel = t * (to[i] - from[i]) + from[i];
+
+                    (channel.clamp(0.0, 1.0) * 255.0 + 0.5) as u32
+                });
+                let faded = |c: u32| match from[3] < 1.0 || to[3] < 1.0 {
+                    true => ((c * a + 255) >> 8) as u8,
+                    false => c as u8,
+                };
+
+                [faded(b), faded(g), faded(r), a as u8]
+            }
+        }
+    }
+}
+
+/// beeper-rs: fills a quad that is on whole pixels as plain rows of `rows`,
+/// and only its corners as anti-aliased paths with `paint`. The path fill of
+/// tiny-skia sends each span of the whole quad through its pipeline, which
+/// was a quarter of a frame of the whole window for the card of the open
+/// chat alone, and an eighth for the fade over its top. Returns whether it
+/// filled the quad.
+fn fill_rows(
     pixels: &mut tiny_skia::PixmapMut<'_>,
     bounds: Rectangle,
     radii: [f32; 4],
-    color: tiny_skia::Color,
+    rows: &Rows,
+    (paint, transformation): (&tiny_skia::Paint<'_>, Transformation),
     clip_bounds: Rectangle,
     clip_mask: Option<&tiny_skia::Mask>,
 ) -> bool {
@@ -853,13 +949,25 @@ fn fill_opaque(
         return false;
     };
 
-    let pixel = color.premultiply().to_color_u8();
-    let pixel = [pixel.red(), pixel.green(), pixel.blue(), pixel.alpha()];
-    let rows = |pixels: &mut tiny_skia::PixmapMut<'_>, x: f32, y: f32, width: f32, height: f32| {
+    let fill = |pixels: &mut tiny_skia::PixmapMut<'_>,
+                x: f32,
+                y: f32,
+                width: f32,
+                height: f32| {
         let part = Rectangle { x, y, width, height };
+        let Some(part) = part.intersection(&clip).and_then(Rectangle::snap)
+        else {
+            return;
+        };
 
-        if let Some(part) = part.intersection(&clip).and_then(Rectangle::snap) {
-            crate::blit::fill(pixels, part, pixel);
+        match rows {
+            Rows::Same(pixel) => crate::blit::fill(pixels, part, *pixel),
+            Rows::Ramp { .. } => {
+                for y in part.y..part.y + part.height {
+                    let row = Rectangle { y, height: 1, ..part };
+                    crate::blit::fill(pixels, row, rows.at(y));
+                }
+            }
         }
     };
     let (right, bottom) = (
@@ -869,9 +977,9 @@ fn fill_opaque(
     let (inner, between) =
         (bounds.width - 2.0 * corner, bounds.height - 2.0 * corner);
 
-    rows(pixels, bounds.x, bounds.y + corner, bounds.width, between);
-    rows(pixels, bounds.x + corner, bounds.y, inner, corner);
-    rows(pixels, bounds.x + corner, bottom, inner, corner);
+    fill(pixels, bounds.x, bounds.y + corner, bounds.width, between);
+    fill(pixels, bounds.x + corner, bounds.y, inner, corner);
+    fill(pixels, bounds.x + corner, bottom, inner, corner);
 
     let corners = [
         (bounds.x, bounds.y),
@@ -879,27 +987,33 @@ fn fill_opaque(
         (right, bottom),
         (bounds.x, bottom),
     ];
+    let scale = transformation.scale_factor();
+    let moved = transformation.translation();
 
     for (i, (x, y)) in corners.into_iter().enumerate() {
         if radii[i] == 0.0 {
-            rows(pixels, x, y, corner, corner);
+            fill(pixels, x, y, corner, corner);
             continue;
         }
 
         let part = Rectangle { x, y, width: corner, height: corner };
         let mut rounded = [0.0; 4];
-        rounded[i] = radii[i];
+        rounded[i] = radii[i] / scale;
 
         if part.intersects(&clip_bounds) {
+            // The corner in the units of the quad, where a gradient is.
+            let part = Rectangle {
+                x: (x - moved.x) / scale,
+                y: (y - moved.y) / scale,
+                width: corner / scale,
+                height: corner / scale,
+            };
+
             pixels.fill_path(
                 &rounded_rectangle(part, rounded),
-                &tiny_skia::Paint {
-                    shader: tiny_skia::Shader::SolidColor(color),
-                    anti_alias: true,
-                    ..tiny_skia::Paint::default()
-                },
+                paint,
                 tiny_skia::FillRule::EvenOdd,
-                tiny_skia::Transform::identity(),
+                into_transform(transformation),
                 clip_mask,
             );
         }
@@ -1122,40 +1236,65 @@ mod tests {
         }
     }
 
-    /// An opaque quad on whole pixels, filled as rows with path corners, is
-    /// the path fill of tiny-skia pixel for pixel, also in a clip.
+    /// A quad on whole pixels, filled as rows with path corners, is the path
+    /// fill of tiny-skia pixel for pixel, also in a clip: an opaque color, a
+    /// clear one, and gradients down and up with and without a clear end.
     #[test]
-    fn opaque_quads_fill_like_their_path() {
-        let color = Color::from_rgb8(12, 80, 250);
+    fn quads_fill_in_rows_like_their_path() {
+        use crate::core::gradient::Linear;
+        use std::f32::consts::PI;
+
+        let (blue, red) = (Color::from_rgb8(12, 80, 250), Color::from_rgba8(250, 60, 30, 0.37));
+        let ramp = |angle: f32, from: Color, to: Color| {
+            Background::Gradient(Gradient::Linear(Linear::new(angle).add_stop(0.0, from).add_stop(1.0, to)))
+        };
+        let fills = [
+            Background::Color(blue),
+            Background::Color(red),
+            ramp(PI, blue, Color::WHITE),
+            ramp(PI, Color::WHITE, Color::TRANSPARENT),
+            ramp(0.0, red, blue),
+        ];
         let quad = quad(Shadow::default());
 
-        for (scale, clip) in [(1.0, None), (2.0, None), (2.0, Some((30.0, 20.0, 120.0, 150.0)))] {
+        for (fill, (scale, clip)) in fills
+            .iter()
+            .flat_map(|f| [(1.0, None), (2.0, None), (2.0, Some((30.0, 20.0, 120.0, 150.0)))].map(|at| (f, at)))
+        {
             let whole = Rectangle::with_size(Size::new(260.0, 200.0));
             let clip = clip.map_or(whole, |(x, y, w, h)| Rectangle::new(Point::new(x, y), Size::new(w, h)));
             let (mut fast, mut mask) = canvas();
             adjust_clip_mask(&mut mask, clip);
-            Engine::new().draw_quad(
-                &quad,
-                &Background::Color(color),
-                Transformation::scale(scale),
-                &mut fast.as_mut(),
-                &mut mask,
-                clip,
-            );
+            Engine::new().draw_quad(&quad, fill, Transformation::scale(scale), &mut fast.as_mut(), &mut mask, clip);
 
+            let shader = match fill {
+                Background::Color(color) => tiny_skia::Shader::SolidColor(into_color(*color)),
+                Background::Gradient(Gradient::Linear(linear)) => {
+                    let (start, end) = linear.angle.to_distance(&quad.bounds);
+                    let stops = linear.stops.into_iter().flatten().map(|stop| {
+                        let c = stop.color;
+                        tiny_skia::GradientStop::new(stop.offset, tiny_skia::Color::from_rgba(c.b, c.g, c.r, c.a).unwrap())
+                    });
+                    tiny_skia::LinearGradient::new(
+                        tiny_skia::Point { x: start.x, y: start.y },
+                        tiny_skia::Point { x: end.x, y: end.y },
+                        stops.collect(),
+                        tiny_skia::SpreadMode::Pad,
+                        tiny_skia::Transform::identity(),
+                    )
+                    .unwrap()
+                }
+            };
             let (mut slow, _) = canvas();
             slow.as_mut().fill_path(
                 &rounded_rectangle(quad.bounds, quad.border.radius.into()),
-                &tiny_skia::Paint {
-                    shader: tiny_skia::Shader::SolidColor(into_color(color)),
-                    anti_alias: true,
-                    ..tiny_skia::Paint::default()
-                },
+                &tiny_skia::Paint { shader, anti_alias: true, ..tiny_skia::Paint::default() },
                 tiny_skia::FillRule::EvenOdd,
                 tiny_skia::Transform::from_scale(scale, scale),
                 (clip != whole).then_some(&mask),
             );
-            assert!(fast.data() == slow.data(), "scale {scale} in {clip:?}");
+            let far = fast.data().iter().zip(slow.data()).map(|(a, b)| a.abs_diff(*b)).max();
+            assert_eq!(far, Some(0), "{fill:?} at scale {scale} in {clip:?}");
         }
     }
 
