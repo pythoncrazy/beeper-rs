@@ -670,7 +670,7 @@ impl BeeperGuiApp {
         let all = cmd("", tr("Search messages in all chats"), Some(UiMessage::CommandBar(Msg::TogglePalette)));
         v.push(all.keys(&["find", "grep"]).hotkey("Search"));
         if let Some(c) = chat {
-            let here = cmd("", tr("Search messages in current chat"), Some(UiMessage::CommandBar(Msg::SearchRoom(c.id.clone()))));
+            let here = cmd("", tr("Search messages in current chat"), Some(UiMessage::CommandBar(Msg::Search(Some(c.id.clone())))));
             v.push(here.keys(&["find", "grep"]).hotkey("Search: Room"));
         }
         let folders = (self.list().active_tab != InboxTab::Requests).then_some(UiMessage::CommandBar(Msg::OpenSubMenu(SubMenu::Folders)));
@@ -944,8 +944,8 @@ pub enum Msg {
     /// Highlights a row of the search.
     HighlightResult(usize),
     TogglePalette,
-    SearchRoom(String),
-    ToggleMode,
+    /// Desktop's `showSearch`: the search of the bar, in a chat or in all of them, which never closes the bar.
+    Search(Option<String>),
     /// Desktop's `TOGGLE_EXPANDED_MORE` of a search section.
     ToggleSearchExpanded(&'static str),
     /// Desktop's `TOGGLE_PARTIAL_MATCHES` of the Messages section.
@@ -1020,7 +1020,7 @@ impl BeeperGuiApp {
                     return operation::focus("cmd-palette-input");
                 }
             }
-            Msg::SearchRoom(cid) => {
+            Msg::Search(cid) => {
                 // Desktop's `showSearch` keeps the text of an open bar, but resets a submenu, and `reset` emptied a
                 // closed bar.
                 if !self.show_command_palette {
@@ -1029,13 +1029,11 @@ impl BeeperGuiApp {
                 if !self.show_command_palette || self.cmd_submenu.is_some() {
                     self.command_palette_query.clear();
                 }
+                if cid.is_some() {
+                    self.search_filters.accounts.clear();
+                }
                 (self.show_command_palette, self.cmd_bar_commands_mode, self.cmd_submenu) = (true, false, None);
-                (self.search_room, self.list.chat_menu, self.search_index) = (Some(cid), None, None);
-                self.search_filters.accounts.clear();
-                return operation::focus("cmd-palette-input");
-            }
-            Msg::ToggleMode => {
-                (self.cmd_bar_commands_mode, self.cmd_index, self.search_index) = (!self.cmd_bar_commands_mode, 0, None);
+                (self.search_room, self.list.chat_menu, self.search_index) = (cid, None, None);
                 return operation::focus("cmd-palette-input");
             }
             Msg::RestoreSearch(i) => {

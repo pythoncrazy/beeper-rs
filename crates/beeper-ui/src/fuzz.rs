@@ -276,7 +276,7 @@ fn random_message(rng: &mut Rng, app: &BeeperGuiApp) -> (String, UiMessage) {
         37 => UiMessage::ChatList(chat_list::Msg::BeginSelecting(chat)),
         38 => UiMessage::ChatList(chat_list::Msg::ToggleSelected(chat)),
         39 => UiMessage::ChatList(chat_list::Msg::SelectionSet(flag, rng.coin())),
-        40 => UiMessage::CommandBar(commands::Msg::SearchRoom(text)),
+        40 => UiMessage::CommandBar(commands::Msg::Search(Some(text))),
         41 => UiMessage::Media(media_view::Msg::Open),
         42 => UiMessage::CloseModals,
         43 => UiMessage::Composer(composer::Msg::ToggleAttachMenu),
@@ -1085,6 +1085,31 @@ fn command_bar_opens_empty_like_desktop() {
     let _ = app.update(UiMessage::CloseModals);
     let _ = app.update(UiMessage::RunHotkey("Search: Room"));
     assert_eq!(app.command_palette_query, "", "a closed bar opens empty for the search of the chat");
+}
+
+/// Desktop's `showSearch` and `showInNormalMode`: Ctrl+K never closes the bar and searches the text of the commands;
+/// Ctrl+J closes the commands, and opens them empty in place of a search; Search: Room without an open chat searches
+/// all chats.
+#[test]
+fn command_bar_hotkeys_like_desktop() {
+    let mut app = demo_app("cmdbar-hotkeys");
+    let state = |app: &BeeperGuiApp| (app.show_command_palette, app.cmd_bar_commands_mode, app.command_palette_query.clone());
+    let run = |app: &mut BeeperGuiApp, h| drop(app.update(UiMessage::RunHotkey(h)));
+    run(&mut app, "Search");
+    run(&mut app, "Search");
+    assert_eq!(state(&app), (true, false, String::new()), "a second Ctrl+K keeps the search open");
+    let _ = app.update(UiMessage::CommandBar(commands::Msg::Query("lena".into())));
+    run(&mut app, "Command Bar");
+    assert_eq!(state(&app), (true, true, String::new()), "Ctrl+J opens the commands empty in place of the search");
+    let _ = app.update(UiMessage::CommandBar(commands::Msg::Query("mute".into())));
+    run(&mut app, "Search");
+    assert_eq!(state(&app), (true, false, "mute".into()), "Ctrl+K searches the text of the commands");
+    run(&mut app, "Command Bar");
+    run(&mut app, "Command Bar");
+    assert!(!app.show_command_palette, "Ctrl+J closes the commands");
+    app.pane.selected_chat_id = None;
+    run(&mut app, "Search: Room");
+    assert_eq!((app.show_command_palette, app.search_room.clone()), (true, None), "Ctrl+F without a chat searches all chats");
 }
 
 /// Desktop's `onSearchClosed` and `recentSearches`: a search with a text and filters that the bar closes on leads the

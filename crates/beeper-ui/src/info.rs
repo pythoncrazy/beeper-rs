@@ -527,7 +527,7 @@ impl BeeperGuiApp {
         };
         let remind = tool(icon::SCHEDULE, fg, label, keys("Remind Later"), Some(remind));
         let snooze = self.view_info_snooze(st, chat, cid);
-        let search = Some(UiMessage::CommandBar(commands::Msg::SearchRoom(cid.into())));
+        let search = Some(UiMessage::CommandBar(commands::Msg::Search(Some(cid.into()))));
         let search = tool(icon::SEARCH, p.strong, tr("Search"), keys("Search: Room"), search);
         let more = Some(UiMessage::ChatList(chat_list::Msg::OpenMenu(cid.into())));
         let more = tool(icon::EXPAND_MORE, p.strong, tr("More Options"), vec![], more);

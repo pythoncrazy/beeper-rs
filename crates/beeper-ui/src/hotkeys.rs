@@ -146,11 +146,16 @@ impl BeeperGuiApp {
                 };
                 return Task::batch([bar, self.update(UiMessage::Window(windows::Msg::FocusRequested(None)))]);
             }
-            "Command Bar" if self.show_command_palette => Some(UiMessage::CommandBar(commands::Msg::ToggleMode)),
+            // Desktop's `showInNormalMode`: the commands close, and take the place of a search.
             "Command Bar" => {
+                let (open, commands) = (self.show_command_palette, self.cmd_bar_commands_mode);
+                let close = if open { self.update(UiMessage::CloseModals) } else { Task::none() };
+                if open && commands {
+                    return close;
+                }
                 let open = self.update(UiMessage::CommandBar(commands::Msg::TogglePalette));
                 self.cmd_bar_commands_mode = true;
-                return open;
+                return close.chain(open);
             }
             "Filter By Account" => Some(UiMessage::CommandBar(commands::Msg::OpenSubMenu(commands::SubMenu::FilterAccount))),
             "Remind Later" => chat.map(|id| UiMessage::CommandBar(commands::Msg::OpenSubMenu(commands::SubMenu::Remind(id)))),
@@ -186,8 +191,8 @@ impl BeeperGuiApp {
             "Reload App" => Some(UiMessage::Window(windows::Msg::Relaunch)),
             "Report a Problem" => Some(UiMessage::OpenUrl(ISSUES_URL.into())),
             "Reset Zoom" => Some(UiMessage::Zoom(zoom::Msg::Step(0))),
-            "Search" => Some(UiMessage::CommandBar(commands::Msg::TogglePalette)),
-            "Search: Room" => chat.map(|a0| UiMessage::CommandBar(commands::Msg::SearchRoom(a0))),
+            "Search" => Some(UiMessage::CommandBar(commands::Msg::Search(None))),
+            "Search: Room" => Some(UiMessage::CommandBar(commands::Msg::Search(chat))),
             // Desktop's `disableSpaceSwitching` keeps a space window on its space.
             "Select Next Account" | "Select Previous Account" if self.list.locked => None,
             "Select Next Account" | "Select Previous Account" => {
@@ -254,7 +259,7 @@ impl BeeperGuiApp {
             }
             "Message: Open First Link" => {
                 let text = self.selected_message().and_then(|m| m.text);
-                text.and_then(|t| t.split_whitespace().find(|w| w.starts_with("http")).map(|u| UiMessage::OpenUrl(u.into())))
+                text.and_then(|t| crate::linkify::links(&t).into_iter().next()).map(|(_, href)| UiMessage::OpenUrl(href))
             }
             "Message: Quick React" => selected.map(|m| self.quick_react(m)),
             "Message: Quote & Reply" => selected.map(|a0| UiMessage::Composer(composer::Msg::StartReply(a0))),
