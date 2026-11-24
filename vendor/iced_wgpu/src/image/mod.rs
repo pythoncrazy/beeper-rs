@@ -296,6 +296,18 @@ impl State {
                     bounds,
                     clip_bounds,
                 } => {
+                    // beeper-rs: the pixels of the box that the shader snaps
+                    // this image to. A raster of another size, like the next
+                    // whole one up, lost or doubled a row or a column in it.
+                    let side = |from: f32, length: f32| {
+                        ((from + length) * scale).round()
+                            - (from * scale).round()
+                    };
+                    let size = Size::new(
+                        side(bounds.x, bounds.width),
+                        side(bounds.y, bounds.height),
+                    );
+
                     if let Some((atlas_entry, bind_group)) = cache
                         .upload_vector(
                             device,
@@ -303,8 +315,8 @@ impl State {
                             belt,
                             &svg.handle,
                             svg.color,
-                            bounds.size(),
-                            scale,
+                            size,
+                            1.0,
                         )
                     {
                         layer.runs.start(

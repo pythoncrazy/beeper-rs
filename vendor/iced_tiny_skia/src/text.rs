@@ -271,14 +271,22 @@ impl GlyphCache {
 
         if let hash_map::Entry::Vacant(entry) = self.entries.entry(key) {
             // TODO: Outline support
-            let image = swash.get_image_uncached(font_system, cache_key)?;
+            // beeper-rs: a glyph without pixels, like a space, keeps an
+            // empty entry. Without one, each space of each frame set up the
+            // rasterizer of its font again, an eighth of a frame of text.
+            let Some(image) = swash
+                .get_image_uncached(font_system, cache_key)
+                .filter(|image| {
+                    image.placement.width > 0 && image.placement.height > 0
+                })
+            else {
+                let _ = entry.insert((Vec::new(), Default::default()));
+                let _ = self.recently_used.insert(key);
+                return None;
+            };
 
             let glyph_size = image.placement.width as usize
                 * image.placement.height as usize;
-
-            if glyph_size == 0 {
-                return None;
-            }
 
             let mut buffer = vec![0u32; glyph_size];
 
@@ -334,9 +342,12 @@ impl GlyphCache {
 
         let _ = self.recently_used.insert(key);
 
-        self.entries.get(&key).map(|(buffer, placement)| {
-            (bytemuck::cast_slice(buffer.as_slice()), *placement)
-        })
+        self.entries
+            .get(&key)
+            .filter(|(buffer, _)| !buffer.is_empty())
+            .map(|(buffer, placement)| {
+                (bytemuck::cast_slice(buffer.as_slice()), *placement)
+            })
     }
 
     pub fn trim(&mut self) {
