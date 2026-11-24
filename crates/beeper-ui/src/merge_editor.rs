@@ -582,11 +582,15 @@ mod tests {
     #[test]
     fn merge_pick_lists_frequently_contacted_chats_like_desktop() {
         let mut app = demo_app("merge-editor-frequent");
+        let _ = app.update(UiMessage::SelectChat(KAI.into()));
         let _ = app.update(UiMessage::SelectChat(SAM.into()));
-        let _ = app.update(UiMessage::Dwell(SAM.into()));
-        let _ = app.update(UiMessage::Dwell(KAI.into()));
+        let ago = std::time::Instant::now() - std::time::Duration::from_secs(4);
+        app.dwell.as_mut().expect("the open chat").1 = ago;
+        let _ = app.update(UiMessage::Noop);
+        let _ = app.update(UiMessage::Noop);
         let st = app.store.read();
-        assert!(st.frecency(SAM) > 0.6 && st.frecency(KAI) == 0.0, "only the open chat counts");
+        assert!(st.frecency(SAM) > 0.6 && st.frecency(SAM) < 0.62, "one dwell of the open chat");
+        assert_eq!(st.frecency(KAI), 0.0, "a chat left before 3 seconds does not count");
         drop(st);
         let _ = app.update(UiMessage::Merged(merged::Msg::Open(None, Vec::new())));
         edit(&mut app, MergeEdit::Start);

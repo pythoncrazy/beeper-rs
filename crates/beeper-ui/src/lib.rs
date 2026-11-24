@@ -403,8 +403,6 @@ pub enum UiMessage {
     QuickEmoji(Option<u8>),
     AnimationTick,
     Pushed(Result<(), String>),
-    /// Desktop's `recordDwell`: the chat stayed selected for 3 seconds.
-    Dwell(String),
     /// The scroll of the timeline: the jump to its bottom, and the load of older messages at its top.
     Timeline(timeline::Msg),
     /// Desktop's idle state, which stops the open chat from reading what comes in.
@@ -2931,8 +2929,8 @@ pub struct BeeperGuiApp {
     pub list: chat_list::ListState,
     /// The requests that the Requests view last marked as seen.
     seen_requests: Vec<String>,
-    /// The selected chat that a [`UiMessage::Dwell`] waits for.
-    dwell: Option<String>,
+    /// The chat of the main window, since when it is selected, and whether its dwell counted.
+    dwell: Option<(String, std::time::Instant, bool)>,
     /// The Picture in Picture window and the message of its video, and a video that should go there.
     pip: Option<(window::Id, String)>,
     pip_wanted: bool,
@@ -4379,7 +4377,8 @@ impl BeeperGuiApp {
         let task = self.handle(msg);
         self.link_drafts();
         let reveal = pointed.map_or_else(Task::none, |p| self.reveal_pointed(p));
-        let task = Task::batch([task, reveal, self.view_requests(), self.pip(), self.dwell()]);
+        self.dwell();
+        let task = Task::batch([task, reveal, self.view_requests(), self.pip()]);
         self.keep_shown();
         // A toast with the same text replaces the shown one, unless Desktop's toast ID tells them apart, and so does
         // one with the same ID, like Desktop's `addToast` with the ID of a toast.
@@ -4620,7 +4619,6 @@ impl BeeperGuiApp {
             | UiMessage::Typing(..)
             | UiMessage::AnimationTick
             | UiMessage::Pushed(..)
-            | UiMessage::Dwell(..)
             | UiMessage::DismissRecoveryReminder
             | UiMessage::DismissTrialOver) => return self.handle_sync(msg),
             UiMessage::OpenQuickLook(title, detail) => {
@@ -4866,10 +4864,6 @@ impl BeeperGuiApp {
                 }
             }
             UiMessage::Pushed(Ok(())) => {}
-            UiMessage::Dwell(id) if self.pane.selected_chat_id.as_ref() == Some(&id) => {
-                self.store.write().record_activity(&id, beeper_core::store::Activity::DWELL, beeper_core::config::now_unix_millis());
-            }
-            UiMessage::Dwell(_) => {}
             UiMessage::DismissRecoveryReminder => {
                 let now = beeper_core::config::now_unix_millis();
                 self.patch_settings(|s| s.recovery_reminder_dismissed_at = now);
@@ -6397,14 +6391,21 @@ impl BeeperGuiApp {
         open.map(|a0| UiMessage::Window(windows::Msg::Opened(a0)))
     }
 
-    /// Desktop's `setSelectedThread`, which records a dwell when the chat of the main window stays selected 3 seconds.
-    fn dwell(&mut self) -> Task<UiMessage> {
-        if self.swapped.is_some() || self.pane.selected_chat_id == self.dwell {
-            return Task::none();
+    /// Desktop's `recordDwell` of `setSelectedThread`: the chat of the main window that stays selected 3 seconds
+    /// counts once, at the first message after them.
+    fn dwell(&mut self) {
+        if self.swapped.is_some() {
+            return;
         }
-        self.dwell.clone_from(&self.pane.selected_chat_id);
-        let wait = async { tokio::time::sleep(std::time::Duration::from_secs(3)).await };
-        self.dwell.clone().map_or_else(Task::none, |id| Task::perform(wait, move |()| UiMessage::Dwell(id)))
+        if let Some((id, since, counted @ false)) = &mut self.dwell {
+            if since.elapsed() >= std::time::Duration::from_secs(3) {
+                *counted = true;
+                self.store.write().record_activity(id, beeper_core::store::Activity::DWELL, beeper_core::config::now_unix_millis());
+            }
+        }
+        if self.pane.selected_chat_id.as_deref() != self.dwell.as_ref().map(|d| d.0.as_str()) {
+            self.dwell = self.pane.selected_chat_id.clone().map(|id| (id, std::time::Instant::now(), false));
+        }
     }
 
     /// Desktop's `updateLastViewedRequestsAt` when the Requests view shows, and when its requests change while it
