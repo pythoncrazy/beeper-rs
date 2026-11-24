@@ -806,7 +806,7 @@ impl BeeperGuiApp {
             true => container(txt(tr("Add Chats"), 12.0).color(p.sub)).center_y(36).width(Fill).into(),
             false => container(faces).width(Fill).into(),
         };
-        let group = row![group, ic(icon::CHEVRON_RIGHT, 16.0).color(p.sub)].spacing(8).align_y(Center);
+        let group = row![group, crate::platform(ic(icon::CHEVRON_RIGHT, 16.0).color(p.sub))].spacing(8).align_y(Center);
         let chats = UiMessage::Labels(labels::Msg::EditChats(l.id.clone()));
         let group = button(group)
             .padding(Padding::new(8.0).left(12.0))
@@ -820,7 +820,8 @@ impl BeeperGuiApp {
             _ => inbox_label(label),
         };
         let current = INBOX_OPTIONS.iter().find(|o| o.0 == now).expect("an inbox option");
-        let pill = row![txt(inbox_name(current.0, current.1), 12.0), ic(icon::EXPAND_MORE, 12.0)].spacing(2).align_y(Center);
+        let pill =
+            row![txt(inbox_name(current.0, current.1), 12.0), crate::platform(ic(icon::EXPAND_MORE, 12.0))].spacing(2).align_y(Center);
         let pill = button(pill)
             .padding(Padding::new(2.0).right(6.0).left(10.0))
             .height(24)
@@ -828,7 +829,8 @@ impl BeeperGuiApp {
             .on_press(pane(LabelPane::Menu(!w.menu)));
         let pill = target("inbox", pill.into(), Keys::press(pane(LabelPane::Menu(!w.menu))), ring(0.0, 12.0));
         let setting = |glyph: char, label: &str, end: El<'a>| -> El<'a> {
-            row![container(ic(glyph, 18.0).color(p.strong)).center_x(28), txt(label.to_string(), 13.0).width(Fill), end]
+            // Desktop's `RowIcon`: an 18 px `PlatformIcon`.
+            row![container(crate::platform(ic(glyph, 18.0).color(p.strong))).center_x(28), txt(label.to_string(), 13.0).width(Fill), end]
                 .spacing(8)
                 .align_y(Center)
                 .height(40)
@@ -977,7 +979,7 @@ impl BeeperGuiApp {
         });
         let search = text_input(hint, query).id(id).on_input(on).size(rem(13.0)).line_height(lh(16.0)).padding([14, 0]);
         let search = search.style(input_style(CLEAR, p.strong, p.sub, p.accent, 0.0));
-        let search = row![ic(icon::SEARCH, 16.0).color(p.sub), search].push(clear).spacing(10).align_y(Center);
+        let search = row![crate::platform(ic(icon::SEARCH, 16.0).color(p.sub)), search].push(clear).spacing(10).align_y(Center);
         search.padding(Padding::ZERO.left(16.0).right(8.0)).into()
     }
 

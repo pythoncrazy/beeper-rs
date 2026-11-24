@@ -369,8 +369,9 @@ impl BeeperGuiApp {
         ]
         .spacing(6)
         .width(Fill);
-        let close =
-            button(container(ic(icon::CLOSE, 16.0).color(p.muted)).center(28)).bare(p.muted).on_press(msg(Msg::Dismiss(s.keys.clone())));
+        let close = button(container(crate::platform(ic(icon::CLOSE, 16.0).color(p.muted))).center(28))
+            .bare(p.muted)
+            .on_press(msg(Msg::Dismiss(s.keys.clone())));
         let line = row![body, merge, close].spacing(12).align_y(Center);
         let card = container(line).padding(pad(16.0, 12.0, 16.0, 16.0)).width(w).style(raised(p.elevated, 16.0, None, (2.0, 6.0, 0x14)));
         // The card takes the pointer, so the header shows no members under it.
@@ -383,7 +384,7 @@ impl BeeperGuiApp {
     pub(crate) fn view_merge_promo<'a>(&'a self, st: &BeeperStore, chat: &Chat) -> Option<El<'a>> {
         let s = (!st.settings.chat_info_merge_promo_dismissed).then(|| self.suggestion_of(st, &chat.id))??;
         let p = &self.pal;
-        let close = button(container(ic(icon::CLOSE, 16.0).color(p.muted)).center(34))
+        let close = button(container(crate::platform(ic(icon::CLOSE, 16.0).color(p.muted))).center(34))
             .bare(p.muted)
             .on_press(UiMessage::MergeSuggest(Msg::DismissPromo));
         let top = row![bold_pill(p), Space::new().width(Fill), close].align_y(Center).padding(pad(8.0, 8.0, 0.0, 16.0));
