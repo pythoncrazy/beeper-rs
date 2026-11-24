@@ -127,6 +127,7 @@ fn profile(info: &Value) -> Profile {
         can_subscribe: provider.is_none_or(|p| !managed.contains(&p)) && info["canSubscribe"]["STRIPE"].as_bool().unwrap_or(!active),
         internal: info["channel"] == "INTERNAL",
         analytics_disabled: info["analyticsDisabled"] != false,
+        features: Box::new(info["features"].clone()),
     }
 }
 
