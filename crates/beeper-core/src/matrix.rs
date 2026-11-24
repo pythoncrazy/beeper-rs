@@ -275,10 +275,7 @@ fn older_key(key: &str) -> Option<String> {
         return None;
     }
     let decode = |p: &str| crate::codec::url_decode(p).unwrap_or_else(|| p.to_string());
-    Some(match parts.nth(1) {
-        Some(network) => format!("{}.{}", decode(bridge), decode(network)),
-        None => decode(bridge),
-    })
+    Some(if let Some(network) = parts.nth(1) { format!("{}.{}", decode(bridge), decode(network)) } else { decode(bridge) })
 }
 
 /// Desktop's `$se`: the form of an older key that Desktop keeps, with a `*` before a numeric Discord server and
@@ -1843,18 +1840,12 @@ async fn first_page(store: &SharedStore, room: &Room, events: usize, prev_batch:
         st.chat_idx_by_id.get(chat).is_some_and(|&i| st.chats[i].notifiable.is_some())
     };
     let special = [BOOKMARKS_ROOM, TRANSCRIPTIONS_ROOM, REMOVED_MESSAGES_ROOM, REMINDERS_ROOM].contains(&id);
-    let wanted = match prev_batch {
-        Some(_) => HISTORY.saturating_sub(u32::try_from(events).unwrap_or(u32::MAX)),
-        None => HISTORY,
-    };
+    let wanted = if prev_batch.is_some() { HISTORY.saturating_sub(u32::try_from(events).unwrap_or(u32::MAX)) } else { HISTORY };
     if special || MANAGED_ROOMS.contains(&id) || seen(id) || wanted == 0 {
         return None;
     }
     let cached = store.read().room_reads.rooms.get(id).map(|r| r.create.clone());
-    let create = match cached {
-        Some(c) => c,
-        None => RoomReads::create(room).await?,
-    };
+    let create = if let Some(c) = cached { c } else { RoomReads::create(room).await? };
     let create = &create["content"];
     let chat = matches!(create["type"].as_str(), None | Some("com.beeper.local" | UNION));
     (chat && create["com.beeper.label"] != true && !seen(&chat_id(room).await)).then(|| (prev_batch.clone(), wanted))
@@ -1977,10 +1968,7 @@ async fn sync_room_after(store: &SharedStore, room: &Room, mut events: Vec<Timel
     };
     let mut older = None;
     // A new room starts with `HISTORY` events. After a sync, the page is the events before those of the sync.
-    let wanted = match &prev_batch {
-        Some(_) => HISTORY.saturating_sub(u32::try_from(events.len()).unwrap_or(u32::MAX)),
-        None => HISTORY,
-    };
+    let wanted = if prev_batch.is_some() { HISTORY.saturating_sub(u32::try_from(events.len()).unwrap_or(u32::MAX)) } else { HISTORY };
     if !seen && wanted == 0 {
         older = prev_batch.map(Older::From);
     } else if !seen {
@@ -2050,10 +2038,7 @@ async fn sync_room_after(store: &SharedStore, room: &Room, mut events: Vec<Timel
                 Some(false) => None,
                 None => rank,
             };
-            let old = match rank {
-                Some(r) => st.pin_rank.insert(chat_id.clone(), r),
-                None => st.pin_rank.remove(&chat_id),
-            };
+            let old = if let Some(r) = rank { st.pin_rank.insert(chat_id.clone(), r) } else { st.pin_rank.remove(&chat_id) };
             if old != rank {
                 st.persist_state_to_sqlite();
             }
@@ -2560,10 +2545,7 @@ fn media_type(
     use matrix_sdk::attachment::AttachmentInfo;
     use matrix_sdk::ruma::events::room::message::*;
     use matrix_sdk::ruma::events::room::ImageInfo;
-    let (body, filename) = match caption {
-        Some(caption) => (caption, Some(name)),
-        None => (name, None),
-    };
+    let (body, filename) = if let Some(caption) = caption { (caption, Some(name)) } else { (name, None) };
     let mimetype = Some(mime.as_ref().to_owned());
     match mime.type_() {
         mime::IMAGE => {
@@ -2688,10 +2670,7 @@ async fn flush(store: SharedStore) -> Result<(), PushError> {
             store.write().sending.entry(id.clone()).or_insert_with(now_unix_millis);
         }
         let pending = matches!(out, Outgoing::RemoveFromBeeper { .. });
-        let flag = match out {
-            Outgoing::Flag(f, on) => Some((chat.clone(), f, on)),
-            _ => None,
-        };
+        let flag = if let Outgoing::Flag(f, on) = out { Some((chat.clone(), f, on)) } else { None };
         // Desktop's `sendQueuedMessages` gives up on a message five times its slow wait after its push began.
         let wait = message.as_ref().filter(|_| retry).and_then(|id| store.read().send_wait(id));
         let left = wait.map_or(std::time::Duration::MAX, |(start, wait)| {
@@ -4494,10 +4473,7 @@ async fn retry_drafts(client: &Client, store: &SharedStore) {
     }
     for id in rooms {
         let room = matrix_sdk::ruma::RoomId::parse(&id).ok().and_then(|r| client.get_room(&r));
-        let content = match &room {
-            Some(room) => account_data(room, crate::drafts::DRAFT).await,
-            None => None,
-        };
+        let content = if let Some(room) = &room { account_data(room, crate::drafts::DRAFT).await } else { None };
         match (room, content) {
             (Some(room), Some(content)) => sync_draft(client, store, &room, content).await,
             _ => drop(store.write().drafts.undecrypted.remove(&id)),
@@ -5806,10 +5782,7 @@ pub(crate) async fn start_pass(client: &Client, store: &SharedStore, globals: &G
     let taken = rooms.iter().filter(|(_, r, m)| r.is_some() && m.is_some()).count();
     futures_util::stream::iter(rooms)
         .for_each_concurrent(8, |(room, reads, members)| async move {
-            let chat = match &reads {
-                Some(r) => r.chat_id(&room),
-                None => chat_id(&room).await,
-            };
+            let chat = if let Some(r) = &reads { r.chat_id(&room) } else { chat_id(&room).await };
             if let Some(r) = reads {
                 let mut st = store.write();
                 let epoch = st.room_reads.epoch;

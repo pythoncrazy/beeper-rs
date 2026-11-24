@@ -1653,10 +1653,7 @@ fn bridge_call(store: &SharedStore, cloud: &Cloud, method: &str, id: &str, rest:
                 let message = "Login step does not match the current session state";
                 return Err(error(StatusCode::CONFLICT, message, "INVALID_LOGIN_STEP"));
             }
-            let fields = match kind {
-                "display_and_wait" => Value::Null,
-                _ => r.body.get("fields").cloned().unwrap_or(json!({})),
-            };
+            let fields = if kind == "display_and_wait" { Value::Null } else { r.body.get("fields").cloned().unwrap_or(json!({})) };
             let p = matrix::Provision { login_id: s.view["loginID"].as_str().unwrap_or_default().into(), ..p };
             let step = rt.block_on(bridge_login::submit(p, sid.to_string(), s.step, fields)).map_err(|e| failed(&e))?;
             keep(sid, s.view["loginID"].clone(), s.view["accountID"].clone(), step)
@@ -2656,10 +2653,7 @@ fn upload(st: &mut BeeperStore, name: Option<&str>, mime: Option<&str>, bytes: &
     let sniffed = sniff(bytes);
     let mime = mime.filter(|m| !m.is_empty()).or(sniffed.map(|s| s.0)).unwrap_or("application/octet-stream");
     let ext = std::path::Path::new(name).extension().is_none().then(|| sniffed.map(|s| s.1).or(extension_of(mime)));
-    let name = match ext.flatten() {
-        Some(ext) => format!("{name}.{ext}"),
-        None => name.into(),
-    };
+    let name = if let Some(ext) = ext.flatten() { format!("{name}.{ext}") } else { name.into() };
     let asset = st.store_uploaded_asset(name, mime.into(), bytes);
     let mut out = json!({
         "uploadID": asset.upload_id,

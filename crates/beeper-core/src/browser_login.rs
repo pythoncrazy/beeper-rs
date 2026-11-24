@@ -617,10 +617,7 @@ pub async fn drive(
         }
         let url = win.borrow().url.clone();
         // Desktop's `F`: the result of the close script, `{}` when it fails.
-        let special = match &login.close_js {
-            Some(js) => cdp.eval(&session, js, true).await,
-            None => None,
-        };
+        let special = if let Some(js) = &login.close_js { cdp.eval(&session, js, true).await } else { None };
         let cookies = cdp.call(None, "Storage.getCookies", json!({})).await.ok();
         let cookies = cookies.as_ref().and_then(|c| c["cookies"].as_array()).map_or(&[][..], Vec::as_slice);
         let mut storage = Map::new();

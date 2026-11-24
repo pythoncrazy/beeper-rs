@@ -85,10 +85,7 @@ impl Webhook {
                     eprintln!("warning: webhook POST {url} returned {status}");
                 }
                 failed => {
-                    let message = match failed {
-                        Ok(Err(e)) => e,
-                        _ => "The operation timed out.".into(),
-                    };
+                    let message = if let Ok(Err(e)) = failed { e } else { "The operation timed out.".into() };
                     if events {
                         super::write_event("watch.webhook_error", json!({ "message": message }));
                     }

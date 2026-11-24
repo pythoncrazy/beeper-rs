@@ -83,10 +83,7 @@ pub fn html_blocks(html: &str) -> Vec<Block> {
         rest = tail;
         let (close, tag) = tag.strip_prefix('/').map_or((false, tag), |t| (true, t));
         let name = tag.split([' ', '\t', '\n', '/']).next().expect("split yields a part").to_ascii_lowercase();
-        let level = match name.as_bytes() {
-            [b'h', n @ b'1'..=b'6'] => n - b'0',
-            _ => 0,
-        };
+        let level = if let [b'h', n @ b'1'..=b'6'] = name.as_bytes() { n - b'0' } else { 0 };
         let block = ["p", "div", "li", "ol", "ul", "blockquote", "pre", "tr"].contains(&name.as_str()) || level > 0;
         if block && !hidden && (!b.runs.is_empty() || b.marker.is_some()) {
             blocks.push(Block::default());

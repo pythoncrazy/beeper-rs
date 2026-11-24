@@ -165,10 +165,7 @@ impl Cloud {
             return Err(fail(0, crate::net::OFFLINE_ERROR));
         }
         let req = http_client().request(method, url);
-        let req = match body {
-            Some(b) => req.header("content-type", "application/json").body(b.to_string()),
-            None => req,
-        };
+        let req = if let Some(b) = body { req.header("content-type", "application/json").body(b.to_string()) } else { req };
         let req = token.into_iter().fold(req, |r, t| r.bearer_auth(t));
         let (status, text) = block_on(async {
             let resp = req.send().await?;
@@ -545,10 +542,7 @@ pub async fn link_preview(url: String) -> Result<Option<PagePreview>, String> {
         p["og:description"] = s.into();
     }
     // Desktop keeps a preview whose image does not load, without the image.
-    let bytes = match image {
-        Some(i) => http_bytes(i.as_str()).await.ok(),
-        None => None,
-    };
+    let bytes = if let Some(i) = image { http_bytes(i.as_str()).await.ok() } else { None };
     Ok(Some((p, bytes)))
 }
 

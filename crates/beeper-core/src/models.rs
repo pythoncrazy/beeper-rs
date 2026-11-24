@@ -2286,11 +2286,7 @@ impl ChatAppearance {
     /// Desktop's `patchConfig`: `f` changes the stored theme of the chat, or the default theme for `None`. A theme
     /// without parts is removed.
     pub fn patch(&mut self, chat: Option<&str>, f: impl FnOnce(&mut ChatTheme)) {
-        let mut theme = match chat {
-            Some(c) => self.per_chat.remove(c),
-            None => self.global.take(),
-        }
-        .unwrap_or_default();
+        let mut theme = if let Some(c) = chat { self.per_chat.remove(c) } else { self.global.take() }.unwrap_or_default();
         f(&mut theme);
         let theme = (theme != ChatTheme::default()).then_some(theme);
         match (chat, theme) {

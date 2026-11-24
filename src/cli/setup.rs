@@ -621,10 +621,7 @@ fn setup_email(c: &mut Ctx, target: &Target) -> Res<Value> {
 
 /// `setupRemote`: a remote target named after its host, signed in with the browser or by email.
 fn setup_remote(c: &mut Ctx, url: &str) -> Res {
-    let name = match c.str("target") {
-        Some(name) => name.to_string(),
-        None => unique_remote_name(url)?,
-    };
+    let name = if let Some(name) = c.str("target") { name.to_string() } else { unique_remote_name(url)? };
     if chatty(c) {
         println!("Connecting to Desktop API on another device.\n\nName: {name}\nURL:  {url}\n");
     }
@@ -664,10 +661,7 @@ fn setup_managed(c: &mut Ctx, kind: &str) -> Res {
     }
     let id = c.str("target").unwrap_or(kind).to_string();
     let env = c.str("server-env").expect("--server-env has a default").to_string();
-    let target = match read_target(&id)? {
-        Some(t) => t,
-        None => create_profile_target(kind, &id, &env, None)?,
-    };
+    let target = if let Some(t) = read_target(&id)? { t } else { create_profile_target(kind, &id, &env, None)? };
     if c.str("target").is_none() {
         set_default_target(&id)?;
     }

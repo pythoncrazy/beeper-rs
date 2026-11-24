@@ -600,10 +600,7 @@ const AUDIO_FORMATS: [(&str, &str, &[&str]); 6] = [
 
 /// Desktop's `mw`: the format of the conversion target, or Desktop's `pw` format that the room supports best.
 fn audio_format(action: &Action, rules: &FileRules) -> usize {
-    let target = match action {
-        Action::Transcode { mime, .. } => AUDIO_FORMATS.iter().position(|f| f.1 == *mime),
-        _ => None,
-    };
+    let target = if let Action::Transcode { mime, .. } = action { AUDIO_FORMATS.iter().position(|f| f.1 == *mime) } else { None };
     let Some(types) = rules.get(FILE_AUDIO).map(|r| &r.mime_types) else { return target.unwrap_or(0) };
     let by = |min| AUDIO_FORMATS.iter().position(|f| supports(f.1, types, min));
     target.or_else(|| by(2)).or_else(|| by(1)).unwrap_or(0)
