@@ -197,7 +197,12 @@ pub(crate) fn save_draft(st: &mut BeeperStore, pane: &Pane) {
             .iter()
             .map(|f| {
                 let a = st.store_uploaded_asset(f.name.clone(), f.mime.clone(), &f.bytes);
-                ChatDraftAttachment { upload_id: a.upload_id, file_name: Some(a.file_name), mime_type: Some(a.mime_type) }
+                ChatDraftAttachment {
+                    id: String::new(),
+                    upload_id: a.upload_id,
+                    file_name: Some(a.file_name),
+                    mime_type: Some(a.mime_type),
+                }
             })
             .collect(),
     };

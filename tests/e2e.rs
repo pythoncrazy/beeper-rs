@@ -715,9 +715,9 @@ async fn lifecycle() {
     assert_eq!(pager.request("PATCH", eric, Some(json!({ "isMuted": "yes", "title": "x" }))).await.0, StatusCode::BAD_REQUEST);
     assert_eq!(pager.request("GET", eric, None).await.1["title"], "Eric M", "a bad field changes nothing");
     let upload = pager.upload_asset_base64("a.png", "image/png", b"png").await;
-    let draft = json!({ "draft": { "text": "with file", "attachments": { upload["uploadID"].as_str().unwrap(): {} } } });
+    let draft = json!({ "draft": { "text": "with file", "attachments": { "att1": { "uploadID": upload["uploadID"] } } } });
     let (_, drafted) = pager.request("PATCH", eric, Some(draft)).await;
-    assert_eq!(drafted["draft"]["attachments"][upload["uploadID"].as_str().unwrap()]["fileName"], "a.png");
+    assert_eq!(drafted["draft"]["attachments"]["att1"]["fileName"], "a.png", "Desktop keys a draft attachment by its own ID");
     let (status, read) = pager.request("POST", &format!("{eric}/read"), None).await;
     assert_eq!((status, &read["id"], &read["unreadCount"]), (StatusCode::OK, &json!("!wa_eric:beeper.com"), &json!(0)));
     let remind = json!({ "reminder": { "remindAt": "2027-01-01T09:00:00Z" } });
