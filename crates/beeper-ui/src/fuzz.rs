@@ -1554,6 +1554,7 @@ fn threads_like_desktop() {
         for t in ["Thread", "4 replies", "Eric Migicovsky", "Also sent to the chat"] {
             assert!(sim.find(t).is_ok(), "the thread pane shows {t}");
         }
+        assert_eq!(sim.find("Thread").expect("the title").bounds().height, 18.0, "Desktop's 600 14/18 px title");
     }
     let in_thread = |m: UiMessage| UiMessage::InThread(Box::new(m));
     assert!(simulator(app.view_main()).find("Also send to chat").is_err(), "an empty composer hides the toggle");
