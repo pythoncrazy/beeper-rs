@@ -738,7 +738,10 @@ fn menu_item<'a>(
     // Desktop's chevron is 1em, in the color of the row's text.
     let aside = match hotkey == SUBMENU {
         true => ic(icon::CHEVRON, rem(13.0)).into(),
-        false => menu_keys::hotkey(txt(hotkey, 13.0).line_height(Pixels(rem(MENU_LINE))), Color { a: 0.5, ..p.strong }),
+        // `.menu-item .hotkey` has tabular figures.
+        false => {
+            menu_keys::hotkey(t(hotkey, 13.0, tabular(Weight::Normal)).line_height(Pixels(rem(MENU_LINE))), Color { a: 0.5, ..p.strong })
+        }
     };
     let line = row![].push(lead).push(txt(label, 13.0).line_height(Pixels(rem(MENU_LINE)))).push(Space::new().width(Fill)).push(aside);
     menu_line(p, line, msg)
@@ -948,9 +951,10 @@ fn count_badge<'a>(c: &Chat, bg: Color, fg: Color, h: f32) -> El<'a> {
 /// Desktop's unread counts (`.unreadCount`, `.activityIndicator`, `.pillCount`): `h` high and at least as wide, with
 /// 4 px sides, the 12 px AtSign of mentions 2 px before the count, and tabular figures.
 fn count_pill<'a>(n: String, mention: bool, (bg, fg): (Color, Color), h: f32) -> El<'a> {
-    let w = (crate::style::tabular_width(&n, 10.0, Weight::Semibold) + if mention { 14.0 } else { 0.0 } + 8.0).max(h);
+    let face = tabular(Weight::Semibold);
+    let w = (text_width(&n, 10.0, face) + if mention { 14.0 } else { 0.0 } + 8.0).max(h);
     let at = mention.then(|| ic(icon::AT_SIGN, 10.0).color(fg));
-    let body = row![].push(at).push(semi(n, 10.0).color(fg)).spacing(2).align_y(Center);
+    let body = row![].push(at).push(t(n, 10.0, face).color(fg)).spacing(2).align_y(Center);
     container(body).center_x(w).center_y(h).style(fill_box(bg, h / 2.0)).into()
 }
 

@@ -391,8 +391,8 @@ impl BeeperGuiApp {
         };
         let action = self.tip(icon_btn(act, UiMessage::Record(msg)).into(), label, vec![], tooltip::Position::Top);
         let middle = container(middle).padding([0, 6]).width(Fill);
-        // `.AudioBar-module__recorder` is 12 px.
-        let time = crate::style::fixed(time, 12.0, iced::font::Weight::Normal).color(fg);
+        // `.AudioBar-module__recorder` is 12 px, and its time has tabular figures.
+        let time = crate::style::fixed(time, 12.0, tabular(iced::font::Weight::Normal)).color(fg);
         let bar = Row::new().push(lead).push(middle).push(time).push(action);
         let edge = if paused { rest } else { ring };
         let bar = container(bar.spacing(8).align_y(Center))

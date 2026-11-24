@@ -302,16 +302,44 @@ impl Face for Font {
 /// and `0.25 / size` on a [`fixed`] one. iced's `Font` has no letter spacing, so it goes in the family name,
 /// `Name@em`, which the vendored iced_graphics reads.
 pub fn spaced(face: impl Face, em: f32) -> Font {
-    thread_local!(static NAMES: RefCell<HashMap<(&'static str, u32), &'static str>> = RefCell::default());
-    let font = face.font();
-    let Family::Name(name) = font.family else { panic!("letter spacing for a generic font family") };
-    let name = name.split_once('@').map_or(name, |(name, _)| name);
-    let name = if em == 0.0 {
-        name
-    } else {
-        NAMES.with(|n| *n.borrow_mut().entry((name, em.to_bits())).or_insert_with(|| format!("{name}@{em}").leak()))
-    };
-    Font { family: Family::Name(name), ..font }
+    renamed(face.font(), ("@", em.to_bits()), |name| {
+        let name = name.split_once('@').map_or(name, |(name, _)| name);
+        if em == 0.0 {
+            name.into()
+        } else {
+            format!("{name}@{em}")
+        }
+    })
+}
+
+/// `face` with CSS `font-variant-numeric: tabular-nums`, Inter's `tnum` figures, which are all as wide: the family
+/// name gets `+tnum`, which the vendored iced_graphics reads.
+pub fn tabular(face: impl Face) -> Font {
+    with_part(face, "+tnum")
+}
+
+/// `face` for a text editor whose lines are centered (CSS `text-align: center`): the family name gets `#center`,
+/// which the vendored iced_graphics reads.
+pub fn centered(face: impl Face) -> Font {
+    with_part(face, "#center")
+}
+
+/// `face` with `part` in its family name, before its letter spacing.
+fn with_part(face: impl Face, part: &'static str) -> Font {
+    renamed(face.font(), (part, 0), |name| match name.split_once('@') {
+        _ if name.contains(part) => name.into(),
+        Some((name, em)) => format!("{name}{part}@{em}"),
+        None => format!("{name}{part}"),
+    })
+}
+
+/// `font` with the family name that `name` makes of its own, made once for each name and `key`.
+fn renamed(font: Font, key: (&'static str, u32), name: impl FnOnce(&str) -> String) -> Font {
+    type Names = HashMap<(&'static str, &'static str, u32), &'static str>;
+    thread_local!(static NAMES: RefCell<Names> = RefCell::default());
+    let Family::Name(old) = font.family else { panic!("a generic font family has no name for letter spacing or features") };
+    let new = NAMES.with(|n| *n.borrow_mut().entry((old, key.0, key.1)).or_insert_with(|| name(old).leak()));
+    Font { family: Family::Name(new), ..font }
 }
 
 /// The letter spacing of a [`spaced`] font in em, or 0.
@@ -519,14 +547,6 @@ pub fn line_count(s: &str, max: f32, size: f32) -> usize {
 
 pub fn text_width(s: &str, size: f32, w: impl Face) -> f32 {
     glyphs(s, rem(size), w.font()).0
-}
-
-/// The width of `s` with `font-variant-numeric: tabular-nums`, which iced cannot select: Inter's tabular figures are
-/// 0.672em wide.
-pub fn tabular_width(s: &str, size: f32, w: impl Face) -> f32 {
-    let figures = s.chars().filter(char::is_ascii_digit).count();
-    let rest: String = s.chars().filter(|c| !c.is_ascii_digit()).collect();
-    figures as f32 * rem(size) * (0.672 + spacing(w.font())) + text_width(&rest, size, w)
 }
 
 fn ell_line(s: &str, max: f32, size: f32, font: Font) -> String {
@@ -1701,5 +1721,39 @@ mod tests {
         let letters = "abcdefghijklmnopqrstuvwxyz";
         assert_eq!(ell_line(letters, 202.0, 20.0, spaced(Weight::Normal, 0.5)), "abcdefghi…");
         assert_eq!(ell_line(letters, 200.0, 20.0, spaced(Weight::Normal, 0.5)), "abcdefgh…");
+    }
+
+    /// A tabular font has Inter's `tnum` figures, as wide as Desktop's `font-variant-numeric: tabular-nums` makes
+    /// them, in the measures and in iced's paragraphs alike: in Desktop 4.3.308 "11:11 PM" at 11 px is 51.391 px
+    /// wide with them and 43.328 px without, and the `GlobalAudioControls` time "1:05 / 3:20" (0.25 px of spacing
+    /// too) is 61.672 px. The renderer draws the tabular glyphs.
+    #[test]
+    fn tabular_figures_are_as_wide_as_in_chromium() {
+        use iced::advanced::text::{self, Paragraph as _};
+        let s = "11:11 PM";
+        let (plain, tab) = (fixed_width(s, 11.0, Weight::Normal), fixed_width(s, 11.0, tabular(Weight::Normal)));
+        assert!((plain - 43.328).abs() < 0.05 && (tab - 51.391).abs() < 0.05, "{plain} {tab}");
+        let time = fixed_width("1:05 / 3:20", 11.0, tabular(spaced(Weight::Normal, 0.25 / 11.0)));
+        assert!((time - 61.672).abs() < 0.05, "{time}");
+        ensure_fonts_loaded();
+        let paragraph = iced::advanced::graphics::text::Paragraph::with_text(text::Text {
+            content: s,
+            bounds: iced::Size::INFINITE,
+            size: 11.into(),
+            line_height: text::LineHeight::default(),
+            font: tabular(Weight::Normal),
+            align_x: text::Alignment::Default,
+            align_y: iced::alignment::Vertical::Top,
+            shaping: text::Shaping::Advanced,
+            wrapping: text::Wrapping::None,
+        });
+        assert_eq!(paragraph.min_width(), tab);
+        // The span of the ink of "1111" at 20 px.
+        let ink = |font: Font| {
+            let shot = crate::focus::tests::shot(text("1111").size(20).font(font).into(), iced::Size::new(120.0, 30.0), "tnum");
+            let dark: Vec<u32> = shot.enumerate_pixels().filter(|(_, _, p)| p[0] < 128).map(|(x, _, _)| x).collect();
+            dark.iter().max().unwrap() - dark.iter().min().unwrap()
+        };
+        assert!(ink(tabular(Weight::Normal)) > ink(fw(Weight::Normal)) + 10, "tabular ones are farther apart");
     }
 }

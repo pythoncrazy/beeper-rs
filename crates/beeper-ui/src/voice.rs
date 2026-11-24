@@ -469,9 +469,11 @@ impl BeeperGuiApp {
         let time = pos.map_or(total.clone(), |pos| format!("{}/{total}", clock(pos)));
         let rate = format!("{}x", self.audio.rate);
         let rate_w = ready.map_or(0.0, |_| 8.0 + text_width(&rate, 11.0, Weight::Semibold) + 8.0);
+        // `.audio-player .audio-time` has tabular figures, and the message's time does not.
+        let face = tabular(Weight::Normal);
         let ts_w = ts.as_ref().map_or(0.0, |(t, _)| text_width(t, 11.0, Weight::Normal));
         let stamp = |(t, c): (String, Color)| txt(t, 11.0).color(c);
-        let contents = 20.0 + 8.0 + WAVE_W + 8.0 + text_width(&total, 11.0, Weight::Normal);
+        let contents = 20.0 + 8.0 + WAVE_W + 8.0 + text_width(&total, 11.0, face);
         // Desktop's `transcribed-message`: the transcript in quotes, in the bubble text color, at most `QUOTE_W` wide.
         // Over `QUOTE_LINES` lines, it is clamped and "Show more" shows all of it. The time floats after the text,
         // else it goes beside "Show more". It is `stale` at half opacity while a new transcription is in flight.
@@ -503,8 +505,8 @@ impl BeeperGuiApp {
             }
         };
         let ts = ts.filter(|_| quote.is_none()).map(stamp);
-        let wave_w = (WAVE_W + inner - contents - ts.as_ref().map_or(0.0, |_| 8.0 + ts_w) + text_width(&total, 11.0, Weight::Normal)
-            - text_width(&time, 11.0, Weight::Normal)
+        let wave_w = (WAVE_W + inner - contents - ts.as_ref().map_or(0.0, |_| 8.0 + ts_w) + text_width(&total, 11.0, face)
+            - text_width(&time, 11.0, face)
             - rate_w)
             .max(0.0);
         let toggle = clip.map(|_| UiMessage::Voice(Msg::Toggle(m.chat_id.clone(), m.id.clone(), url.clone())));
@@ -521,7 +523,7 @@ impl BeeperGuiApp {
                 .style(btn_style([fg.scale_alpha(0.2); 3], [Color::WHITE; 3], 2.0))
                 .on_press(UiMessage::Voice(Msg::Menu))
         });
-        let line = row![play, wave, txt(time, 11.0).color(fg)].push(speed).push(ts);
+        let line = row![play, wave, crate::style::t(time, 11.0, face).color(fg)].push(speed).push(ts);
         container(column![line.spacing(8).align_y(Center)].push(quote).spacing(6))
             .width(22.0 + inner)
             .padding([8, 11])
@@ -599,8 +601,8 @@ impl BeeperGuiApp {
         let buttons: El<'a> = if w > 101.0 { row![skip(2, false), play, skip(3, true)].align_y(Center).into() } else { play };
         let total = format!(" / {}", clock(clip.secs()));
         let elapsed = (w > 135.0).then(|| clock(pos) + if w > 205.0 { &total } else { "" });
-        // `.GlobalAudioControls-module__time` has a 0.25 px letter spacing.
-        let face = spaced(Weight::Normal, 0.25 / rem(11.0));
+        // `.GlobalAudioControls-module__time` has tabular figures and a 0.25 px letter spacing.
+        let face = tabular(spaced(Weight::Normal, 0.25 / rem(11.0)));
         let time_w = 4.0 + elapsed.as_ref().map_or(0.0, |e| text_width(e, 11.0, face) + 8.0) + 10.0;
         let elapsed = elapsed.map(|e| crate::style::t(e, 11.0, face).color(p.strong));
         let close = icon_btn(4, 10.0, p.strong, Some(UiMessage::Voice(Msg::Close)));

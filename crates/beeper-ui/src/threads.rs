@@ -435,7 +435,8 @@ impl BeeperGuiApp {
 /// The unread count of a thread on an accent pill, with an "@" when a reply mentions the user.
 fn thread_badge<'a>(accent: Color, unread: usize, at: usize) -> Option<El<'a>> {
     let mark = (at > 0).then(|| semi("@", 10.0).color(Color::WHITE));
-    let count = semi(unread.to_string(), 10.0).color(Color::WHITE);
+    // `.ThreadRepliesButton-module__badge` has tabular figures.
+    let count = t(unread.to_string(), 10.0, tabular(Weight::Semibold)).color(Color::WHITE);
     let pill = row![].push(mark).push(count).spacing(2).align_y(Center);
     (unread > 0).then(|| container(pill).center_y(16).padding([0, 5]).style(fill_box(accent, 16.0)).into())
 }

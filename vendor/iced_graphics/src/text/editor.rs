@@ -627,6 +627,13 @@ impl editor::Editor for Editor {
                 new_highlighter.change_line(topmost_line_changed);
             }
 
+            // beeper-rs: a `#center` font centers every line, also the lines that edits make.
+            if text::centered(new_font) {
+                for line in buffer_mut_from_editor(&mut internal.editor).lines.iter_mut() {
+                    let _ = line.set_align(Some(cosmic_text::Align::Center));
+                }
+            }
+
             internal.editor.shape_as_needed(font_system.raw(), false);
         });
     }

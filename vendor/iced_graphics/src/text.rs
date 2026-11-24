@@ -257,23 +257,40 @@ pub fn align(
 
 /// Returns the attributes of the given [`Font`].
 ///
-/// beeper-rs: a family name `Name@em` is the family `Name` with a letter spacing of `em` (CSS `letter-spacing`),
-/// which a `Font` has no field for. The name is part of the font's equality and hash, so the paragraph, text and
-/// shaping caches keep the spacings apart.
+/// beeper-rs: a family name `Name` followed by `+tag`, `@em` and `#center` parts, like `Inter+tnum@0.02`, is the
+/// family `Name` with the OpenType feature `tag` on (CSS `font-variant-numeric: tabular-nums` is `+tnum`) and a
+/// letter spacing of `em` (CSS `letter-spacing`), which a `Font` has no fields for; `#center` centers the lines of
+/// an `Editor` (CSS `text-align: center` of a `textarea`, see [`centered`]). The name is part of the font's
+/// equality and hash, so the paragraph, text and shaping caches keep them apart.
 pub fn to_attributes(font: Font) -> cosmic_text::Attrs<'static> {
-    let (family, spacing) = match font.family {
-        font::Family::Name(name) => match name.split_once('@') {
-            Some((name, em)) => (font::Family::Name(name), em.parse().ok()),
-            None => (font.family, None),
-        },
-        family => (family, None),
-    };
-    let attrs = cosmic_text::Attrs::new()
-        .family(to_family(family))
+    let mut attrs = cosmic_text::Attrs::new()
         .weight(to_weight(font.weight))
         .stretch(to_stretch(font.stretch))
         .style(to_style(font.style));
-    cosmic_text::Attrs { letter_spacing_opt: spacing.map(cosmic_text::LetterSpacing), ..attrs }
+    let font::Family::Name(name) = font.family else {
+        return attrs.family(to_family(font.family));
+    };
+    let (name, mut rest) = name.split_at(name.find(MARKERS).unwrap_or(name.len()));
+    while let Some(marker) = rest.chars().next() {
+        let (part, next) = rest[1..].split_at(rest[1..].find(MARKERS).unwrap_or(rest.len() - 1));
+        match (marker, part.as_bytes()) {
+            ('+', &[a, b, c, d]) => {
+                let _ = attrs.font_features.enable(cosmic_text::FeatureTag::new(&[a, b, c, d]));
+            }
+            ('@', _) => attrs.letter_spacing_opt = part.parse().ok().map(cosmic_text::LetterSpacing),
+            _ => {}
+        }
+        rest = next;
+    }
+    attrs.family(cosmic_text::Family::Name(name))
+}
+
+/// The marks of the parts of a family name that [`to_attributes`] reads.
+const MARKERS: [char; 3] = ['+', '@', '#'];
+
+/// beeper-rs: whether an `Editor` of `font` centers its lines: its family name has a `#center` part.
+pub fn centered(font: Font) -> bool {
+    matches!(font.family, font::Family::Name(name) if name.contains("#center"))
 }
 
 fn to_family(family: font::Family) -> cosmic_text::Family<'static> {
