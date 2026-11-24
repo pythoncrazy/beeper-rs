@@ -168,8 +168,8 @@ impl Cache {
 
                 let mut rgba = img.take();
 
-                if let Some(color) = color {
-                    rgba.chunks_exact_mut(4).for_each(|rgba| {
+                match color {
+                    Some(color) => rgba.chunks_exact_mut(4).for_each(|rgba| {
                         if rgba[3] > 0 {
                             rgba[0] = color[0];
                             rgba[1] = color[1];
@@ -180,7 +180,8 @@ impl Cache {
                                 + 127)
                                 / 255) as u8;
                         }
-                    });
+                    }),
+                    None => straighten(&mut rgba),
                 }
 
                 let allocation = atlas
@@ -230,5 +231,31 @@ impl std::fmt::Debug for Svg {
             Svg::Loaded(_) => write!(f, "Svg::Loaded"),
             Svg::NotFound => write!(f, "Svg::NotFound"),
         }
+    }
+}
+
+/// Turns the premultiplied pixels of a `tiny_skia::Pixmap` into the straight
+/// alpha that images blend with. Without this the antialiased edge of a shape
+/// is multiplied by its coverage twice: a white shape gets a dark rim.
+fn straighten(rgba: &mut [u8]) {
+    for px in rgba.chunks_exact_mut(4) {
+        let a = u32::from(px[3]);
+
+        if a > 0 && a < 255 {
+            for c in &mut px[..3] {
+                *c = ((u32::from(*c) * 255 + a / 2) / a).min(255) as u8;
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn premultiplied_edges_become_straight() {
+        // Half covered white, a clear pixel, an opaque color and 25% red.
+        let mut px = [128, 128, 128, 128, 0, 0, 0, 0, 10, 20, 30, 255, 64, 0, 0, 64];
+        super::straighten(&mut px);
+        assert_eq!(px, [255, 255, 255, 128, 0, 0, 0, 0, 10, 20, 30, 255, 255, 0, 0, 64]);
     }
 }
