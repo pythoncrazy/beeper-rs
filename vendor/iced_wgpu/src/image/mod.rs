@@ -225,8 +225,7 @@ impl Pipeline {
 pub struct State {
     layers: Vec<Layer>,
     prepare_layer: usize,
-    nearest_instances: Vec<Instance>,
-    linear_instances: Vec<Instance>,
+    instances: Vec<Instance>,
 }
 
 impl State {
@@ -256,8 +255,6 @@ impl State {
 
         let layer = &mut self.layers[self.prepare_layer];
 
-        let mut atlas: Option<Arc<wgpu::BindGroup>> = None;
-
         for image in images {
             match &image {
                 #[cfg(feature = "image")]
@@ -269,21 +266,14 @@ impl State {
                     if let Some((atlas_entry, bind_group)) = cache
                         .upload_raster(device, encoder, belt, &image.handle)
                     {
-                        match atlas.as_mut() {
-                            None => {
-                                atlas = Some(bind_group.clone());
-                            }
-                            Some(atlas) if atlas != bind_group => {
-                                layer.push(
-                                    atlas,
-                                    &self.nearest_instances,
-                                    &self.linear_instances,
-                                );
+                        let linear = image.filter_method
+                            == crate::core::image::FilterMethod::Linear;
 
-                                *atlas = Arc::clone(bind_group);
-                            }
-                            _ => {}
-                        }
+                        layer.runs.start(
+                            bind_group,
+                            linear,
+                            self.instances.len(),
+                        );
 
                         add_instances(
                             *bounds,
@@ -293,14 +283,7 @@ impl State {
                             image.opacity,
                             image.snap,
                             atlas_entry,
-                            match image.filter_method {
-                                crate::core::image::FilterMethod::Nearest => {
-                                    &mut self.nearest_instances
-                                }
-                                crate::core::image::FilterMethod::Linear => {
-                                    &mut self.linear_instances
-                                }
-                            },
+                            &mut self.instances,
                         );
                     }
                 }
@@ -324,21 +307,11 @@ impl State {
                             scale,
                         )
                     {
-                        match atlas.as_mut() {
-                            None => {
-                                atlas = Some(bind_group.clone());
-                            }
-                            Some(atlas) if atlas != bind_group => {
-                                layer.push(
-                                    atlas,
-                                    &self.nearest_instances,
-                                    &self.linear_instances,
-                                );
-
-                                *atlas = bind_group.clone();
-                            }
-                            _ => {}
-                        }
+                        layer.runs.start(
+                            bind_group,
+                            false,
+                            self.instances.len(),
+                        );
 
                         add_instances(
                             *bounds,
@@ -348,7 +321,7 @@ impl State {
                             svg.opacity,
                             true,
                             atlas_entry,
-                            &mut self.nearest_instances,
+                            &mut self.instances,
                         );
                     }
                 }
@@ -357,9 +330,7 @@ impl State {
             }
         }
 
-        if let Some(atlas) = &atlas {
-            layer.push(atlas, &self.nearest_instances, &self.linear_instances);
-        }
+        layer.runs.close(self.instances.len());
 
         layer.prepare(
             device,
@@ -367,13 +338,11 @@ impl State {
             belt,
             transformation,
             scale,
-            &self.nearest_instances,
-            &self.linear_instances,
+            &self.instances,
         );
 
         self.prepare_layer += 1;
-        self.nearest_instances.clear();
-        self.linear_instances.clear();
+        self.instances.clear();
     }
 
     pub fn render<'a>(
@@ -410,18 +379,39 @@ impl State {
 struct Layer {
     uniforms: wgpu::Buffer,
     instances: Buffer<Instance>,
-    nearest: Vec<Group>,
+    runs: Runs<Arc<wgpu::BindGroup>>,
     nearest_layout: wgpu::BindGroup,
-    nearest_total: usize,
-    linear: Vec<Group>,
     linear_layout: wgpu::BindGroup,
-    linear_total: usize,
 }
 
+/// The draws of a layer in the order of its images. One draw takes the images in a row that share an atlas and a
+/// sampler, so an image always draws over the ones before it, whatever their kinds: a vector image over a photo too.
 #[derive(Debug)]
-struct Group {
-    atlas: Arc<wgpu::BindGroup>,
-    instance_count: usize,
+struct Runs<A> {
+    /// The atlas, whether the sampler is the linear one, and the count of instances of each draw.
+    done: Vec<(A, bool, usize)>,
+    open: Option<(A, bool)>,
+    total: usize,
+}
+
+impl<A: Clone + PartialEq> Runs<A> {
+    /// The next image has this atlas and sampler, and `total` instances come before it.
+    fn start(&mut self, atlas: &A, linear: bool, total: usize) {
+        if self.open.as_ref().is_none_or(|(a, l)| a != atlas || *l != linear) {
+            self.close(total);
+            self.open = Some((atlas.clone(), linear));
+        }
+    }
+
+    /// Ends the open draw at `total` instances.
+    fn close(&mut self, total: usize) {
+        if let Some((atlas, linear)) = self.open.take()
+            && total > self.total
+        {
+            self.done.push((atlas, linear, total - self.total));
+            self.total = total;
+        }
+    }
 }
 
 impl Layer {
@@ -496,12 +486,13 @@ impl Layer {
         Self {
             uniforms,
             instances,
-            nearest: Vec::new(),
+            runs: Runs {
+                done: Vec::new(),
+                open: None,
+                total: 0,
+            },
             nearest_layout,
-            nearest_total: 0,
-            linear: Vec::new(),
             linear_layout,
-            linear_total: 0,
         }
     }
 
@@ -512,8 +503,7 @@ impl Layer {
         belt: &mut wgpu::util::StagingBelt,
         transformation: Transformation,
         scale_factor: f32,
-        nearest: &[Instance],
-        linear: &[Instance],
+        instances: &[Instance],
     ) {
         let uniforms = Uniforms {
             transform: transformation.into(),
@@ -532,47 +522,10 @@ impl Layer {
         )
         .copy_from_slice(bytes);
 
-        let _ = self
-            .instances
-            .resize(device, self.nearest_total + self.linear_total);
+        let _ = self.instances.resize(device, instances.len());
 
-        let mut offset = 0;
-
-        if !nearest.is_empty() {
-            offset += self.instances.write(device, encoder, belt, 0, nearest);
-        }
-
-        if !linear.is_empty() {
-            let _ = self.instances.write(device, encoder, belt, offset, linear);
-        }
-    }
-
-    fn push(
-        &mut self,
-        atlas: &Arc<wgpu::BindGroup>,
-        nearest: &[Instance],
-        linear: &[Instance],
-    ) {
-        let new_nearest = nearest.len() - self.nearest_total;
-
-        if new_nearest > 0 {
-            self.nearest.push(Group {
-                atlas: atlas.clone(),
-                instance_count: new_nearest,
-            });
-
-            self.nearest_total = nearest.len();
-        }
-
-        let new_linear = linear.len() - self.linear_total;
-
-        if new_linear > 0 {
-            self.linear.push(Group {
-                atlas: atlas.clone(),
-                instance_count: new_linear,
-            });
-
-            self.linear_total = linear.len();
+        if !instances.is_empty() {
+            let _ = self.instances.write(device, encoder, belt, 0, instances);
         }
     }
 
@@ -581,37 +534,24 @@ impl Layer {
 
         let mut offset = 0;
 
-        if !self.nearest.is_empty() {
-            render_pass.set_bind_group(0, &self.nearest_layout, &[]);
+        for (atlas, linear, count) in &self.runs.done {
+            let sampler = if *linear {
+                &self.linear_layout
+            } else {
+                &self.nearest_layout
+            };
 
-            for group in &self.nearest {
-                render_pass.set_bind_group(1, group.atlas.as_ref(), &[]);
-                render_pass
-                    .draw(0..6, offset..offset + group.instance_count as u32);
+            render_pass.set_bind_group(0, sampler, &[]);
+            render_pass.set_bind_group(1, atlas.as_ref(), &[]);
+            render_pass.draw(0..6, offset..offset + *count as u32);
 
-                offset += group.instance_count as u32;
-            }
-        }
-
-        if !self.linear.is_empty() {
-            render_pass.set_bind_group(0, &self.linear_layout, &[]);
-
-            for group in &self.linear {
-                render_pass.set_bind_group(1, group.atlas.as_ref(), &[]);
-                render_pass
-                    .draw(0..6, offset..offset + group.instance_count as u32);
-
-                offset += group.instance_count as u32;
-            }
+            offset += *count as u32;
         }
     }
 
     fn clear(&mut self) {
-        self.nearest.clear();
-        self.nearest_total = 0;
-
-        self.linear.clear();
-        self.linear_total = 0;
+        self.runs.done.clear();
+        self.runs.total = 0;
     }
 }
 
@@ -755,4 +695,19 @@ fn add_instance(
     };
 
     instances.push(instance);
+}
+
+#[cfg(test)]
+mod tests {
+    /// A badge that is a vector image over a photo, under another photo: the draws keep that order, and images in a
+    /// row with one atlas and sampler share a draw.
+    #[test]
+    fn images_draw_in_their_order() {
+        let mut runs = super::Runs { done: Vec::new(), open: None, total: 0 };
+        for (i, (atlas, linear)) in [(1, true), (1, true), (1, false), (1, true), (2, true)].into_iter().enumerate() {
+            runs.start(&atlas, linear, i);
+        }
+        runs.close(5);
+        assert_eq!(runs.done, [(1, true, 2), (1, false, 1), (1, true, 1), (2, true, 1)]);
+    }
 }
