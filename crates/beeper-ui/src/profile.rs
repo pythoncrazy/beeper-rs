@@ -596,10 +596,7 @@ const CURRENT_EMAIL: &str = "change-email-current";
 fn profile_input(p: &Palette) -> impl Fn(&Theme, text_input::Status) -> text_input::Style + use<> {
     let (edge, text, sub, accent) = (p.chip, p.strong, p.sub, p.accent);
     move |_, status| text_input::Style {
-        background: match status {
-            text_input::Status::Disabled => edge.into(),
-            _ => CLEAR.into(),
-        },
+        background: if matches!(status, text_input::Status::Disabled) { edge.into() } else { CLEAR.into() },
         border: iced::Border { color: edge, width: 1.0, radius: 8.0.into() },
         icon: sub,
         placeholder: sub,

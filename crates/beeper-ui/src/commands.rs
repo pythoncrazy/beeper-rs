@@ -638,10 +638,7 @@ impl BeeperGuiApp {
             v.push(cmd(e, tr("Export all loaded messages to .txt file"), Some(UiMessage::ChatList(chat_list::Msg::Export))));
             let a = c.account_id.as_str();
             let props = st.settings.account(a);
-            let user = match a {
-                "hungryserv" => st.me().full_name.clone().unwrap_or_default(),
-                _ => crate::account_user(st, a),
-            };
+            let user = if a == "hungryserv" { st.me().full_name.clone().unwrap_or_default() } else { crate::account_user(st, a) };
             let mute_title = if props.notifications { tr("Mute account: %s") } else { tr("Unmute account: %s") };
             let mute =
                 Some(UiMessage::Accounts(accounts::Msg::SetProps(a.into(), AccountProps { notifications: !props.notifications, ..props })));

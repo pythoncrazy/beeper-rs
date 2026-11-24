@@ -4534,9 +4534,7 @@ impl BeeperGuiApp {
             UiMessage::Voice(msg) => return self.voice(msg),
             UiMessage::Window(msg) => return self.windows(msg),
             UiMessage::Zoom(msg) => return self.set_zoom(msg),
-            UiMessage::SelectChat(_) if self.recorder.is_some() => {
-                self.status_banner = tr("Stop recording to switch chats").into();
-            }
+            UiMessage::SelectChat(_) if self.recorder.is_some() => self.status_banner = tr("Stop recording to switch chats").into(),
             // Desktop's composer `autofocus = "end"` when a chat opens.
             UiMessage::SelectChat(id) => {
                 self.select_chat(&id);
@@ -4615,9 +4613,7 @@ impl BeeperGuiApp {
             | UiMessage::DismissRecoveryReminder
             | UiMessage::DismissTrialOver) => return self.handle_sync(msg),
             UiMessage::OpenModal(m, from) => return self.open_modal(m, from),
-            UiMessage::OpenQuickLook(title, detail) => {
-                self.quick_look_target = Some((title, detail));
-            }
+            UiMessage::OpenQuickLook(title, detail) => self.quick_look_target = Some((title, detail)),
             UiMessage::CloseModals => return self.close_modals(),
             UiMessage::Noop => {}
             UiMessage::Relist => {
@@ -4764,9 +4760,7 @@ impl BeeperGuiApp {
     /// Opening links, mentions, spoilers and files.
     fn handle_links(&mut self, msg: UiMessage) -> Task<UiMessage> {
         match msg {
-            UiMessage::OpenUrl(url) if url.starts_with(SPOILER) => {
-                self.pane.spoilers.insert(url[SPOILER.len()..].to_string());
-            }
+            UiMessage::OpenUrl(url) if url.starts_with(SPOILER) => _ = self.pane.spoilers.insert(url[SPOILER.len()..].to_string()),
             // Desktop's `b2t`: a click on a mention opens its menu.
             UiMessage::OpenUrl(url) if url.starts_with(MENTION) => {
                 self.list.chat_menu = Some((format!("mention:{}", &url[MENTION.len()..]), self.cursor.get()));

@@ -347,10 +347,7 @@ impl BeeperGuiApp {
                         vec![delete(tr("Delete for Me"), false), delete(tr("Delete for Everyone"), true)],
                     ),
                 };
-                let title = match &chats[..] {
-                    [one] => trf("Delete %s", &[&one.combined_title()]),
-                    _ => tr("Delete Chats").into(),
-                };
+                let title = if let [one] = &chats[..] { trf("Delete %s", &[&one.combined_title()]) } else { tr("Delete Chats").into() };
                 (title, body.into(), actions)
             }
             ASK_LEAVE_CHAT => {

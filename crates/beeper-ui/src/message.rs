@@ -2960,11 +2960,7 @@ impl BeeperGuiApp {
         // Desktop's flyover buttons: a 20 px Material icon, drawn at its 1.2 scale, in 6 px of padding.
         let b = |c: char, msg: UiMessage, v: f32| -> El<'a> {
             let style = move |_: &Theme, s| button::Style {
-                text_color: match s {
-                    button::Status::Hovered => brightness(muted, 0.8),
-                    _ => muted,
-                }
-                .scale_alpha(v),
+                text_color: if matches!(s, button::Status::Hovered) { brightness(muted, 0.8) } else { muted }.scale_alpha(v),
                 ..Default::default()
             };
             let glyph = ic(c, 20.0 * 1.2 * (0.85 + 0.15 * v));

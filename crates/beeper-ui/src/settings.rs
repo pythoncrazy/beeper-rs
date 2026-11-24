@@ -2405,9 +2405,7 @@ impl BeeperGuiApp {
                     return Task::perform(beeper_core::matrix::set_global(c, kind, content), UiMessage::Pushed);
                 }
             }
-            Msg::SetQuickEmoji(slot, e) => {
-                self.patch_settings(|s| s.quick_reactions[usize::from(slot) - 1] = e);
-            }
+            Msg::SetQuickEmoji(slot, e) => self.patch_settings(|s| s.quick_reactions[usize::from(slot) - 1] = e),
             Msg::PickDownloads => {
                 let pick = portal::open_files(portal::PORTAL.into(), tr("Open").to_string(), portal::Pick::Folder);
                 return Task::perform(pick, |a0| UiMessage::Settings(Msg::DownloadsPicked(a0)));

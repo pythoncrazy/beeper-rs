@@ -1590,9 +1590,7 @@ impl BeeperGuiApp {
                 self.pane.att_focus = i.checked_sub(1);
                 self.pane.quick_look = None;
             }
-            Key::Named(Named::Space) => {
-                self.pane.quick_look = (self.pane.quick_look != Some(i)).then_some(i);
-            }
+            Key::Named(Named::Space) => self.pane.quick_look = (self.pane.quick_look != Some(i)).then_some(i),
             _ => {}
         }
         Task::none()
@@ -2046,9 +2044,7 @@ impl BeeperGuiApp {
                 self.hold_compose_target();
                 let old = self.pane.composer.text();
                 match (action, self.pane.emoticon.take().filter(|(after, ..)| *after == old)) {
-                    (Action::Edit(Edit::Backspace), Some((_, typed, at))) => {
-                        self.pane.composer = format::content(&typed, at..at);
-                    }
+                    (Action::Edit(Edit::Backspace), Some((_, typed, at))) => self.pane.composer = format::content(&typed, at..at),
                     (action, _) => {
                         let typed = matches!(action, Action::Edit(Edit::Insert(_)));
                         self.pane.composer.perform(action);

@@ -622,10 +622,7 @@ impl BeeperGuiApp {
         if place == Place::Carousel {
             return surface.into();
         }
-        let menu = match place {
-            Place::Pip => Msg::PipMenu(true),
-            _ => Msg::Menu(mid.into()),
-        };
+        let menu = if matches!(place, Place::Pip) { Msg::PipMenu(true) } else { Msg::Menu(mid.into()) };
         let surface = mouse_area(surface).on_right_press(UiMessage::Video(menu.clone()));
         let on = |glyph: &svg::Handle, msg: UiMessage| -> El<'a> { self.video_button(v, glyph, msg) };
         let skips = self.video_skips(v);

@@ -813,10 +813,7 @@ impl BeeperGuiApp {
                         Browser::Open | Browser::Closed if hidden || a.busy => para(tr("Authenticating...").into()),
                         browser => {
                             let text = trf("Click the button below to open the browser and begin authentication with %s.", &[&name]);
-                            let error = match browser {
-                                Browser::Failed(e) => Some(error_line(e)),
-                                _ => None,
-                            };
+                            let error = if let Browser::Failed(e) = browser { Some(error_line(e)) } else { None };
                             let open = auth_button(trf("Open %s Login", &[&name]), go(AddMsg::OpenBrowser));
                             column![para(text), open].push(error).spacing(16).align_x(Center).into()
                         }
