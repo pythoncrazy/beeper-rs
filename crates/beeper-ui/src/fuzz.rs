@@ -276,7 +276,7 @@ fn random_message(rng: &mut Rng, app: &BeeperGuiApp) -> (String, UiMessage) {
         37 => UiMessage::ChatList(chat_list::Msg::BeginSelecting(chat)),
         38 => UiMessage::ChatList(chat_list::Msg::ToggleSelected(chat)),
         39 => UiMessage::ChatList(chat_list::Msg::SelectionSet(flag, rng.coin())),
-        40 => UiMessage::CommandBar(commands::Msg::SearchRoom(text)),
+        40 => UiMessage::CommandBar(commands::Msg::Search(Some(text))),
         41 => UiMessage::Media(media_view::Msg::Open),
         42 => UiMessage::CloseModals,
         43 => UiMessage::Composer(composer::Msg::ToggleAttachMenu),
@@ -1087,6 +1087,31 @@ fn command_bar_opens_empty_like_desktop() {
     assert_eq!(app.command_palette_query, "", "a closed bar opens empty for the search of the chat");
 }
 
+/// Desktop's `showSearch` and `showInNormalMode`: Ctrl+K never closes the bar and searches the text of the commands;
+/// Ctrl+J closes the commands, and opens them empty in place of a search; Search: Room without an open chat searches
+/// all chats.
+#[test]
+fn command_bar_hotkeys_like_desktop() {
+    let mut app = demo_app("cmdbar-hotkeys");
+    let state = |app: &BeeperGuiApp| (app.show_command_palette, app.cmd_bar_commands_mode, app.command_palette_query.clone());
+    let run = |app: &mut BeeperGuiApp, h| drop(app.update(UiMessage::RunHotkey(h)));
+    run(&mut app, "Search");
+    run(&mut app, "Search");
+    assert_eq!(state(&app), (true, false, String::new()), "a second Ctrl+K keeps the search open");
+    let _ = app.update(UiMessage::CommandBar(commands::Msg::Query("lena".into())));
+    run(&mut app, "Command Bar");
+    assert_eq!(state(&app), (true, true, String::new()), "Ctrl+J opens the commands empty in place of the search");
+    let _ = app.update(UiMessage::CommandBar(commands::Msg::Query("mute".into())));
+    run(&mut app, "Search");
+    assert_eq!(state(&app), (true, false, "mute".into()), "Ctrl+K searches the text of the commands");
+    run(&mut app, "Command Bar");
+    run(&mut app, "Command Bar");
+    assert!(!app.show_command_palette, "Ctrl+J closes the commands");
+    app.pane.selected_chat_id = None;
+    run(&mut app, "Search: Room");
+    assert_eq!((app.show_command_palette, app.search_room.clone()), (true, None), "Ctrl+F without a chat searches all chats");
+}
+
 /// Desktop's `onSearchClosed` and `recentSearches`: a search with a text and filters that the bar closes on leads the
 /// empty bar as a recent search, with the count of its filters, and picking it restores the search in the open bar.
 /// Filters without a text stay for the next search.
@@ -1529,6 +1554,7 @@ fn threads_like_desktop() {
         for t in ["Thread", "4 replies", "Eric Migicovsky", "Also sent to the chat"] {
             assert!(sim.find(t).is_ok(), "the thread pane shows {t}");
         }
+        assert_eq!(sim.find("Thread").expect("the title").bounds().height, 18.0, "Desktop's 600 14/18 px title");
     }
     let in_thread = |m: UiMessage| UiMessage::InThread(Box::new(m));
     assert!(simulator(app.view_main()).find("Also send to chat").is_err(), "an empty composer hides the toggle");
@@ -4770,6 +4796,52 @@ fn the_menu_bar_shows_with_alt_like_desktop() {
     assert_eq!((app.menu_bar, app.sidebar_hidden), (None, !hidden), "the item runs and the menu bar hides");
 }
 
+/// Electron's roles in Desktop's menus on Linux: the Edit menu with its English labels and accelerators, File's
+/// "Close", and the Window menu, whose Zoom and Bring All to Front do nothing off macOS. Undo and Redo undo typing.
+#[test]
+fn menu_roles_like_electron() {
+    let mut app = demo_app("menu-roles");
+    let menu = |app: &BeeperGuiApp, title: &str| -> Vec<(String, String)> {
+        let menus = app.menus();
+        let items = menus.into_iter().find(|m| m.0 == title).expect("the menu").1;
+        items.into_iter().map(|i| i.map_or_else(Default::default, |(label, keys, _)| (label, keys))).collect()
+    };
+    let item = |l: &str, k: &str| (l.to_string(), k.to_string());
+    let rule = Default::default;
+    assert_eq!(
+        menu(&app, "Edit"),
+        [
+            item("Undo", "Ctrl+Z"),
+            item("Redo", "Ctrl+Shift+Z"),
+            rule(),
+            item("Cut", "Ctrl+X"),
+            item("Copy", "Ctrl+C"),
+            item("Paste", "Ctrl+V"),
+            item("Delete", ""),
+            rule(),
+            item("Select All", "Ctrl+A")
+        ]
+    );
+    assert_eq!(menu(&app, "Window"), [item("Zoom", ""), item("Minimize", "Ctrl+M"), item("Bring All to Front", "")]);
+    assert_eq!(menu(&app, "File")[3], item("Close", "Ctrl+W"));
+    let _ = app.update(UiMessage::SelectChat(NOTE_CHAT_ID.into()));
+    let _ = app.update(UiMessage::Composer(composer::Msg::Type("hello".into())));
+    let run = |app: &mut BeeperGuiApp, title: &str, label: &str| {
+        let items = app.menus().into_iter().find(|m| m.0 == title).expect("the menu").1;
+        let msg = items.into_iter().flatten().find(|i| i.0 == label).expect("the item").2;
+        let _ = app.update(UiMessage::MenuBar(menubar::Msg::Run(Box::new(msg))));
+    };
+    run(&mut app, "Edit", "Undo");
+    assert_eq!(app.pane.composer.text(), "", "Undo takes the typing back");
+    run(&mut app, "Edit", "Redo");
+    assert_eq!(app.pane.composer.text(), "hello", "and Redo puts it back");
+    run(&mut app, "Edit", "Delete");
+    assert_eq!(app.pane.composer.text(), "hello", "Delete at a caret does nothing");
+    run(&mut app, "Edit", "Select All");
+    run(&mut app, "Edit", "Delete");
+    assert_eq!(app.pane.composer.text(), "", "Delete deletes the selection");
+}
+
 /// Desktop's `activityTimestamp` and `isArchivedInList`: a draft moves its chat to the top, and out of the archive.
 #[test]
 fn drafts_move_chats_like_desktop() {
@@ -4922,6 +4994,22 @@ fn the_header_shows_typing_in_a_dm_like_desktop() {
     }
 }
 
+/// Desktop's `.thread-header-info`: 6 px above and below the 16 px name line, in a 1 px outline that CSS draws
+/// outside the box, so the pill shows 30 px tall.
+#[test]
+fn the_header_pill_like_desktop() {
+    let mut app = demo_app("header-pill");
+    let _ = app.update(UiMessage::SelectChat("!tg_rust:beeper.com".into()));
+    (app.dark, app.pal) = (true, crate::style::palette(true, None, 0));
+    let name = simulator(app.view_main()).find("Beeper Rust Core Team").expect("the name").bounds();
+    let shot = crate::message::tests::pixels(&mut simulator(app.view_main()));
+    // A column through the name, clear of the rounded ends and the avatar, at the scale of 2 of the shot.
+    let x = (2.0 * (name.x + 20.0)) as u32;
+    let around = (2.0 * (name.y - 20.0)) as u32..(2.0 * (name.y + 36.0)) as u32;
+    let card = app.pal.card.into_rgba8();
+    assert_eq!(around.filter(|&y| shot.get_pixel(x, y).0 != card).count(), 2 * 30);
+}
+
 #[test]
 fn deleted_and_encrypted_messages_look_like_desktop() {
     let note = "!note_self:beeper.com";
@@ -5042,27 +5130,74 @@ fn zoom_keys_like_desktop() {
     assert_eq!((app.zoom, crate::style::rem(16.0)), (1.1, 12.0), "the zoom keeps the root font");
 }
 
+/// Desktop's `v3` sheets (Label Settings, New Label, Edit Label, Chats, How It Works) open at their size times the zoom,
+/// and take their size at the new zoom when it changes (`followsZoom`), where the other windows keep their size.
+#[test]
+fn sheets_follow_the_zoom_like_desktop() {
+    use iced::futures::StreamExt;
+    let first = |task: Task<UiMessage>| {
+        let stream = iced_runtime::task::into_stream(task).expect("an action");
+        iced::futures::executor::block_on(stream.boxed().next()).expect("an action")
+    };
+    let mut app = demo_app("zoomed-sheets");
+    for _ in 0..5 {
+        let _ = app.update(UiMessage::Zoom(zoom::Msg::Step(1)));
+    }
+    assert_eq!(app.zoom, 1.5);
+    let open = first(app.update(UiMessage::Labels(labels::Msg::OpenSettings("lbl_work".into()))));
+    let iced_runtime::Action::Window(iced_runtime::window::Action::Open(sheet, s, _)) = open else { panic!("a window opens") };
+    // 341 by 563 at 150% is 512 by 845 screen pixels, like Desktop's `Math.round`.
+    assert_eq!(s.size, Size::new(512.0, 845.0) * (1.0 / 1.5));
+    assert_eq!(app.zoomed_sheets(), vec![(sheet, LABEL_SETTINGS_SIZE)]);
+    let follow = iced_runtime::task::into_stream(app.update(UiMessage::Zoom(zoom::Msg::Step(1)))).expect("actions");
+    let place = follow.filter_map(|a| async move {
+        match a {
+            iced_runtime::Action::Window(iced_runtime::window::Action::GetPosition(id, _)) => Some(id),
+            _ => None,
+        }
+    });
+    assert_eq!(iced::futures::executor::block_on(place.boxed().next()), Some(sheet), "the sheet resizes around its center");
+    let _ = app.update(UiMessage::Labels(labels::Msg::OpenCreate(Vec::new())));
+    let _ = app.update(UiMessage::Info(info::Msg::HowItWorks(true)));
+    assert_eq!(app.zoomed_sheets().len(), 3, "New Label and How It Works follow the zoom too");
+}
+
+/// The settings of the first window that `task` opens. The task waits for the window, so only its first one counts.
+pub(crate) fn opened_window(task: Task<UiMessage>) -> Option<window::Settings> {
+    use iced::futures::StreamExt;
+    let actions = iced_runtime::task::into_stream(task)?;
+    let open = actions.filter_map(|a| async move {
+        match a {
+            iced_runtime::Action::Window(iced_runtime::window::Action::Open(_, s, _)) => Some(s),
+            _ => None,
+        }
+    });
+    iced::futures::executor::block_on(open.boxed().next())
+}
+
+/// Electron gives the windows that Desktop's renderer opens its 330 by 400 minimum too: the 340 by 380 Account
+/// Nickname window is 400 px high and the 303 px wide Edit Labels window 330 px wide. Edit Labels, Edit Spaces and
+/// Merge Chats leave out `resizable`, so they resize down to it.
+#[test]
+fn small_windows_open_at_desktops_minimum_size() {
+    let mut app = demo_app("window-minimum");
+    let size = |s: window::Settings| (s.size, s.resizable, s.min_size);
+    let (_, nickname) = app.open_child(crate::nickname::NICKNAME_SIZE);
+    assert_eq!(opened_window(nickname).map(size), Some((Size::new(340.0, 400.0), false, None)));
+    let labels = app.update(UiMessage::Labels(labels::Msg::OpenEdit(NOTE_CHAT_ID.into())));
+    assert_eq!(opened_window(labels).map(size), Some((Size::new(330.0, 488.0), true, Some(windows::MIN_SIZE))));
+    let spaces = app.update(UiMessage::OpenEditSpaces);
+    assert_eq!(opened_window(spaces).map(size), Some((SPACES_SIZE, true, Some(windows::MIN_SIZE))));
+    let (_, poll) = app.open_child(Size::new(400.0, 620.0));
+    assert_eq!(opened_window(poll).map(size), Some((Size::new(400.0, 620.0), false, None)), "a bigger one keeps its size");
+}
+
 /// Desktop's windows open at their size in screen pixels whatever the zoom and the font size, and iced opens a
 /// window at its size times the scale factor.
 #[test]
 fn windows_open_at_their_size_at_any_zoom_like_desktop() {
-    use iced::futures::StreamExt;
     use iced::keyboard::{Key, Modifiers};
-    let opened = |app: &mut BeeperGuiApp| {
-        let task = app.open_settings(SettingsTab::General);
-        let actions = iced_runtime::task::into_stream(task).expect("a window opens");
-        iced::futures::executor::block_on(
-            actions
-                .filter_map(|a| async move {
-                    match a {
-                        iced_runtime::Action::Window(iced_runtime::window::Action::Open(_, s, _)) => Some(s.size),
-                        _ => None,
-                    }
-                })
-                .boxed()
-                .next(),
-        )
-    };
+    let opened = |app: &mut BeeperGuiApp| opened_window(app.open_settings(SettingsTab::General)).map(|s| s.size);
     let mut app = demo_app("zoomed-windows");
     let _ = app.update(UiMessage::Settings(settings::Msg::SetPref("fontSize", 8)));
     assert_eq!(opened(&mut app), Some(SETTINGS_SIZE), "the font size 17 does not zoom the window");
@@ -9533,7 +9668,8 @@ fn wayland_hides_windows_by_closing_them_like_electron() {
     let (done, _) = run_window_actions(show, Size::new(900.0, 640.0), &[main]);
     let open: Vec<_> = done.iter().filter(|a| a.starts_with("open")).collect();
     assert_eq!(open.len(), 1, "only the main window shows: {done:?}");
-    assert!(open[0].starts_with(&format!("open {main:?} 1200x800 true")), "{done:?}");
+    // Its 800 px have the title bar that winit adds, and the chat window keeps the page's size that it had.
+    assert!(open[0].starts_with(&format!("open {main:?} 1200x{} true", 800.0 - app.title_bar())), "{done:?}");
     assert!(!app.hidden && app.unmapped.iter().all(|w| w.0 != main));
 
     // The tray's click shows all windows: the chat window opens again at the size that it had.
@@ -9666,6 +9802,64 @@ fn main_window_keeps_its_state_like_desktop() {
     let _ = app.update(UiMessage::SelectChat(beeper_core::store::NOTE_CHAT_ID.into()));
     let title = app.store.read().chats.iter().find(|c| c.id == beeper_core::store::NOTE_CHAT_ID).unwrap().title.clone();
     assert_eq!(app.title(main), format!("Beeper | {title}"));
+}
+
+/// Desktop keeps only the size and the maximized state of the chat and Media windows (`sizeOnly`): a chat window opens
+/// 20 px from the main window and the Media window over its middle, maximized when the last one was.
+#[test]
+fn chat_and_media_windows_keep_their_size_only_like_desktop() {
+    use iced::futures::StreamExt;
+    let opened = |task: Task<UiMessage>| {
+        let open = iced_runtime::task::into_stream(task).expect("a window opens").filter_map(|a| async move {
+            match a {
+                iced_runtime::Action::Window(iced_runtime::window::Action::Open(_, s, _)) => Some(s),
+                _ => None,
+            }
+        });
+        iced::futures::executor::block_on(open.boxed().next()).expect("a window opens")
+    };
+    let mut app = demo_app("size-only");
+    let path = app.store.read().config.data_dir.join("window.json");
+    write_window_state(&path, "media-viewer", false, Size::new(800.0, 600.0), Some(Point::new(10.0, 20.0)));
+    let media = opened(app.update(UiMessage::Media(media_view::Msg::Open)));
+    assert_eq!((media.size, media.maximized), (Size::new(800.0, 600.0), false));
+    assert!(matches!(media.position, window::Position::Default), "the saved place does not count");
+    write_window_state(&path, windows::POP_OUT, false, Size::new(640.0, 520.0), Some(Point::new(5.0, 5.0)));
+    write_window_state(&path, windows::POP_OUT, true, Size::new(1440.0, 900.0), None);
+    let chat = opened(app.update(UiMessage::Window(windows::Msg::OpenChat(NOTE_CHAT_ID.into()))));
+    assert_eq!((chat.size, chat.maximized), (Size::new(640.0, 520.0), true), "the last chat window was maximized");
+    assert!(matches!(chat.position, window::Position::Default));
+}
+
+/// Electron draws its title bar inside its window on Wayland, so a window of Desktop's 1200 by 800 opens with 800 px
+/// in all, the title bar that winit adds on top included, and Desktop's minimum height counts it too. On X11 the
+/// window manager's title bar is outside the window for both.
+#[test]
+fn windows_count_the_title_bar_on_wayland_like_electron() {
+    use beeper_core::platform::DisplayServerKind;
+    use iced::futures::StreamExt;
+    let opened = |app: &mut BeeperGuiApp, settings: window::Settings| {
+        let stream = iced_runtime::task::into_stream(app.open_window(settings).1.discard::<UiMessage>()).expect("a window opens");
+        let open = stream.filter_map(|a| async move {
+            match a {
+                iced_runtime::Action::Window(iced_runtime::window::Action::Open(_, s, _)) => Some((s.size, s.min_size)),
+                _ => None,
+            }
+        });
+        iced::futures::executor::block_on(open.boxed().next()).expect("a window opens")
+    };
+    let mut app = demo_app("title-bar");
+    app.display_server = DisplayServerKind::X11;
+    assert_eq!(app.title_bar(), 0.0);
+    let main = BeeperGuiApp::window_settings(MAIN_SIZE);
+    assert_eq!(opened(&mut app, main.clone()), (MAIN_SIZE, Some(Size::new(330.0, 400.0))));
+    app.display_server = DisplayServerKind::Wayland;
+    let bar = app.title_bar();
+    assert!(bar > 0.0, "winit draws a title bar on Wayland");
+    let wayland = (Size::new(1200.0, 800.0 - bar), Some(Size::new(330.0, 400.0 - bar)));
+    assert_eq!(opened(&mut app, main.clone()), wayland, "the title bar is part of the 800 px");
+    let pip = window::Settings { decorations: false, min_size: None, ..main };
+    assert_eq!(opened(&mut app, pip), (MAIN_SIZE, None), "a window without decorations has no title bar");
 }
 
 /// A window that opens maximized maximizes again once the window manager places it, like Desktop's `deferMaximize`:

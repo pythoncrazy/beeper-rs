@@ -258,6 +258,7 @@ pub enum Msg {
 
 impl BeeperGuiApp {
     pub(crate) fn set_zoom(&mut self, msg: Msg) -> Task<UiMessage> {
+        let zoom = self.zoom;
         match msg {
             Msg::Step(step) => self.patch_settings(|s| {
                 s.zoom_percent = if step == 0 { 100 } else { s.zoom_percent.saturating_add_signed(10 * i16::from(step)).clamp(40, 300) };
@@ -268,6 +269,7 @@ impl BeeperGuiApp {
                 self.patch_settings(|s| s.zoom_percent = (100.0 + 10.0 * level) as u16);
             }
         }
-        self.settle()
+        let follow = if self.zoom == zoom { Task::none() } else { self.follow_zoom() };
+        Task::batch([follow, self.settle()])
     }
 }

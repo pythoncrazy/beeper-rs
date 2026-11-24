@@ -60,7 +60,7 @@ pub(crate) fn metrics() -> Metrics {
 }
 
 /// The title bar's height in logical points.
-pub(crate) fn header_size() -> u32 {
+pub fn header_size() -> u32 {
     metrics().header
 }
 

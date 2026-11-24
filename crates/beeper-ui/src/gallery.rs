@@ -15,9 +15,6 @@ const GAP_MS: i64 = 60_000;
 const WIDTH: f32 = 280.0;
 const GAP: f32 = 6.0;
 const RADIUS: f32 = 14.0;
-/// The scale of a baked tile, so that it stays sharp on a 2x screen.
-pub(crate) const BAKE: f32 = 2.0;
-
 /// How a baked tile looks: a gallery tile with its ring (selected or not), or an inline image cropped like Desktop's
 /// `object-fit: cover` in the 17 px corners of a bubble.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -137,12 +134,12 @@ fn turned((w, h): (f32, f32), turn: f32) -> (f32, f32) {
 /// but it cuts and rounds an image only along the screen axes, so the tile has its corners in its pixels.
 fn bake(src: &image::Handle, (w, h): (u32, u32), (border, thick): (Color, f32), radius: f32, scale: f32) -> image::Handle {
     let image::Handle::Rgba { width, height, pixels, .. } = src else { unreachable!("decoded media is RGBA") };
-    let full = ::image::RgbaImage::from_raw(*width, *height, pixels.to_vec()).expect("RGBA pixels fill the image");
+    let full = ::image::ImageBuffer::<::image::Rgba<u8>, _>::from_raw(*width, *height, &pixels[..]).expect("RGBA pixels fill the image");
     let (tw, th) = (((w as f32 * scale) as u32).max(1), ((h as f32 * scale) as u32).max(1));
     let k = (*width as f32 / tw as f32).min(*height as f32 / th as f32);
     let (cw, ch) = (((tw as f32 * k) as u32).max(1), ((th as f32 * k) as u32).max(1));
-    let cut = ::image::imageops::crop_imm(&full, (width - cw) / 2, (height - ch) / 2, cw, ch).to_image();
-    let mut out = ::image::imageops::resize(&cut, tw, th, ::image::imageops::FilterType::Triangle);
+    let cut = ::image::imageops::crop_imm(&full, (width - cw) / 2, (height - ch) / 2, cw, ch);
+    let mut out = ::image::imageops::resize(&*cut, tw, th, ::image::imageops::FilterType::Triangle);
     let (r, half) = (radius * scale, [tw as f32 / 2.0, th as f32 / 2.0]);
     let edge = border.into_rgba8();
     for (x, y, px) in out.enumerate_pixels_mut() {
@@ -158,14 +155,14 @@ fn bake(src: &image::Handle, (w, h): (u32, u32), (border, thick): (Color, f32), 
     image::Handle::from_rgba(tw, th, out.into_raw())
 }
 
-/// The frames of an animation cut like `bake` cuts an inline image, at `BAKE` times the size of the box or the size
+/// The frames of an animation cut like `bake` cuts an inline image, at `scale` times the size of the box or the size
 /// of the frames if they are smaller, so that the cut takes no more memory than the frames.
-pub(crate) fn cut_frames(frames: &Frames, (w, h): (u32, u32)) -> Frames {
+pub(crate) fn cut_frames(frames: &Frames, (w, h): (u32, u32), scale: f32) -> Frames {
     let (fw, fh) = match &frames[0].0 {
         image::Handle::Rgba { width, height, .. } => (*width as f32, *height as f32),
         _ => unreachable!("decoded media is RGBA"),
     };
-    let scale = BAKE.min(fw / w.max(1) as f32).min(fh / h.max(1) as f32).max(0.1);
+    let scale = scale.min(fw / w.max(1) as f32).min(fh / h.max(1) as f32).max(0.1);
     frames.iter().map(|(f, ms)| (bake(f, (w, h), (Color::TRANSPARENT, 0.0), 17.0, scale), *ms)).collect()
 }
 
@@ -188,16 +185,6 @@ pub(crate) fn dim_frames(frames: &Frames, k: f32) -> Frames {
 pub(crate) enum Cut {
     Cover(u32, u32),
     Dim,
-}
-
-/// The key of the cut frames of an animation in `BeeperGuiApp::cuts`.
-fn cut_key(url: &str, cut: Cut) -> String {
-    format!("{cut:?} {url}")
-}
-
-/// The key of a baked tile in `BeeperGuiApp::tiles`.
-fn key(url: &str, (w, h): (u32, u32), dark: bool, look: Look) -> String {
-    format!("{w}x{h}{}{look:?} {url}", u8::from(dark))
 }
 
 /// Desktop's `.duration` and `.more` labels: white text on a dark pill.
@@ -297,11 +284,30 @@ impl BeeperGuiApp {
         crate::popover::popover(Space::new(), self.reaction_list(chat, &ms), true).into()
     }
 
+    /// The device pixels of a layout pixel, at most 4. The tiles and the cuts bake at this scale, so that the renderer
+    /// draws them pixel for pixel: Chromium's decode to scale.
+    pub(crate) fn bake_scale(&self) -> f32 {
+        (self.screen_scale * self.zoom * self.text_scale).min(4.0)
+    }
+
+    /// The key of a baked tile in `tiles`: it bakes again when the theme or the scale changes.
+    fn tile_key(&self, url: &str, (w, h): (u32, u32), look: Look) -> String {
+        format!("{w}x{h}@{}{}{look:?} {url}", self.bake_scale(), u8::from(self.dark))
+    }
+
+    /// The key of the cut frames of an animation in `cuts`: a cover cut is cut again when the scale changes.
+    pub(crate) fn cut_key(&self, url: &str, cut: Cut) -> String {
+        match cut {
+            Cut::Cover(..) => format!("{cut:?}@{} {url}", self.bake_scale()),
+            Cut::Dim => format!("{cut:?} {url}"),
+        }
+    }
+
     /// The baked tile of `url` once its media loaded, or `None` while a load or a bake runs. While the selected or
     /// the unselected tile bakes after a click, the other one shows.
     fn tile(&self, url: &str, size: (u32, u32), selected: bool) -> Option<&image::Handle> {
         let tile = |selected| self.baked(url, size, Look::Tile(selected));
-        tile(selected).or_else(|| self.tiles.get(&key(url, size, self.dark, Look::Tile(!selected)))?.as_ref())
+        tile(selected).or_else(|| self.tiles.get(&self.tile_key(url, size, Look::Tile(!selected)))?.as_ref())
     }
 
     /// An inline image cut to `size` like Desktop's `object-fit: cover`, once baked.
@@ -317,7 +323,7 @@ impl BeeperGuiApp {
     /// The baked tile, or `None` while it bakes: a view asks for it.
     fn baked(&self, url: &str, size: (u32, u32), look: Look) -> Option<&image::Handle> {
         let Some(Ok(_)) = self.media_at(url) else { return None };
-        let baked = self.tiles.get(&key(url, size, self.dark, look));
+        let baked = self.tiles.get(&self.tile_key(url, size, look));
         if baked.is_none() {
             self.wants.ask(&self.wants.tiles, &(url.to_string(), size.0, size.1, look));
         }
@@ -337,7 +343,7 @@ impl BeeperGuiApp {
 
     fn cut(&self, url: &str, how: Cut) -> Option<&Frames> {
         let Some(Ok(_)) = self.media_at(url) else { return None };
-        let cut = self.cuts.get(&cut_key(url, how));
+        let cut = self.cuts.get(&self.cut_key(url, how));
         if cut.is_none() {
             self.wants.ask(&self.wants.cuts, &(url.to_string(), how));
         }
@@ -347,15 +353,16 @@ impl BeeperGuiApp {
     /// Cuts or dims the frames of the animations that a view asked for, on worker threads.
     pub(crate) fn cut_animations(&mut self) -> Task<UiMessage> {
         let wanted = std::mem::take(&mut *self.wants.cuts.borrow_mut());
+        let scale = self.bake_scale();
         let tasks: Vec<_> = (wanted.into_iter())
             .filter_map(|(url, how)| {
-                let k = cut_key(&url, how);
+                let k = self.cut_key(&url, how);
                 // A view asks again for a cut whose media went out of the cache.
                 let Some(Some(Ok(frames))) = self.media.get(&url) else { return None };
                 let frames = frames.clone();
                 (!self.cuts.contains_key(&k)).then(|| {
                     let cut = move || match how {
-                        Cut::Cover(w, h) => cut_frames(&frames, (w, h)),
+                        Cut::Cover(w, h) => cut_frames(&frames, (w, h), scale),
                         Cut::Dim => dim_frames(&frames, 0.8),
                     };
                     (k, async move { tokio::task::spawn_blocking(cut).await.expect("animation cut task") })
@@ -369,10 +376,10 @@ impl BeeperGuiApp {
     /// Bakes the tiles that a view asked for, on worker threads.
     pub(crate) fn bake_tiles(&mut self) -> Task<UiMessage> {
         let wanted = std::mem::take(&mut *self.wants.tiles.borrow_mut());
-        let (border, outline) = (self.pal.prefs_border, self.pal.accent);
+        let (border, outline, scale) = (self.pal.prefs_border, self.pal.accent, self.bake_scale());
         let tasks: Vec<_> = (wanted.into_iter())
             .filter_map(|(url, w, h, look)| {
-                let k = key(&url, (w, h), self.dark, look);
+                let k = self.tile_key(&url, (w, h), look);
                 let (ring, radius) = match look {
                     Look::Tile(true) => ((outline, 2.0), RADIUS),
                     Look::Tile(false) => ((border, 0.5), RADIUS),
@@ -383,7 +390,7 @@ impl BeeperGuiApp {
                 let Some(Some(Ok(frames))) = self.media.get(&url) else { return None };
                 let src = frames[0].0.clone();
                 (!self.tiles.contains_key(&k)).then(|| {
-                    let bake = move || bake(&src, (w, h), ring, radius, BAKE);
+                    let bake = move || bake(&src, (w, h), ring, radius, scale);
                     let task = async move { tokio::task::spawn_blocking(bake).await.expect("tile bake task") };
                     (k, task)
                 })
@@ -501,7 +508,7 @@ mod tests {
     #[test]
     fn baked_tiles_have_round_corners() {
         let src = image::Handle::from_rgba(40, 20, vec![255; 40 * 20 * 4]);
-        let image::Handle::Rgba { width, height, pixels, .. } = bake(&src, (30, 30), (Color::BLACK, 0.5), RADIUS, BAKE) else {
+        let image::Handle::Rgba { width, height, pixels, .. } = bake(&src, (30, 30), (Color::BLACK, 0.5), RADIUS, 2.0) else {
             unreachable!()
         };
         assert_eq!((width, height), (60, 60), "a tile bakes at twice its size");
@@ -510,7 +517,25 @@ mod tests {
         assert_eq!(at(30, 30), [255; 4], "the middle keeps the image");
         assert_eq!(at(30, 0), [0, 0, 0, 255], "the edge has the border");
         assert_eq!(at(30, 2), [255; 4], "the half pixel border is thin");
-        let image::Handle::Rgba { pixels, .. } = bake(&src, (30, 30), (Color::BLACK, 2.0), RADIUS, BAKE) else { unreachable!() };
+        let image::Handle::Rgba { pixels, .. } = bake(&src, (30, 30), (Color::BLACK, 2.0), RADIUS, 2.0) else { unreachable!() };
         assert_eq!(pixels[((2 * width + 30) * 4) as usize..][..4], [0, 0, 0, 255], "a selected tile has a 2 px outline");
+    }
+
+    /// A tile bakes at the device pixels of its box, like Chromium's decode to scale: a 1x screen keeps a quarter of the
+    /// pixels of a 2x screen, and a tile bakes again when the screen or the zoom changes.
+    #[test]
+    fn tiles_bake_at_the_scale_of_the_screen() {
+        let mut app = crate::fuzz::demo_app("bake-scale");
+        (app.screen_scale, app.zoom, app.text_scale) = (1.0, 1.0, 1.0);
+        let one = app.tile_key("u", (30, 30), Look::Inline);
+        assert_eq!(app.bake_scale(), 1.0);
+        app.zoom = 1.5;
+        assert_eq!(app.bake_scale(), 1.5, "the zoom counts");
+        assert_ne!(app.tile_key("u", (30, 30), Look::Inline), one, "a zoomed tile is another tile");
+        app.screen_scale = 3.0;
+        assert_eq!(app.bake_scale(), 4.0, "at most 4");
+        let src = image::Handle::from_rgba(40, 20, vec![255; 40 * 20 * 4]);
+        let image::Handle::Rgba { width, height, .. } = bake(&src, (30, 30), (Color::BLACK, 0.5), RADIUS, 1.0) else { unreachable!() };
+        assert_eq!((width, height), (30, 30), "a tile of a 1x screen has the pixels of its box");
     }
 }

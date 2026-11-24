@@ -343,6 +343,16 @@ fn short_count(n: usize) -> String {
     }
 }
 
+/// The opacity of a dot of the typing indicator `t` of the way through its second.
+fn typing_pulse(t: f32) -> f32 {
+    let ease = |x| crate::cubic_bezier(x, [0.25, 0.1, 0.25, 1.0]);
+    if t < 0.5 {
+        0.2 + 0.2 * ease(2.0 * t)
+    } else {
+        0.4 - 0.2 * ease(2.0 * t - 1.0)
+    }
+}
+
 /// The tooltip of Desktop's `BrandTypingIndicator`, which Desktop does not translate.
 fn typing_tip(names: &[String]) -> String {
     match names {
@@ -449,11 +459,9 @@ pub(crate) fn media_box(window_w: f32, size: Option<(f32, f32)>, share: f32) -> 
     }
 }
 
-/// Whether an image has more pixels than [`crate::gallery::BAKE`] times its box of `px`, so that its baked cut is
-/// smaller than the image.
-pub(crate) fn larger(h: &image::Handle, (w, ht): (u32, u32)) -> bool {
+/// Whether an image has more pixels than its box of `px` at `scale`, so that its baked cut is smaller than the image.
+pub(crate) fn larger(h: &image::Handle, (w, ht): (u32, u32), scale: f32) -> bool {
     let image::Handle::Rgba { width, height, .. } = h else { return false };
-    let scale = crate::gallery::BAKE;
     *width as f32 > scale * w as f32 && *height as f32 > scale * ht as f32
 }
 
@@ -922,8 +930,10 @@ impl BeeperGuiApp {
     /// with its name as a tooltip. The bubble's tooltip says who types.
     fn typing_bubble<'a>(&self, st: &BeeperStore, chat: &Chat, ids: &[String], v: f32) -> El<'a> {
         let p = &self.pal;
-        let ink = p.text.scale_alpha(v);
-        let dot = |delay| anim::dot(6.0, ink, self.started, delay, |t| 0.2 + 0.2 * (1.0 - (2.0 * t - 1.0).abs()));
+        // `.BrandTypingIndicator-module__indicator`: `--color-on-surface` dots that pulse from 0.2 to 0.4 and back each
+        // second, with the CSS `ease` in each half.
+        let ink = p.strong.scale_alpha(v);
+        let dot = |delay| anim::dot(6.0, ink, self.started, delay, typing_pulse);
         let bubble =
             container(row![dot(0), dot(340), dot(670)].spacing(4)).padding([12, 11]).style(fill_box(p.received.scale_alpha(v), 16.0));
         let users: Vec<&User> = ids.iter().filter_map(|id| chat.participants.items.iter().find(|u| u.id == *id)).collect();
@@ -1435,7 +1445,9 @@ impl BeeperGuiApp {
         let typing = st.typing.get(cid).filter(|ids| chat.chat_type == "single" && ids.len() == 1);
         let status = typing.map(|_| crate::style::region(true, || txt("typing", 10.0).color(p.sub)));
         let status_line = status.is_some();
-        let info = container(column![name_row].push(status).spacing(2).align_x(Center)).padding(pad(6.0, 6.0, 6.0, 10.0)).style(raised(
+        // `.thread-header-info`: 6/6/6/10 inside a 1 px outline that CSS draws outside the box, so the pill is 2 px
+        // taller and wider than its padding, and starts 1 px above the 4 px under the avatar.
+        let info = container(column![name_row].push(status).spacing(2).align_x(Center)).padding(pad(7.0, 7.0, 7.0, 11.0)).style(raised(
             p.elevated,
             14.0,
             Some(p.strong.scale_alpha(0.025)),
@@ -1444,7 +1456,7 @@ impl BeeperGuiApp {
         let avatar = crate::style::region(true, || self.chat_avatar(chat, 40.0, 0.0));
         let avatar = container(avatar).style(raised(p.card, 20.0, None, (1.0, 4.0, 0x1a)));
         // The pill sets the width of the card, and the avatar sits over its middle.
-        let card = stack![column![Space::new().height(36.0), info].align_x(Center), container(avatar).center_x(Fill)];
+        let card = stack![column![Space::new().height(35.0), info].align_x(Center), container(avatar).center_x(Fill)];
         let card = mouse_area(card)
             .interaction(mouse::Interaction::Pointer)
             .on_press(UiMessage::ToggleRightPanel)
@@ -1767,7 +1779,8 @@ impl BeeperGuiApp {
             let keys = Row::with_children(keys);
             row![count, label.color(fade(p.accent)), keys].spacing(7).align_y(Center).into()
         } else {
-            let chevron = tinted(&CHEVRON_DOWN, 20.0, fade(p.strong).scale_alpha(0.8));
+            // `--color-icon-neutrals-strong` at the 0.8 of its path.
+            let chevron = tinted(&CHEVRON_DOWN, 20.0, fade(p.text).scale_alpha(0.8));
             container(chevron).center(20).into()
         };
         let shadow = Shadow { color: fade(Color::from_rgba(0.0, 0.0, 0.0, 0.15)), offset: Vector::ZERO, blur_radius: 20.0 };
@@ -2263,7 +2276,7 @@ impl BeeperGuiApp {
                 (_, "audio") if self.playable(a) => {
                     let ts = shows_time.then(|| {
                         let time = format_short_ts(&m.timestamp, st.settings.pref("timeFormat") == 1);
-                        (time, if mine { sent_meta } else { p.sub })
+                        (time, if mine { sent_meta } else { p.muted })
                     });
                     // `.audio-player` of a received voice note is `--color-background-message-bubble-received`.
                     self.view_audio(m, a, mine, ts, fg, if mine { bg } else { dim(p.link_card) })
@@ -2322,7 +2335,7 @@ impl BeeperGuiApp {
             let line = txt(text.clone(), 13.0).line_height(lh(16.0)).font(italic).color(fg.scale_alpha(0.8));
             let time = shows_time.then(|| {
                 let time = format_short_ts(&m.timestamp, st.settings.pref("timeFormat") == 1);
-                crate::style::fixed(time, 11.0, Weight::Normal).color(if mine { sent_meta } else { p.sub })
+                crate::style::fixed(time, 11.0, Weight::Normal).color(if mine { sent_meta } else { p.muted })
             });
             let body = column![].push(inside).push(row![line].push(time).spacing(4).align_y(Bottom));
             parts = parts.push(container(body).padding([BUBBLE_PAD_Y, BUBBLE_PAD_X]).style(fill_box(bg, 17.0)));
@@ -2601,7 +2614,7 @@ impl BeeperGuiApp {
         let px = (w.round() as u32, h.round() as u32);
         let base: El<'_> = match thumb_url.as_ref().and_then(|u| Some((u, self.media_at(u)?))) {
             Some((url, Ok(frames)))
-                if (cover || larger(&frames[0].0, px))
+                if (cover || larger(&frames[0].0, px, self.bake_scale()))
                     && !lottie
                     && frames.len() == 1
                     && let Some(t) = self.cover_tile(url, px) =>
@@ -2663,8 +2676,10 @@ impl BeeperGuiApp {
         let p = &self.pal;
         let ts = shows_time.then(|| format_short_ts(&m.timestamp, st.settings.pref("timeFormat") == 1));
         let room = ts.as_deref().map_or(0.0, |t| crate::style::fixed_width(t, 11.0, Weight::Normal) + 4.0);
+        // `.MessageReadableMetadata-module__readableMetadata`: `--color-on-surface-variant`, or the text color of a sent
+        // bubble at 0.8.
         let time: Option<El<'a>> =
-            ts.map(|t| crate::style::fixed(t, 11.0, Weight::Normal).color(if mine { sent_meta } else { p.sub }).into());
+            ts.map(|t| crate::style::fixed(t, 11.0, Weight::Normal).color(if mine { sent_meta } else { p.muted }).into());
         // Desktop's `MessageErrorTooltip` takes the place of the time.
         let (room, time) = match failed {
             Some(e) => {
@@ -2673,7 +2688,7 @@ impl BeeperGuiApp {
             }
             // Desktop's `BookmarkIndicator` and `ReminderIndicator` (`E3`) go before the time.
             None => {
-                let color = if mine { sent_meta } else { p.sub };
+                let color = if mine { sent_meta } else { p.muted };
                 let marker = |handle: &svg::Handle, color: Color, label: String| {
                     let icon = svg(handle.clone()).width(10).height(10);
                     let icon = icon.style(move |_, _| svg::Style { color: Some(color) });
@@ -4407,6 +4422,20 @@ pub(crate) mod tests {
         assert_eq!(scroll_fade_due(&app.pane), None, "a faded-out button");
     }
 
+    /// `.ScrollToBottom-module__circle`: a chevron of the neutral gray `--color-icon-neutrals-strong` at 0.8 on the
+    /// background, not of the bluish `--color-on-surface`.
+    #[test]
+    fn the_scroll_button_chevron_like_desktop() {
+        let mut app = crate::fuzz::demo_app("scroll-chevron");
+        let _ = app.update(UiMessage::SelectChat("!note_self:beeper.com".into()));
+        app.pane.scrolled_up = Some((true, std::time::Instant::now() - std::time::Duration::from_secs(1)));
+        let st = app.store.read();
+        let button = app.view_scroll_to_bottom(&st, st.chat("!note_self:beeper.com")).expect("the button");
+        let shot = pixels(&mut iced_test::Simulator::with_size(Default::default(), Size::new(200.0, 100.0), button));
+        let ink = shot.pixels().map(|px| px.0).min_by_key(|px| px[0]).expect("pixels");
+        assert!(ink[0] < 128 && ink[0] == ink[1] && ink[1] == ink[2], "{ink:?}");
+    }
+
     /// Desktop's `ActionButtons` under a message of the system user: the buttons that can open their link or post to
     /// the homeserver, a deep link that opens, and a callback that runs once at a time, then a toast for a 429 and an
     /// error toast for a failure.
@@ -4732,6 +4761,32 @@ pub(crate) mod tests {
         assert!(near(ink, app.pal.strong), "{ink:?}");
     }
 
+    /// Desktop's `.MessageReadableMetadata-module__readableMetadata`: the time in a received bubble is
+    /// `--color-on-surface-variant`, and in a sent bubble the text color of the bubble at 0.8.
+    #[test]
+    fn message_times_like_desktop() {
+        let app = crate::fuzz::demo_app("message-times");
+        let mid = plain_received(&app, "Hi");
+        let time = {
+            let st = app.store.read();
+            format_short_ts(&st.message(&mid).timestamp, st.settings.pref("timeFormat") == 1)
+        };
+        // The darkest, or for a sent bubble the brightest, pixel of the time.
+        let ink = |sent: bool| {
+            let at = alone(&app, &mid).find(time.as_str()).expect("the time").bounds();
+            let shot = pixels(&mut alone(&app, &mid));
+            let (x, y) = ((2.0 * at.x) as u32, (2.0 * at.y) as u32);
+            let pxs = (x..x + (2.0 * at.width) as u32).flat_map(|x| (y..y + (2.0 * at.height) as u32).map(move |y| (x, y)));
+            let pxs = pxs.map(|(x, y)| shot.get_pixel(x, y).0);
+            if sent { pxs.max_by_key(|px| px[0]) } else { pxs.min_by_key(|px| px[0]) }.expect("the time pixels")
+        };
+        let received = ink(false);
+        assert!(near(received, app.pal.muted), "{received:?}");
+        change(&app, &mid, |m| m.is_sender = Some(true));
+        let sent = ink(true);
+        assert!(near(sent, mix(app.pal.sent, Color::WHITE, 0.8)), "{sent:?}");
+    }
+
     /// A received message of a DM, as plain text.
     fn plain_received(app: &BeeperGuiApp, text: &str) -> String {
         let mid = {
@@ -4912,18 +4967,14 @@ pub(crate) mod tests {
         assert!((70..=90).contains(&wide(&whole, red)), "the whole GIF while its cut waits: {}", wide(&whole, red));
         let wanted: Vec<_> = std::mem::take(&mut *app.wants.cuts.borrow_mut()).into_iter().collect();
         assert_eq!(wanted, [(url.clone(), crate::gallery::Cut::Cover(160, 400))], "the view asks for the cut");
-        let k = format!("Cover(160, 400) {url}");
-        app.cuts.insert(k, Some(crate::gallery::cut_frames(&frames, (160, 400))));
+        let k = app.cut_key(&url, crate::gallery::Cut::Cover(160, 400));
+        app.cuts.insert(k.clone(), Some(crate::gallery::cut_frames(&frames, (160, 400), 2.0)));
         let first = at(&mut app, 0);
         assert!((300..=322).contains(&wide(&first, red)), "the cut fills the box: {}", wide(&first, red));
         let second = at(&mut app, 1100);
         assert!((300..=322).contains(&wide(&second, blue)) && spots(&second, red).is_empty(), "and plays");
         assert!(matches!(alone_redraw(&app, &mid), window::RedrawRequest::At(_)), "the next frame is due");
-        let iced::advanced::image::Handle::Rgba { pixels, .. } =
-            &app.cuts.get(&format!("Cover(160, 400) {url}")).unwrap().as_ref().unwrap()[0].0
-        else {
-            panic!("RGBA")
-        };
+        let iced::advanced::image::Handle::Rgba { pixels, .. } = &app.cuts.get(&k).unwrap().as_ref().unwrap()[0].0 else { panic!("RGBA") };
         assert_eq!(pixels[3], 0, "a round corner");
         app.store.write().settings.set_pref("autoplayGifs", 0);
         let paused = at(&mut app, 1100);
@@ -5526,6 +5577,13 @@ pub(crate) mod tests {
 
     /// Desktop's `BrandTypingIndicator`: who types in its tooltip, in a group the first 4 faces at
     /// `min(20, (34 + 10(n - 1)) / n)` px, and 0.32 s to show and to hide, but at once while scrolled up.
+    /// `BrandTypingIndicator-module__pulse`: from 0.2 to 0.4 at the middle of the second and back, `ease` in each half.
+    #[test]
+    fn typing_dots_pulse_like_desktop() {
+        let at = |t: f32| (typing_pulse(t) * 1000.0).round() / 1000.0;
+        assert_eq!([at(0.0), at(0.25), at(0.5), at(0.75), at(1.0)], [0.2, 0.36, 0.4, 0.24, 0.2]);
+    }
+
     #[test]
     fn typing_indicator_like_desktop() {
         let names = |n: usize| (1..=n).map(|k| format!("P{k}")).collect::<Vec<_>>();

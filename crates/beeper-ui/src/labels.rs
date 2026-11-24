@@ -41,7 +41,7 @@ impl BeeperGuiApp {
                 if let Some(&(id, _)) = self.labels_windows.iter().find(|w| w.1 == chat) {
                     return self.raise(id);
                 }
-                let (id, open) = self.open_child(Size::new(303.0, 488.0));
+                let (id, open) = self.open_resizable_child(Size::new(303.0, 488.0));
                 self.labels_windows.push((id, chat));
                 return open;
             }
@@ -72,7 +72,7 @@ impl BeeperGuiApp {
                 if intro {
                     self.patch_settings(|s| s.labels_intro_seen = true);
                 }
-                let (id, open) = self.open_child(LABEL_SETTINGS_SIZE);
+                let (id, open) = self.open_sheet(LABEL_SETTINGS_SIZE);
                 let step = if intro { LabelStep::Intro } else { LabelStep::Pick };
                 self.label_window = Some(LabelDraft { chats, step, ..LabelDraft::new(id) });
                 return if intro { open } else { open.chain(operation::focus("label-search")) };
@@ -106,7 +106,7 @@ impl BeeperGuiApp {
                 if let Some(w) = self.label_settings.iter().find(|w| w.label == label) {
                     return self.raise(w.id);
                 }
-                let (id, open) = self.open_child(LABEL_SETTINGS_SIZE);
+                let (id, open) = self.open_sheet(LABEL_SETTINGS_SIZE);
                 self.label_settings.push(LabelSettings { id, label, menu: false });
                 return open;
             }
