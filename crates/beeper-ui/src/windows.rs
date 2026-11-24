@@ -436,9 +436,23 @@ impl BeeperGuiApp {
         if self.unmaps() {
             self.opened.push((id, settings.clone()));
         }
-        let settings = window::Settings { size: settings.size * (1.0 / self.zoom), icon, ..settings };
+        // The title bar takes its height out of the window's, like Electron's on Wayland.
+        let bar = if settings.decorations { self.title_bar() } else { 0.0 };
+        let page = |s: Size| Size::new(s.width, s.height - bar) * (1.0 / self.zoom);
+        let settings = window::Settings { size: page(settings.size), min_size: settings.min_size.map(page), icon, ..settings };
         // iced's `window::open` with a given ID, so that all the state of a window that hid on Wayland follows it.
         iced_runtime::task::oneshot(move |done| iced_runtime::Action::Window(iced_runtime::window::Action::Open(id, settings, done)))
+    }
+
+    /// The height in Desktop's pixels of the title bar that winit adds on top of a window on Wayland. Electron draws
+    /// its own title bar there, inside the window's size, so Desktop's 800 px high window has 763 px of page under a
+    /// 37 px title bar. On X11 the window manager draws the title bar outside the window, for both.
+    pub(crate) fn title_bar(&self) -> f32 {
+        #[cfg(target_os = "linux")]
+        if self.unmaps() {
+            return sctk_adwaita::theme::header_size() as f32 / text_scale();
+        }
+        0.0
     }
 
     /// Whether the app hides a window by closing it and opening it again: on Wayland, where winit cannot hide a
@@ -464,8 +478,9 @@ impl BeeperGuiApp {
         let Some(i) = self.opened.iter().position(|w| w.0 == id) else { return Task::none() };
         let settings = self.opened.remove(i).1;
         self.unmapped.push((id, settings));
-        let zoom = self.zoom;
-        let state = window::is_maximized(id).then(move |max| window::size(id).map(move |size| (size * zoom, max)));
+        let (zoom, bar) = (self.zoom, self.title_bar());
+        let size = move |size: Size| Size::new(size.width * zoom, size.height * zoom + bar);
+        let state = window::is_maximized(id).then(move |max| window::size(id).map(move |s| (size(s), max)));
         let state = state.map(move |(size, max)| UiMessage::Window(Msg::Unmapped(id, size, max)));
         // The new window has none of the widget state of the old one, so the focus goes back to the same widget.
         let focus = (Some(id) == self.main_window.or(self.login_window)).then(|| {
