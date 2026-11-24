@@ -5577,6 +5577,7 @@ fn hotkey_recorder_like_desktop() {
 
 #[test]
 fn profile_page_like_desktop() {
+    use crate::modals::Modal;
     use crate::profile::Msg;
     let mut app = demo_app("profile-page");
     let _ = app.update(UiMessage::Settings(settings::Msg::Open(SettingsTab::Profile)));
@@ -5609,7 +5610,14 @@ fn profile_page_like_desktop() {
     let _ = app.update(UiMessage::Profile(Msg::Delete(None)));
     let _ = app.update(UiMessage::Profile(Msg::Email("new@example.com".into())));
     let _ = app.update(UiMessage::Profile(Msg::Save));
-    assert!(shows(&app, "Change Email") && shows(&app, "Confirm New Email"));
+    // Desktop's `ChangeEmailBrowserWindow`: a frameless window of its own, not a prompt over Settings.
+    let email = app.modal_window(Modal::ChangeEmail).expect("Change Email opens its window");
+    assert!(!shows(&app, "Confirm New Email"));
+    assert_eq!(app.title(email), "Change Email");
+    let window = |app: &BeeperGuiApp, text: &str| simulator(app.view_modal(Modal::ChangeEmail)).find(text).is_ok();
+    assert!(window(&app, "Confirm New Email") && window(&app, "new@example.com"), "the new email is filled in");
+    let _ = app.update(UiMessage::Profile(Msg::Save));
+    assert_eq!(app.modals.len(), 1, "a second Save raises the open window");
     let _ = app.update(UiMessage::Profile(Msg::EmailField(0, "wrong@example.com".into())));
     let _ = app.update(UiMessage::Profile(Msg::EmailField(2, "new@example.com".into())));
     let _ = app.update(UiMessage::Profile(Msg::SaveEmail));
@@ -5618,6 +5626,10 @@ fn profile_page_like_desktop() {
     let _ = app.update(UiMessage::Profile(Msg::EmailField(0, current.to_uppercase())));
     let _ = app.update(UiMessage::Profile(Msg::SaveEmail));
     assert_eq!(app.profile.change_email.as_ref().map(|c| c.1), Some(true), "the email saves");
+    let _ = app.update(UiMessage::Profile(Msg::EmailSaved(Err("Email is taken".into()))));
+    assert!(window(&app, "Email is taken"));
+    let _ = app.update(UiMessage::Window(windows::Msg::Closed(email)));
+    assert!(app.profile.change_email.is_none() && app.modals.is_empty(), "the window forgets its fields as it closes");
     let hits = search_settings(&app.store.read(), "recovery code");
     assert_eq!(hits.first(), Some(&SettingsHit::Section(SettingsTab::Profile, true)));
 }
@@ -5626,6 +5638,7 @@ fn profile_page_like_desktop() {
 /// device..." over the chat list, and the key typed again after its copy marks it backed up.
 #[test]
 fn recovery_key_backup_like_desktop() {
+    use crate::modals::Modal;
     use crate::profile::{KeyStep, Msg};
     let mut app = demo_app("recovery-backup");
     let key = "EsTc LW2K PGiF wKEo 9bCn nYwJ 3bR7 jAxZ hLoh 6Ycm Nkx5 YTqh";
@@ -5639,9 +5652,13 @@ fn recovery_key_backup_like_desktop() {
     let banner = |app: &BeeperGuiApp| simulator(app.view_sidebar()).find("If you lose your device...").is_ok();
     assert!(banner(&app), "an unsaved key a day old shows the banner");
     let _ = app.update(UiMessage::Profile(Msg::SaveKeyNow));
-    assert!(!banner(&app) && app.settings_window.is_some(), "Save key now opens the key and closes the banner");
-    let shows = |app: &BeeperGuiApp, text: &str| simulator(app.view_settings()).find(text).is_ok();
+    // Desktop's `SHOW_RECOVERY_KEY` modal window, over the main window, without Settings.
+    let window = app.modal_window(Modal::RecoveryKey).expect("Save key now opens the Recovery Key window");
+    assert!(!banner(&app) && app.settings_window.is_none(), "Save key now opens the key and closes the banner");
+    assert_eq!(app.title(window), "Recovery Key");
+    let shows = |app: &BeeperGuiApp, text: &str| simulator(app.view_modal(Modal::RecoveryKey)).find(text).is_ok();
     assert!(shows(&app, "Copy to Clipboard"));
+    assert!(shows(&app, "EsTc-LW2K-PGiF\nwKEo-9bCn-nYwJ\n3bR7-jAxZ-hLoh\n6Ycm-Nkx5-YTqh"), "the key in Desktop's lines");
     let _ = app.update(UiMessage::Profile(Msg::CopyRecoveryKey));
     assert!(shows(&app, "Next"), "an unsaved key goes on to its check");
     let _ = app.update(UiMessage::Profile(Msg::KeyNext));
@@ -5653,6 +5670,14 @@ fn recovery_key_backup_like_desktop() {
     assert!(matches!(app.profile.recovery_key, Some(KeyStep::Verify(_, true, None))), "the right key verifies");
     let _ = app.update(UiMessage::Profile(Msg::KeyVerified(Ok(()))));
     assert!(shows(&app, "Verified") && app.store.read().beeper_state.has_backed_up_code);
+    let _ = app.update(UiMessage::Window(windows::Msg::Closed(window)));
+    assert!(app.profile.recovery_key.is_none(), "the window forgets its step as it closes");
+    // A key that is backed up shows "Copied", and "Copy to Clipboard" again after two seconds.
+    let _ = app.update(UiMessage::Profile(Msg::RecoveryKey(true)));
+    let _ = app.update(UiMessage::Profile(Msg::CopyRecoveryKey));
+    assert!(shows(&app, "Copied") && !shows(&app, "Next"));
+    let _ = app.update(UiMessage::Profile(Msg::CopiedOver));
+    assert!(shows(&app, "Copy to Clipboard"));
 }
 
 #[test]
