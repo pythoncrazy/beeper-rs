@@ -924,8 +924,8 @@ fn sound_label(sound: Option<&str>) -> &'static str {
 mod tests {
     use super::*;
 
-    /// Chat Info's icons at 1200x800 are Desktop's `PlatformIcon`s at `scale(1.2)`: Pin and Close of its head are 16
-    /// px boxes (`keep` 9.6 by 16, `close` 10.55), Archive, Remind Me, Search and More of its toolbar 20 px ones
+    /// Chat Info's icons at 1200x800 are Desktop's `PlatformIcon`s at `scale(1.2)`, clipped at their box: Pin and Close
+    /// of its head are 16 px boxes (`keep` 9.6 by 16, less the 0.8 px under the box, `close` 10.55), Archive, Remind Me, Search and More of its toolbar 20 px ones
     /// (19.2, 19.2, 16.45, 11.3 by 6.55), and "Add to a Label" has the 16 px `add-outline` system icon (13.3).
     #[test]
     fn chat_info_icons_like_desktop() {
@@ -942,7 +942,7 @@ mod tests {
         let size = |got: [f32; 4], w: f32, h: f32| (got[2] - w).abs() <= 0.4 && (got[3] - h).abs() <= 0.4;
         let windows = [[930.0, 14.0, 24.0, 24.0], [1162.0, 14.0, 24.0, 24.0], [924.0, 753.0, 28.0, 28.0]];
         let more = [[993.0, 753.0, 28.0, 28.0], [1062.0, 753.0, 28.0, 28.0], [1131.0, 753.0, 28.0, 28.0]];
-        let want = [(9.6, 16.0), (10.55, 10.55), (19.2, 19.2), (19.2, 19.2), (16.45, 16.45), (11.3, 6.55)];
+        let want = [(9.6, 15.2), (10.55, 10.55), (19.2, 19.2), (19.2, 19.2), (16.45, 16.45), (11.3, 6.55)];
         for (w, (ww, wh)) in windows.into_iter().chain(more).zip(want) {
             let got = ink(w);
             assert!(size(got, ww, wh), "{got:?} in {w:?}, Desktop's {ww} by {wh}");

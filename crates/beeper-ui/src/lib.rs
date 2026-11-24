@@ -1015,16 +1015,15 @@ fn material_icons(share: f32) -> HashMap<&'static str, svg::Handle> {
 /// Desktop's Material icons by name, with their whole view box.
 static MATERIAL: std::sync::LazyLock<HashMap<&str, svg::Handle>> = std::sync::LazyLock::new(|| material_icons(1.0));
 
-/// Desktop's `PlatformIcon`: `icon` drawn at its inline `scale(1.2)`, past its box. A glyph of the icons font keeps
-/// the text color around it.
+/// Desktop's `PlatformIcon`: `icon` drawn at its inline `scale(1.2)` and clipped at its box
+/// (`.materialIcon { overflow: hidden }`). A glyph of the icons font keeps the text color around it.
 fn platform<'a>(icon: impl Into<El<'a>>) -> El<'a> {
-    crate::lift::shrink(icon, 1.2).into()
+    crate::lift::clip(icon, 1.2).into()
 }
 
-/// Desktop's `PlatformIcon` of a Material icon: a `size` px box that its `scale(1.2)` draws past and that clips it
-/// (`.materialIcon { overflow: hidden }`).
+/// Desktop's `PlatformIcon` of a Material icon: a `size` px box.
 fn material<'a>(name: &str, size: f32, color: Color) -> El<'a> {
-    container(platform(tinted(&MATERIAL[name], size, color))).width(size).height(size).clip(true).into()
+    platform(tinted(&MATERIAL[name], size, color))
 }
 
 /// Desktop's `yD`: the label icons by id, in the order of the picker.

@@ -12,7 +12,7 @@ from fontTools.pens.ttGlyphPen import TTGlyphPen
 from fontTools.svgLib.path import parse_path
 from fontTools.ttLib import TTFont
 
-LUCIDE = "bell chevron-right circle-check arrow-up-right link plus audio-lines at-sign settings paintbrush keyboard sparkles circle-help info pencil trash-2 file-text play history bookmark message-square"
+LUCIDE = "chevron-right plus at-sign info play history"
 MATERIAL = "inbox low_priority_space archive schedule schedule_send email maps_ugc photo_library library_add more_horiz unfold_more filter_list search edit_square notifications_off image chevron_right expand_more close keep download mark_email_unread sms mode_comment person group check reply mood view_sidebar"
 
 # Desktop's react-icons by the start of their path: FontAwesome's `FaCheck` of the check column of its menus.
