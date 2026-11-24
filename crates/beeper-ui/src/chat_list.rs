@@ -1819,7 +1819,7 @@ impl BeeperGuiApp {
             (true, true) => 21.0,
             (true, false) => 16.0,
             (false, _) => 0.0,
-        } + if sender.is_some() { 16.0 } else { 0.0 }
+        } + if sender.is_some() { 14.0 } else { 0.0 }
             + match &media_tag {
                 Some((_, label, _)) if expired => crate::style::text_width(label, 13.0, Weight::Normal) + 4.0,
                 Some((_, label, _)) => crate::style::text_width(label, 10.0, Weight::Medium) + 24.0,
@@ -1845,10 +1845,8 @@ impl BeeperGuiApp {
             let label = semi(tr("Reminder"), 11.0).color(Color::WHITE.scale_alpha(0.7));
             container(label).padding([0, 3]).style(fill_box(ORANGE.scale_alpha(0.7), 4.0))
         });
-        let preview = row![]
-            .push(badge)
-            .push(receipt)
-            .push(face)
+        let align = if l.compact { Center } else { iced::Alignment::Start };
+        let text = row![]
             .push(prefix.map(|s| txt(s, 13.0).color(fg)))
             .push(media_tag.map(|(icon, label, _)| media_chip(p, icon, label, expired, fg)))
             .push(body.map(|b| preview_line(&b, width, if flowed { 1 } else { lines }, font, fg)))
@@ -1864,11 +1862,16 @@ impl BeeperGuiApp {
                 .line_height(lh(16.0))
                 .width(width)
             }))
+            .spacing(4)
+            .align_y(align);
+        // `.thread-participant-name .participant-img`: 12 px, 2 px under the top of the line and 2 px before the name.
+        let text = row![].push(face.map(|f| container(f).padding([2, 0]))).push(text).spacing(2).align_y(align);
+        let preview = row![badge, receipt, text]
             .push(Space::new().width(Fill))
             // `.actions` has a 2 px top margin.
             .push(count.map(|c| container(c).padding(Padding::ZERO.top(if l.compact { 0.0 } else { 2.0 }))))
             .spacing(4)
-            .align_y(if l.compact { Center } else { iced::Alignment::Start });
+            .align_y(align);
         column![preview].push(second.map(|r| txt(r.to_string(), 13.0).font(font).color(fg)))
     }
 
