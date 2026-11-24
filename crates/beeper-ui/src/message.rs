@@ -6209,14 +6209,19 @@ pub(crate) mod tests {
     #[test]
     fn link_arrows_count_where_the_time_goes() {
         let mut app = crate::fuzz::demo_app("arrow-room");
+        // The width of a window without its sidebar whose bubbles are `cap` wide: by its 85vw or its row.
+        app.sidebar_hidden = true;
+        app.pane.size.width = 2000.0;
+        let frame = app.pane.size.width - app.bubble_row(false);
+        let window = |cap: f32| (cap + frame).max(cap / 0.85);
         for text in ["https://protomaps.com/", "see https://protomaps.com/ and https://example.org/ ok"] {
             let (wide, time) = sent_bubble(&mut app, text, 2000.0);
             let fit = 22.0 + crate::style::text_width(text, 13.0, Weight::Normal) + 12.0 * text.matches("https").count() as f32;
             let fit = fit + 6.0 + time.width;
             assert!((wide.width - fit).abs() <= 0.5, "{text}: {wide:?}");
-            let (bubble, _) = sent_bubble(&mut app, text, (fit + 0.05) / 0.45);
+            let (bubble, _) = sent_bubble(&mut app, text, window(fit + 0.05));
             assert_eq!(bubble.height, 34.0, "{text} fits with its time: {bubble:?}");
-            let (bubble, time) = sent_bubble(&mut app, text, (fit - 1.0) / 0.45);
+            let (bubble, time) = sent_bubble(&mut app, text, window(fit - 1.0));
             assert!(bubble.height == 50.0 && time.y - bubble.y == 26.0, "{text}: the time on its own line: {bubble:?} {time:?}");
         }
     }
