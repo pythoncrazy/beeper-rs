@@ -128,8 +128,8 @@ impl VList {
         let starts = &inner.starts.3;
         let y = starts[n];
         let (mut at, len) = inner.seen.unwrap_or((0.0, FIRST_SPAN));
-        if let Some(t) = target {
-            let k = (0..n).find(|&k| keys[index(k)] == t).expect("the revealed row is in the list");
+        // Like [`Self::nearest`], a row that the list does not have keeps the list where it is.
+        if let Some(k) = target.and_then(|t| (0..n).find(|&k| keys[index(k)] == t)) {
             at = starts[k] - (len - (starts[k + 1] - starts[k])) / 2.0;
         }
         let at = at.clamp(0.0, (y - len).max(0.0));
@@ -419,6 +419,9 @@ mod tests {
         assert_eq!(list.nearest(Some(2)), Some(100.0), "row 2 comes to the top");
         assert_eq!(list.nearest(None), Some(0.0), "the first row comes to the top");
         assert_eq!(list.nearest(Some(10)), None);
+        list.reveal(99);
+        drop(list.view(&keys, false, 50.0, (), |_| iced::widget::Space::new().height(50).into()));
+        assert_eq!(list.nearest(Some(2)), Some(100.0), "a reveal of a row that the list does not have keeps its place");
     }
 
     /// Like Desktop's dates, which all are `sticky-date-container`s, the label of a section that starts above the
