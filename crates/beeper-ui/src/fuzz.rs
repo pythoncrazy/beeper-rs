@@ -10258,7 +10258,7 @@ fn sign_in_window_details_like_desktop() {
     let s = BeeperGuiApp::login_window_settings();
     assert!(matches!(s.position, window::Position::Centered) && s.min_size == Some(Size::new(330.0, 400.0)));
     let sentence = "By continuing, you agree to our terms of use and have read our privacy policy.";
-    let width = style::balanced_width(sentence, 278.0, 11.0);
+    let width = style::balanced_width(sentence, 278.0, 11.0, 0.0);
     let first = style::text_width("By continuing, you agree to our terms", 11.0, iced::font::Weight::Normal);
     let more = style::text_width("By continuing, you agree to our terms of", 11.0, iced::font::Weight::Normal);
     assert!(first < width && width < more, "the first line ends with \"terms\", like Desktop's: {width}");
@@ -11555,7 +11555,8 @@ fn backdrops_take_the_pointer_like_desktop() {
                 let _ = a.update(UiMessage::Message(message::Msg::React(other.clone())));
             }),
         ),
-        ("the command bar", 0, Box::new(|a: &mut BeeperGuiApp| a.show_command_palette = true)),
+        // The command bar covers the left of the row, where its own widgets set the cursor.
+        ("the command bar", 1, Box::new(|a: &mut BeeperGuiApp| a.show_command_palette = true)),
         (
             "the chat menu",
             0,

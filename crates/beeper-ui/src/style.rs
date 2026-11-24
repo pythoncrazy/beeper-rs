@@ -404,14 +404,18 @@ pub fn carets(s: &str, size: f32, width: f32, at: impl IntoIterator<Item = (usiz
     })
 }
 
-/// CSS `text-wrap: balance`: the narrowest width up to `max` that wraps `s` into as many lines as `max` does. Chromium
-/// balances neither more than 6 lines nor a text with a word that breaks at the edge: those keep their lines, and the
-/// bubble shrinks to the widest.
-pub fn balanced_width(s: &str, max: f32, size: f32) -> f32 {
+/// CSS `text-wrap: balance`: the narrowest width up to `max` that wraps `s`, and a box `trail` px wide after it (see
+/// [`trails`]), into as many lines as `max` does. Chromium balances neither more than 6 lines nor a text with a word
+/// that breaks at the edge: those keep their lines, and the bubble shrinks to the widest.
+pub fn balanced_width(s: &str, max: f32, size: f32, trail: f32) -> f32 {
     let size = rem(size);
-    thread_local!(static MEMO: Memo<(String, u32, u32), f32> = RefCell::default());
-    memo(&MEMO, (s.to_owned(), max.to_bits(), size.to_bits()), || {
-        let lines = |w: f32| shape(s, size, Weight::Normal, Some(w), |b| b.layout_runs().count());
+    thread_local!(static MEMO: Memo<(String, u32, u32, u32), f32> = RefCell::default());
+    memo(&MEMO, (s.to_owned(), max.to_bits(), size.to_bits(), trail.to_bits()), || {
+        let lines = |w: f32| {
+            shape(s, size, Weight::Normal, Some(w), |b| {
+                b.layout_runs().count() + usize::from(trail > 0.0 && b.layout_runs().last().is_some_and(|r| r.line_w + trail > w))
+            })
+        };
         let n = lines(max);
         let overflows =
             || shape_wrapped(s, size, Weight::Normal, Some(max), cosmic_text::Wrap::Word, |b| b.layout_runs().any(|r| r.line_w > max));
@@ -474,6 +478,16 @@ fn surely_fits(s: &str, max: f32, size: f32) -> bool {
         n += 1.2 * size;
     }
     n <= max
+}
+
+/// Whether a box `trail` px wide after `s` wrapped at `width` takes a line of its own: CSS's inline-block after text,
+/// with a break before it, goes at the end of the last line when it fits there.
+pub fn trails(s: &str, width: f32, size: f32, trail: f32) -> bool {
+    let size = rem(size);
+    thread_local!(static MEMO: Memo<(String, u32, u32, u32), bool> = RefCell::default());
+    memo(&MEMO, (s.to_owned(), width.to_bits(), size.to_bits(), trail.to_bits()), || {
+        shape(s, size, Weight::Normal, Some(width), |b| b.layout_runs().last().is_some_and(|r| r.line_w + trail > width))
+    })
 }
 
 /// Whether `s` at `size` takes more than one line at `max` width: a line of the text makes more than one layout run.
@@ -1386,7 +1400,7 @@ mod tests {
         let room = text_width("12:30 AM", 11.0, Weight::Normal) + 4.0;
         let zero = text_width("0", 13.0, Weight::Normal);
         let probe = format!("{text}\u{2060}{}", "0".repeat((room / zero).ceil() as usize));
-        let width = balanced_width(&probe, 400.0, 13.0);
+        let width = balanced_width(&probe, 400.0, 13.0, 0.0);
         let last = shape(text, 13.0, Weight::Normal, Some(width), |b| b.layout_runs().last().map(|r| r.line_w));
         assert!(last.expect("a line") + room <= width + 0.5, "the time fits after the last line");
         let lines = shape(text, 13.0, Weight::Normal, Some(width), |b| b.layout_runs().count());
@@ -1427,7 +1441,7 @@ mod tests {
             let url = chromium_breaks(&want.concat()).into_owned();
             assert_eq!(lines(&url), want);
             // Desktop balances neither, and their widest lines (517 and 515 px) leave the bubble as wide as it can be.
-            assert_eq!(balanced_width(&url, 518.0, 13.0), 518.0);
+            assert_eq!(balanced_width(&url, 518.0, 13.0, 0.0), 518.0);
         }
     }
 
