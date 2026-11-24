@@ -52,6 +52,7 @@ mod merge_editor;
 mod merge_suggest;
 mod merged;
 mod message;
+mod modals;
 pub mod networks;
 pub mod new_chat;
 mod nickname;
@@ -2781,6 +2782,8 @@ pub(crate) struct Timers {
     username: Debounce,
     emoji: Debounce,
     media: Debounce,
+    /// The "Copy to Clipboard" again of the Recovery Key window.
+    key_copied: Debounce,
 }
 
 /// Values that views compute from the store, kept until the next write to the store.
@@ -3138,6 +3141,8 @@ pub struct BeeperGuiApp {
     how_window: Option<window::Id>,
     /// Desktop's Account Nickname windows, one for each account.
     pub nickname_windows: Vec<nickname::NicknameDraft>,
+    /// Desktop's windows that open once each, like its modal windows.
+    pub(crate) modals: Vec<(window::Id, modals::Modal)>,
     pub add_accounts: Vec<add_account::AddAccount>,
     /// The browser of the cookie logins. The tests find none, so that they never start one.
     pub find_browser: fn() -> Option<std::path::PathBuf>,
@@ -3298,7 +3303,7 @@ impl BeeperGuiApp {
         }, default: chat_windows, space_windows, carousel_windows, drawing, drawing_thread, open_threads, thread_area,
             thread_drag, unread_view, unread_menu, hidden, unmapped, opened, unmapped_focus, activation_token,
             system_dark, zoom_drag, maximize_when_placed, seen_requests, pip, pip_wanted, pip_manual, pip_menu,
-            hotkey_query, hotkey_rec, profile, hotkeys_modal, dropping, drop_send, dropped, hotkeys_scrolled, chat_sub,
+            hotkey_query, hotkey_rec, profile, modals, hotkeys_modal, dropping, drop_send, dropped, hotkeys_scrolled, chat_sub,
             reminded, search_room, search_filters, search_select, cursor, image_clipboard, pressing, forward,
             media_window, in_media, emoji_gen, emoji_hovered, focused, idle, notified, retried, notifications,
             gif_query, gifs, gif_loading, gif_error, gif_next, gif_sel, gif_view, command_palette_query,
@@ -3620,6 +3625,7 @@ impl BeeperGuiApp {
             _ if Some(id) == self.verify.window => "Beeper",
             _ if Some(id) == self.reauth.window => tr("Authentication Required"),
             _ if Some(id) == self.enter_key.window => self.enter_key_title(),
+            _ if let Some(m) = self.modal_at(id) => m.title(),
             _ if let Some(title) = self.add_account_title(id) => return title,
             _ if let Some((_, _, mid)) = self.vote_windows.iter().find(|w| w.0 == id) => {
                 let st = self.store.read();
@@ -5246,6 +5252,8 @@ impl BeeperGuiApp {
             self.view_reauth()
         } else if Some(id) == self.enter_key.window {
             self.view_enter_key()
+        } else if let Some(m) = self.modal_at(id) {
+            self.view_modal(m)
         } else if let Some(a) = self.add_accounts.iter().find(|a| a.id == id) {
             self.view_add_account(a)
         } else if Some(id) == self.networks.window {
