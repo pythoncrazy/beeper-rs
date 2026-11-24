@@ -337,7 +337,7 @@ impl BeeperGuiApp {
             let (bg, fg) = if on { (p.accent, Color::WHITE) } else { (CLEAR, p.strong) };
             let icon = svg(ICONS[i].clone()).width(16).height(16).style(move |_, _| svg::Style { color: Some(fg) });
             let b = button(icon).padding(4).style(btn_style([bg; 3], [fg; 3], 8.0)).on_press(UiMessage::Composer(composer::Msg::Format(i)));
-            items = items.push(self.tip(b.into(), label, HOTKEYS[i].to_vec(), tooltip::Position::Top).padding(0).gap(6));
+            items = items.push(self.tip(b.into(), label, HOTKEYS[i].to_vec(), tooltip::Position::Top));
         }
         container(items).padding(4).style(bordered_box(p.input, p.prefs_border, 1.0, 8.0)).into()
     }
