@@ -2697,6 +2697,8 @@ pub struct Pane {
     pub(crate) carousel: Option<Carousel>,
     /// Desktop's detached `ThreadInfoBrowserWindow`: the window shows only the Chat Info of its chat.
     pub(crate) info: bool,
+    /// Desktop's `BlockedUserInfoBrowserWindow` (`DCt`) of an `info` window: Chat Info without its actions, and Done.
+    pub(crate) blocked_sheet: bool,
     pub top: TopOfThread,
     timeline: vlist::VList,
     thread_list: vlist::VList,
@@ -2980,6 +2982,8 @@ pub struct BeeperGuiApp {
     notified: HashSet<String>,
     /// The failed sends that Retry sent again: Desktop shows their error again when they fail again.
     retried: HashSet<String>,
+    /// The sends whose "taking longer than expected" toast showed.
+    slow_sends: HashSet<String>,
     notifications: HashMap<u32, (String, String)>,
     pending: notify::Pending,
     pub gif_query: String,
@@ -3347,7 +3351,7 @@ impl BeeperGuiApp {
             system_dark, zoom_drag, maximize_when_placed, seen_requests, pip, pip_wanted, pip_manual, pip_menu,
             hotkey_query, hotkey_rec, profile, modals, hotkeys_modal, dropping, drop_send, dropped, hotkeys_scrolled, chat_sub,
             reminded, search_room, search_filters, search_select, native_select, cursor, image_clipboard, pressing, forward,
-            media_window, in_media, emoji_gen, emoji_hovered, focused, idle, notified, retried, notifications,
+            media_window, in_media, emoji_gen, emoji_hovered, focused, idle, notified, retried, slow_sends, notifications,
             gif_query, gifs, gif_loading, gif_error, gif_next, gif_sel, gif_view, command_palette_query,
             cmd_bar_commands_mode, cmd_submenu, cmd_index, search_index, search_expanded, recent_searches,
             last_archived, creating_chat, new_chats, command_list, memo, pending_dm, link_to, link_sent, link_pick, contact_networks, new_chat_lookup,
@@ -3693,6 +3697,10 @@ impl BeeperGuiApp {
                     let st = self.store.read();
                     let chat = pane.selected_chat_id.as_deref().and_then(|c| st.resolve_chat_idx(c));
                     let title = chat.map_or("Beeper".into(), |i| st.chats[i].title.clone());
+                    // `DCt.title`: the chat's title, else "Chat Info".
+                    if pane.blocked_sheet {
+                        return chat.map_or_else(|| tr("Chat Info").into(), |i| st.chats[i].title.clone());
+                    }
                     return match (pane.info, pane.thread_root.is_some()) {
                         (true, _) => trf("%s — Chat Info", &[&title]),
                         (false, true) => trf("Thread in %s", &[&title]),
@@ -4714,6 +4722,7 @@ impl BeeperGuiApp {
                     self.select_chat(NOTE_CHAT_ID);
                 }
                 self.refresh_theme_and_tray();
+                self.slow_sends();
                 let older = self.load_older_everywhere();
                 let tasks = [self.close_notifications(), self.verification_changed(), self.leave_app(), older, gone];
                 return Task::batch(tasks);
@@ -4845,6 +4854,7 @@ impl BeeperGuiApp {
                 return Task::batch([self.update(UiMessage::StoreChanged), note]);
             }
             UiMessage::AnimationTick => {
+                self.slow_sends();
                 self.confetti.take_if(|c| !c.running());
                 if let Some(c) = self.confetti.as_mut() {
                     c.advance();
@@ -4887,9 +4897,6 @@ impl BeeperGuiApp {
                         self.push_history(&c);
                     }
                 }
-            }
-            UiMessage::InputEscape(id) if Some(id) == self.settings_window && self.integrations.add.is_some() => {
-                self.integrations.add = None;
             }
             // Desktop's Escape in the search clears it, and Escape in a field of Settings takes the focus away.
             UiMessage::InputEscape(id) if Some(id) == self.settings_window => {
@@ -4987,7 +4994,7 @@ impl BeeperGuiApp {
         if self.store.read().matrix_error.is_some() {
             self.status_banner = self.store.write().matrix_error.take().expect("a Matrix error");
         }
-        Task::batch([self.load_avatars(), self.load_media()])
+        Task::batch([self.load_avatars(), self.load_media(), self.close_unblocked_sheets()])
     }
 
     /// Desktop's `hydrateMissingBookmarks` while Chat Info is open: fetches the bookmarked messages of the open chat
@@ -5184,8 +5191,9 @@ impl BeeperGuiApp {
             let echoes = echoes.filter(|m| m.send_error.is_none() && pending(&st, m));
             echoes.map(still_sending_at).filter(|&at| at > now_unix_millis()).min()
         };
-        // "Sending..." turns into "Still sending..." at its time.
-        let late = late.map(|at| iced::time::every(wait(at)).map(|_| UiMessage::AnimationTick));
+        // "Sending..." turns into "Still sending..." at its time, and a send that takes long says so.
+        let slow = self.slow_send_due().filter(|&at| at > now_unix_millis());
+        let late = late.into_iter().chain(slow).min().map(|at| iced::time::every(wait(at)).map(|_| UiMessage::AnimationTick));
         // Desktop's `buildMessageListData` watches the clock until the next timer of the open chats runs out, or for
         // an hour at most.
         let expiry = {
@@ -5652,9 +5660,8 @@ impl BeeperGuiApp {
             .push(palette_menu)
             .push(select)
             .push(native);
-        let token = self.token_ask.as_ref().map(|a| self.view_token_ask(a));
         let confetti = self.confetti.as_ref().filter(|_| in_main).map(confetti::Confetti::view);
-        layers.push(confirm).push(hotkeys).push(token).push(confetti).into()
+        layers.push(confirm).push(hotkeys).push(confetti).into()
     }
 
     /// Desktop's "Remove from Beeper" button of the delete dialog.

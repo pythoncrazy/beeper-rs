@@ -3869,6 +3869,7 @@ fn integrations_like_desktop() {
 
 #[test]
 fn approve_connection_like_desktop() {
+    use crate::modals::Modal;
     use beeper_core::connect::{ClientInfo, Outcome};
     let mut app = demo_app("approve");
     let ask = |app: &mut BeeperGuiApp, version: Option<&str>| {
@@ -3878,7 +3879,11 @@ fn approve_connection_like_desktop() {
         (id, rx)
     };
     let (_, mut rx) = ask(&mut app, Some("1.2"));
-    let mut sim = simulator(app.view_main());
+    // Desktop's `modal-6` window over the main window, titled with the app's name.
+    let window = app.modal_window(Modal::TokenRequest).expect("the request opens its window");
+    assert_eq!(app.title(window), "Beeper");
+    assert!(simulator(app.view_main()).find("Approve connection").is_err(), "nothing over the main window");
+    let mut sim = simulator(app.view_modal(Modal::TokenRequest));
     for label in ["Approve connection", "Allow sensitive actions", "Expires in", "Decline", "Approve"] {
         assert!(sim.find(label).is_ok(), "{label} shows");
     }
@@ -3896,18 +3901,23 @@ fn approve_connection_like_desktop() {
     assert_eq!(rx.try_recv().unwrap(), None, "Decline rejects the request");
     let (id, _) = ask(&mut app, None);
     let _ = app.update(UiMessage::Integrations(integrations::Msg::Request(id, Some(Outcome::Timeout))));
-    assert!(simulator(app.view_main()).find("The request has timed out.").is_ok());
+    assert!(simulator(app.view_modal(Modal::TokenRequest)).find("The request has timed out.").is_ok());
+    assert_eq!(app.modals.len(), 1, "later requests take over the open window");
     let _ = app.update(UiMessage::Integrations(integrations::Msg::Close));
+    let _ = app.update(UiMessage::Window(windows::Msg::Closed(window)));
     assert!(app.token_ask.is_none());
 }
 
 #[test]
 fn approved_connections_like_desktop() {
+    use crate::modals::Modal;
     let mut app = demo_app("connections");
     let _ = app.update(UiMessage::Settings(settings::Msg::Open(SettingsTab::Integrations)));
     assert!(simulator(app.view_settings()).find("Add a connection to get started").is_ok());
     let _ = app.update(UiMessage::Integrations(integrations::Msg::Add(true)));
-    let mut sim = simulator(app.view_settings());
+    let window = app.modal_window(Modal::AddToken).expect("the + opens its window");
+    assert!(simulator(app.view_settings()).find("Create Access Token").is_err(), "nothing over Settings");
+    let mut sim = simulator(app.view_modal(Modal::AddToken));
     for label in ["Name (optional)", "Expires In", "Allow sensitive actions", "Create Access Token"] {
         assert!(sim.find(label).is_ok(), "{label} shows");
     }
@@ -3917,11 +3927,14 @@ fn approved_connections_like_desktop() {
     let _ = app.update(UiMessage::Integrations(integrations::Msg::AddExpiry(Expiry(0))));
     let _ = app.update(UiMessage::Integrations(integrations::Msg::Create));
     let token = app.integrations.add.as_ref().unwrap().token.clone().expect("the token shows once");
-    assert!(simulator(app.view_settings()).find(token.as_str()).is_ok());
+    assert!(simulator(app.view_modal(Modal::AddToken)).find(token.as_str()).is_ok());
     let stored = app.store.read().connect.validate(&token, "", "").expect("the token works");
     assert!(stored.scopes == ["read", "write"] && stored.expires_at.is_none());
-    let _ = app.update(UiMessage::WindowKey(app.settings_window.unwrap(), Key::Named(Named::Escape), Modifiers::empty()));
-    assert!(app.integrations.add.is_none() && app.settings_window.is_some(), "Escape closes only the dialog");
+    // Desktop's `handleEscape` closes no `ADD_BEEPER_CONNECT_TOKEN` window, so it closes with its window.
+    let _ = app.update(UiMessage::WindowKey(window, Key::Named(Named::Escape), Modifiers::empty()));
+    assert!(app.modal_window(Modal::AddToken).is_some(), "Escape keeps the window");
+    let _ = app.update(UiMessage::Window(windows::Msg::Closed(window)));
+    assert!(app.integrations.add.is_none() && app.settings_window.is_some());
     let mut sim = simulator(app.view_settings());
     for label in ["Script", "Sensitive actions", "Created less than a minute ago · Never expires"] {
         assert!(sim.find(label).is_ok(), "{label} shows");
@@ -4036,6 +4049,40 @@ fn online(app: &BeeperGuiApp) {
     st.config.demo = false;
     let seeded: Vec<String> = st.messages.iter().map(|m| m.id.clone()).collect();
     st.sent.extend(seeded.into_iter().map(|id| (id.clone(), id)));
+}
+
+/// Desktop's `sendQueuedMessages`: a send that takes a minute says so in a toast that stays, with Show, until its push
+/// ends.
+#[test]
+fn slow_sends_say_so_like_desktop() {
+    let note = "!note_self:beeper.com";
+    let mut app = demo_app("slow-send");
+    let _ = app.update(UiMessage::SelectChat(note.into()));
+    online(&app);
+    let _ = app.update(UiMessage::Composer(composer::Msg::Changed("hi".into())));
+    let _ = app.update(UiMessage::Composer(composer::Msg::Submit));
+    let _ = app.update(UiMessage::Composer(composer::Msg::SendQueued(Some(note.into()))));
+    let id = app.store.read().outbox[0].2.message().expect("a send has a local echo").to_string();
+    let now = beeper_core::config::now_unix_millis();
+    app.store.write().sending.insert(id.clone(), now - 59_000);
+    let _ = app.update(UiMessage::AnimationTick);
+    assert!(app.shown_toast().is_none(), "a minute did not pass");
+    app.store.write().sending.insert(id.clone(), now - 60_000);
+    let _ = app.update(UiMessage::AnimationTick);
+    let toast = app.shown_toast().expect("a toast of the slow send");
+    assert_eq!(toast.text, "Sending message to Note to self (Beeper) is taking longer than expected");
+    assert!(matches!(&toast.buttons[..], [(label, UiMessage::SelectChat(c))] if *label == "Show" && c == note));
+    assert_eq!(app.sticky_banner.as_ref(), Some(&app.status_banner), "the toast stays");
+    let failed = {
+        let mut st = app.store.write();
+        let (row, _, _) = st.outbox.remove(0);
+        st.pushed(row, Some(&id), Some(("Message took too long to send".into(), true)));
+        st.loaded(&id).expect("the local echo").clone()
+    };
+    let _ = app.update(UiMessage::Upserted(Box::new(failed)));
+    let shown = app.shown_toast().expect("the error toast").text.clone();
+    assert!(shown.ends_with("\nMessage took too long to send"), "{shown}");
+    assert!(app.older_toasts.is_empty() && app.slow_sends.is_empty(), "the end of the push closes the slow toast");
 }
 
 #[test]
@@ -7740,7 +7787,30 @@ fn blocked_users_like_desktop() {
     let picked: Vec<UiMessage> = { clicks(app.view_blocked_users(), title.as_str()) };
     assert!(matches!(&picked[..], [UiMessage::Blocking(blocking::Msg::OpenUser(c))] if *c == id));
     let _ = app.update(UiMessage::Blocking(blocking::Msg::OpenUser(id.clone())));
-    assert!(app.pane.selected_chat_id.as_deref() == Some(id.as_str()) && app.show_right_panel);
+    // Desktop's `BlockedUserInfoBrowserWindow`: a sheet of its own with the chat's Chat Info, not the chat.
+    let sheet = |app: &BeeperGuiApp| app.chat_windows.iter().find(|w| w.1.blocked_sheet).map(|w| w.0);
+    let w = sheet(&app).expect("the sheet opens");
+    assert_ne!(app.pane.selected_chat_id.as_deref(), Some(id.as_str()), "the main window keeps its chat");
+    assert_eq!(app.title(w), title);
+    let _ = app.update(UiMessage::Blocking(blocking::Msg::OpenUser(id.clone())));
+    assert_eq!(app.chat_windows.iter().filter(|w| w.1.blocked_sheet).count(), 1, "a second click raises the sheet");
+    app.drawing.set(Some(w));
+    let done: Vec<UiMessage> = clicks(app.view_info(), "Done");
+    app.drawing.set(None);
+    assert!(matches!(&done[..], [UiMessage::Blocking(blocking::Msg::CloseUser(c))] if *c == id));
+    {
+        let mut st = app.store.write();
+        let i = st.resolve_chat_idx(&id).expect("the DM");
+        st.update_chat(i, |c| c.block = BLOCK_USER);
+    }
+    assert_eq!(app.unblocked_sheets(), [w], "an unblocked person's sheet closes");
+    let _ = app.update(UiMessage::Window(windows::Msg::Closed(w)));
+    assert!(sheet(&app).is_none());
+    {
+        let mut st = app.store.write();
+        let i = st.resolve_chat_idx(&id).expect("the DM");
+        st.update_chat(i, |c| c.block = BLOCK_USER | USER_BLOCKED);
+    }
     assert!(simulator(app.view_settings()).find("1").is_ok(), "the row counts the blocked people");
 }
 

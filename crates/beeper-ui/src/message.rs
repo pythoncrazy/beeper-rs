@@ -2777,18 +2777,12 @@ impl BeeperGuiApp {
             [Some(s), arrow].into_iter().flatten()
         };
         let word = |w: &str| span(w.to_string()).size(rem(13.0)).color(fg);
-        // The words of plain text, with a highlighted "@room".
+        // Plain text, with a highlighted "@room".
         let words = |text: &str| -> Vec<iced::widget::text::Span<'a, String>> {
             let parts = if room_mention { room_parts(text) } else { vec![(text, false)] };
-            parts
-                .into_iter()
-                .flat_map(|(t, room)| match room {
-                    true => vec![highlighted(word(t))],
-                    false => t.split_inclusive(' ').map(word).collect(),
-                })
-                .collect()
+            parts.into_iter().map(|(t, room)| if room { highlighted(word(t)) } else { word(t) }).collect()
         };
-        // Plain text with Desktop's linkify links: each with its underline and arrow, the rest word by word.
+        // Plain text with Desktop's linkify links: each with its underline and arrow.
         let plain = |text: &str| {
             let mut spans = Vec::new();
             let mut at = 0;
