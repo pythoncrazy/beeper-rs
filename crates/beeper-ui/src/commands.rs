@@ -1088,7 +1088,7 @@ impl BeeperGuiApp {
                 self.select_chat(&cid);
             }
             Msg::OpenSearchSelect(chip) => {
-                let find = Find(format!("search-chip-{chip}").into(), None);
+                let find = Find::new(format!("search-chip-{chip}"));
                 return iced::advanced::widget::operate(find).map(move |r| UiMessage::CommandBar(Msg::SearchSelect(Some((chip, r)))));
             }
             Msg::SearchSelect(open) => self.search_select = open,
@@ -1106,13 +1106,7 @@ impl BeeperGuiApp {
                         Some(i) => drop(f.media.remove(i)),
                         None => f.media.push(v),
                     },
-                    SearchPick::Period(v) => {
-                        f.period = (f.period != Some(v)).then_some(v);
-                        self.search_select = None;
-                    }
-                }
-                if matches!(self.search_select, Some((1, _))) {
-                    self.search_select = None;
+                    SearchPick::Period(v) => f.period = (f.period != Some(v)).then_some(v),
                 }
             }
         }

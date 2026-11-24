@@ -1,7 +1,8 @@
 //! The keyboard of Desktop's native context menus, which are Chromium's views menus on Linux (`MenuController`):
 //! ↓ and ↑ move the selection through the enabled items and wrap around, the first ↓ (↑) selects the first (last)
 //! item of a menu that the mouse opened, Home and End select the first and the last item, Enter runs the selected
-//! item, and the pointer over an item selects it.
+//! item, a letter selects the next item that starts with it or runs the only one (`SelectByChar`), and the pointer
+//! over an item selects it.
 
 use super::*;
 use crate::prelude::*;
@@ -45,9 +46,10 @@ pub fn menu<'a>(content: impl Into<El<'a>>) -> El<'a> {
 #[derive(Clone)]
 struct Mark(Option<UiMessage>);
 
-/// The operation that collects the rows of a menu in their order, with their bounds and actions.
+/// The operation that collects the rows of a menu in their order, with their bounds, actions and the first letter of
+/// their titles: their first text that is not an icon.
 #[derive(Default)]
-struct Rows(Vec<(Rectangle, Option<UiMessage>)>);
+struct Rows(Vec<(Rectangle, Option<UiMessage>, Option<char>)>);
 
 impl Operation for Rows {
     fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn Operation)) {
@@ -56,7 +58,14 @@ impl Operation for Rows {
 
     fn custom(&mut self, _: Option<&iced::widget::Id>, bounds: Rectangle, state: &mut dyn std::any::Any) {
         if let Some(Mark(msg)) = state.downcast_ref() {
-            self.0.push((bounds, msg.clone()));
+            self.0.push((bounds, msg.clone(), None));
+        }
+    }
+
+    fn text(&mut self, _: Option<&iced::widget::Id>, _: Rectangle, text: &str) {
+        let icon = |c: &char| ('\u{e000}'..='\u{f8ff}').contains(c);
+        if let Some(row) = self.0.last_mut().filter(|r| r.2.is_none()) {
+            row.2 = text.chars().next().filter(|c| !icon(c)).map(|c| c.to_lowercase().next().unwrap_or(c));
         }
     }
 }
@@ -84,6 +93,19 @@ pub(crate) fn step(enabled: &[bool], at: Option<usize>, key: Named) -> Option<us
         (Named::ArrowDown, Some(i)) => (1..n).map(|d| (i + d) % n).find(|&j| enabled[j]).or(Some(i)),
         (Named::ArrowUp, Some(i)) => (1..n).map(|d| (i + n - d) % n).find(|&j| enabled[j]).or(Some(i)),
         _ => at,
+    }
+}
+
+/// Chromium's `SelectByChar` for a menu without mnemonics, out of the first letters of the titles of the enabled rows
+/// `titles`: the only row whose title starts with `c` runs (true), and of several, the next one after the selected
+/// row `at` is selected.
+pub(crate) fn by_char(titles: &[Option<char>], at: Option<usize>, c: char) -> Option<(usize, bool)> {
+    let c = c.to_lowercase().next()?;
+    let hits: Vec<usize> = (0..titles.len()).filter(|&i| titles[i] == Some(c)).collect();
+    match hits[..] {
+        [] => None,
+        [only] => Some((only, true)),
+        _ => Some((hits.iter().copied().find(|&i| at.is_some_and(|a| i > a)).unwrap_or(hits[0]), false)),
     }
 }
 
@@ -120,6 +142,23 @@ impl Widget<UiMessage, Theme, Renderer> for Menu<'_> {
                     sel.at = step(&enabled, sel.at.filter(|&i| i < rows.len()), *k);
                     sel.keyed = sel.at.map(|i| rows[i].0.center());
                     shell.request_redraw();
+                }
+                shell.capture_event();
+                return;
+            }
+            Event::Keyboard(keyboard::Event::KeyPressed { text: Some(text), modifiers, .. })
+                if !(modifiers.control() || modifiers.alt() || modifiers.logo()) =>
+            {
+                let rows = self.rows(tree, layout, renderer).0;
+                let titles: Vec<Option<char>> = rows.iter().map(|r| r.2.filter(|_| r.1.is_some())).collect();
+                let sel = tree.state.downcast_mut::<Selection>();
+                match text.chars().next().and_then(|c| by_char(&titles, sel.at, c)) {
+                    Some((i, true)) => shell.publish(rows[i].1.clone().expect("an enabled row")),
+                    Some((i, false)) => {
+                        (sel.at, sel.keyed) = (Some(i), Some(rows[i].0.center()));
+                        shell.request_redraw();
+                    }
+                    None => return,
                 }
                 shell.capture_event();
                 return;

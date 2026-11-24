@@ -135,6 +135,7 @@ fn local(m: &UiMessage) -> bool {
         | UiMessage::Message(message::Msg::CopyImage(..) | message::Msg::PressButton(..)) => false,
         UiMessage::KeyPressed(Key::Character(c), mods) => !(c == "p" && mods.command() && mods.shift()),
         UiMessage::InWindow(_, m) | UiMessage::Message(message::Msg::Menu(m)) | UiMessage::Media(media_view::Msg::ItemAct(m)) => local(m),
+        UiMessage::Select(select::Msg::Pick(m)) => local(m),
         _ => true,
     }
 }

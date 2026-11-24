@@ -472,7 +472,7 @@ impl BeeperGuiApp {
     /// and pickers; else it leaves the first of the selection, the modes, the reply, the edit, the thread and the
     /// chat that is open, in this order.
     pub(crate) fn close_modals(&mut self) -> Task<UiMessage> {
-        if self.search_select.take().is_some() {
+        if self.native_select.take().is_some() || self.search_select.take().is_some() {
             return self.settle();
         }
         if self.pane.message_menu.is_none() && self.video.as_ref().is_some_and(video::Video::is_full) {
