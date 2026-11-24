@@ -1787,10 +1787,7 @@ impl BeeperGuiApp {
             (false, _) => body,
             (true, false) => body.or_else(|| Some(tr("Message Request").into())),
             (true, true) => {
-                let head = match c.inviter() {
-                    Some(u) => trs("Invited by %s", &[&member_name(u)]),
-                    None => tr("Group Invitation").into(),
-                };
+                let head = if let Some(u) = c.inviter() { trs("Invited by %s", &[&member_name(u)]) } else { tr("Group Invitation").into() };
                 Some(body.map_or(head.clone(), |b| format!("{head}\n{b}")))
             }
         };

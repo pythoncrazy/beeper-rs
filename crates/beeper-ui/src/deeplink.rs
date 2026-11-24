@@ -253,10 +253,7 @@ impl BeeperGuiApp {
             }
             "otp" => {
                 let code = part(1).unwrap_or_default().to_string();
-                return match self.login_window {
-                    Some(_) => self.update_login(LoginMsg::Code(code)),
-                    None => Task::none(),
-                };
+                return if self.login_window.is_some() { self.update_login(LoginMsg::Code(code)) } else { Task::none() };
             }
             "focus" => {
                 let id = query.get("windowID").map_or("main", String::as_str);

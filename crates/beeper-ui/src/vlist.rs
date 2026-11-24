@@ -198,10 +198,7 @@ impl VList {
         let inner = self.0.borrow();
         let (keys, end, _, starts) = &inner.starts;
         assert!(!end, "a list anchored at its top");
-        let k = match key {
-            Some(key) => keys.iter().position(|&k| k == key)?,
-            None => 0,
-        };
+        let k = if let Some(key) = key { keys.iter().position(|&k| k == key)? } else { 0 };
         let (top, bottom) = (*starts.get(k)?, *starts.get(k + 1)?);
         let (at, len) = inner.seen?;
         let at = at.clamp(0.0, (starts[keys.len()] - len).max(0.0));

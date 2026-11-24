@@ -4329,10 +4329,7 @@ impl BeeperGuiApp {
         let st = self.store.read();
         let list: Vec<&String> = st.recent_chat_ids.iter().filter(|c| st.resolve_chat_idx(c).is_some()).collect();
         let at = self.pane.selected_chat_id.as_ref().map(|s| list.iter().position(|c| *c == s));
-        let to = match at {
-            Some(at) => (at.map_or(-1, |a| a as isize) + by).rem_euclid(list.len().max(1) as isize) as usize,
-            None => 0,
-        };
+        let to = if let Some(at) = at { (at.map_or(-1, |a| a as isize) + by).rem_euclid(list.len().max(1) as isize) as usize } else { 0 };
         let Some(id) = list.get(to).map(|c| c.to_string()) else { return Task::none() };
         drop(st);
         let cycling = std::mem::replace(&mut self.cycling, true);
@@ -4686,10 +4683,7 @@ impl BeeperGuiApp {
                 let pane = &mut self.chat_windows.iter_mut().find(|w| w.0 == id).expect("an open chat window").1;
                 // A chat window closes when it leaves its chat, and a "Media in %s" window when its carousel closes;
                 // a space window stays on its space.
-                let close = match opener {
-                    Some(_) => pane.carousel.is_none(),
-                    None => pane.selected_chat_id.is_none() && !space,
-                };
+                let close = if opener.is_some() { pane.carousel.is_none() } else { pane.selected_chat_id.is_none() && !space };
                 if close {
                     return Task::batch([task, self.close_window(id)]);
                 }

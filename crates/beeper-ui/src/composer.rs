@@ -73,10 +73,7 @@ fn pasted_link(t: &str) -> Option<String> {
     }
     let (r, href) = crate::linkify::link(t).filter(|(r, _)| *r == (0..t.len()))?;
     let bare = !t[r].to_lowercase().starts_with("http://");
-    Some(match href.strip_prefix("http://").filter(|_| bare) {
-        Some(rest) => format!("https://{rest}"),
-        None => href,
-    })
+    Some(if let Some(rest) = href.strip_prefix("http://").filter(|_| bare) { format!("https://{rest}") } else { href })
 }
 
 /// The row of a quick reply in the autocomplete: its whole label for the width, the title, and the text cut like

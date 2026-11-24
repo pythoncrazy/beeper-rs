@@ -146,10 +146,7 @@ impl BeeperGuiApp {
                     return self.update(UiMessage::Settings(settings::Msg::Open(SettingsTab::BeeperPlus)));
                 }
                 let close = self.networks.window.map_or_else(Task::none, window::close);
-                return match connect {
-                    Some(_) => Task::batch([close, self.open_add_account(network, None)]),
-                    None => Task::none(),
-                };
+                return if connect.is_some() { Task::batch([close, self.open_add_account(network, None)]) } else { Task::none() };
             }
             Msg::Account(id) => {
                 let close = self.networks.window.map_or_else(Task::none, window::close);

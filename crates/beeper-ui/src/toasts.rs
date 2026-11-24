@@ -208,10 +208,7 @@ impl BeeperGuiApp {
     pub(crate) fn view_toast(&self, main: bool) -> Option<El<'_>> {
         let p = &self.pal;
         let left = if main { 76.0 } else { 8.0 };
-        let banner = match self.relaunch_toast {
-            Some(t) => trs(t, &["Beeper"]),
-            None => self.status_banner.clone(),
-        };
+        let banner = if let Some(t) = self.relaunch_toast { trs(t, &["Beeper"]) } else { self.status_banner.clone() };
         let pill = |(kind, text): (Pill, String)| -> El<'_> {
             let icon = (kind == Pill::Syncing).then(|| tinted(&MAT_SYNC, 12.0, p.strong));
             let body = row![].push(icon).push(txt(text, 11.0).line_height(lh(14.0)).color(p.strong)).spacing(4).align_y(Center);
