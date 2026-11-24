@@ -831,6 +831,20 @@ impl<M> Bare for button::Button<'_, M> {
     }
 }
 
+/// Desktop's `quaternary` `xs` `rounded` `Button` in the header of a Chat Info section: its 600 11 px label on the
+/// 14 px line of the header, 6 px inside a 16 px pill that `--button-quaternary-main-bg-pressed` fills while pressed,
+/// at half opacity when disabled. `fg` is `--button-quaternary-main-text`, or `--color-primary` for a
+/// `.thread-info-edit-btn`.
+pub fn section_btn<'a, M: 'a>(p: &Palette, label: impl text::IntoFragment<'a>, fg: Color) -> button::Button<'a, M> {
+    let pressed = p.pressed;
+    button(t(label, 11.0, Weight::Semibold)).padding([1, 6]).style(move |_, s| button::Style {
+        background: matches!(s, button::Status::Pressed).then(|| pressed.into()),
+        text_color: if matches!(s, button::Status::Disabled) { fg.scale_alpha(0.5) } else { fg },
+        border: border::rounded(999),
+        ..Default::default()
+    })
+}
+
 pub fn btn_style(bgs: [Color; 3], fgs: [Color; 3], r: f32) -> impl Fn(&Theme, button::Status) -> button::Style + Copy {
     use button::Status::*;
     move |_, s| {
@@ -1094,6 +1108,8 @@ palette! {
     menu_border: Color = hexa(0x000000, 0.15), hexa(0xffffff, 0.15);
     /// The fill of `--skeleton-bg`, the box of a media that loads.
     skeleton: Color = hexa(0x000000, 0.1), hexa(0xffffff, 0.15);
+    /// `--button-quaternary-main-bg-pressed`.
+    pressed: Color = hexa(0x000000, 0.149), hexa(0xffffff, 0.2);
     /// `--color-background-menu-option-hover`.
     menu_hover: Color = hex(0x007aff), hex(0x005bb8);
     /// `--color-on-secondary-container`.

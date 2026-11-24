@@ -1554,6 +1554,7 @@ fn threads_like_desktop() {
         for t in ["Thread", "4 replies", "Eric Migicovsky", "Also sent to the chat"] {
             assert!(sim.find(t).is_ok(), "the thread pane shows {t}");
         }
+        assert_eq!(sim.find("Thread").expect("the title").bounds().height, 18.0, "Desktop's 600 14/18 px title");
     }
     let in_thread = |m: UiMessage| UiMessage::InThread(Box::new(m));
     assert!(simulator(app.view_main()).find("Also send to chat").is_err(), "an empty composer hides the toggle");
@@ -4793,6 +4794,52 @@ fn the_menu_bar_shows_with_alt_like_desktop() {
     let hidden = app.sidebar_hidden;
     let _ = app.update(UiMessage::MenuBar(menubar::Msg::Run(Box::new(UiMessage::RunHotkey("Toggle Sidebar")))));
     assert_eq!((app.menu_bar, app.sidebar_hidden), (None, !hidden), "the item runs and the menu bar hides");
+}
+
+/// Electron's roles in Desktop's menus on Linux: the Edit menu with its English labels and accelerators, File's
+/// "Close", and the Window menu, whose Zoom and Bring All to Front do nothing off macOS. Undo and Redo undo typing.
+#[test]
+fn menu_roles_like_electron() {
+    let mut app = demo_app("menu-roles");
+    let menu = |app: &BeeperGuiApp, title: &str| -> Vec<(String, String)> {
+        let menus = app.menus();
+        let items = menus.into_iter().find(|m| m.0 == title).expect("the menu").1;
+        items.into_iter().map(|i| i.map_or_else(Default::default, |(label, keys, _)| (label, keys))).collect()
+    };
+    let item = |l: &str, k: &str| (l.to_string(), k.to_string());
+    let rule = Default::default;
+    assert_eq!(
+        menu(&app, "Edit"),
+        [
+            item("Undo", "Ctrl+Z"),
+            item("Redo", "Ctrl+Shift+Z"),
+            rule(),
+            item("Cut", "Ctrl+X"),
+            item("Copy", "Ctrl+C"),
+            item("Paste", "Ctrl+V"),
+            item("Delete", ""),
+            rule(),
+            item("Select All", "Ctrl+A")
+        ]
+    );
+    assert_eq!(menu(&app, "Window"), [item("Zoom", ""), item("Minimize", "Ctrl+M"), item("Bring All to Front", "")]);
+    assert_eq!(menu(&app, "File")[3], item("Close", "Ctrl+W"));
+    let _ = app.update(UiMessage::SelectChat(NOTE_CHAT_ID.into()));
+    let _ = app.update(UiMessage::Composer(composer::Msg::Type("hello".into())));
+    let run = |app: &mut BeeperGuiApp, title: &str, label: &str| {
+        let items = app.menus().into_iter().find(|m| m.0 == title).expect("the menu").1;
+        let msg = items.into_iter().flatten().find(|i| i.0 == label).expect("the item").2;
+        let _ = app.update(UiMessage::MenuBar(menubar::Msg::Run(Box::new(msg))));
+    };
+    run(&mut app, "Edit", "Undo");
+    assert_eq!(app.pane.composer.text(), "", "Undo takes the typing back");
+    run(&mut app, "Edit", "Redo");
+    assert_eq!(app.pane.composer.text(), "hello", "and Redo puts it back");
+    run(&mut app, "Edit", "Delete");
+    assert_eq!(app.pane.composer.text(), "hello", "Delete at a caret does nothing");
+    run(&mut app, "Edit", "Select All");
+    run(&mut app, "Edit", "Delete");
+    assert_eq!(app.pane.composer.text(), "", "Delete deletes the selection");
 }
 
 /// Desktop's `activityTimestamp` and `isArchivedInList`: a draft moves its chat to the top, and out of the archive.
@@ -10456,6 +10503,53 @@ fn requests_dot_like_desktop() {
     assert_eq!(new(&app), 1, "a request created after the view is new");
 }
 
+/// `.BrandTooltip-module__tooltip` keeps its 6 px margin from the trigger: under a 40 px trigger at y 100, the card
+/// starts at y 146.
+#[test]
+fn tooltips_keep_a_6px_margin_like_desktop() {
+    let app = demo_app("tooltip-margin");
+    let trigger = container(Space::new()).width(40).height(40).into();
+    let tip = app.tip(trigger, "Archive", vec![], tooltip::Position::Bottom);
+    let view = container(tip).padding(100).width(Fill).height(Fill).style(fill_box(Color::BLACK, 0.0));
+    let mut sim = Simulator::with_size(Default::default(), Size::new(400.0, 300.0), view);
+    sim.point_at(Point::new(120.0, 120.0));
+    let _ = sim.simulate([iced::Event::Mouse(mouse::Event::CursorMoved { position: Point::new(120.0, 120.0) })]);
+    let shot = crate::focus::tests::pixels(&mut sim, &iced::Theme::Light, "tooltip-margin");
+    let k = shot.width() / 400;
+    let top = (140 * k..shot.height()).find(|&y| shot.get_pixel(120 * k, y).0 == [255; 4]).expect("the tooltip card");
+    assert_eq!(top / k, 146);
+}
+
+/// Desktop's `.hoverActions` sit 6 px over `.actions` whatever their size, also in the compact list where the 32 px
+/// button runs out of the bottom of the row: the icon of a 26 px Archive and of a 32 px Mark Read starts 28 px under
+/// the top of the row.
+#[test]
+fn row_hover_actions_sit_like_desktop() {
+    use iced_test::selector::Candidate;
+    let mut app = demo_app("row-actions");
+    let _ = app.update(UiMessage::ChatList(chat_list::Msg::Hover("!wa_family:beeper.com".into(), true)));
+    for (compact, action) in [(false, 0), (true, 0), (false, 1), (true, 1)] {
+        let _ = app.update(UiMessage::Settings(settings::Msg::SetPref("compactChatList", u8::from(compact))));
+        let _ = app.update(UiMessage::Settings(settings::Msg::SetPref("chatActionButton", action)));
+        let mut sim = simulator(app.view_sidebar());
+        let size = if action == 0 { 14.0 } else { 20.0 };
+        let find = |sim: &mut Simulator<'_, UiMessage>, w: f32, h: f32, within: Rectangle| {
+            let hit = move |c: Candidate<'_>| match c {
+                Candidate::Container { bounds, .. }
+                    if (w == 0.0 || bounds.width == w) && bounds.height == h && within.contains(bounds.position()) =>
+                {
+                    Some(bounds)
+                }
+                _ => None,
+            };
+            sim.find(hit).expect("the hover action")
+        };
+        let layer = find(&mut sim, 0.0, 22.0 + 12.0 + size, Rectangle::with_size(Size::INFINITE));
+        let icon = find(&mut sim, size, size, layer);
+        assert_eq!((icon.y - layer.y, layer.x + layer.width - icon.x - icon.width), (28.0, 10.0), "compact {compact}, action {action}");
+    }
+}
+
 /// Desktop's press on a trigger dismisses its tooltip: the "Filter" tooltip does not cover the filter menu.
 #[test]
 fn no_tooltip_over_an_open_menu_like_desktop() {
@@ -10533,6 +10627,32 @@ fn row_hover_actions_fade_like_desktop() {
     let off = app.unhovered.as_ref().map(|u| u.1).expect("the leave starts the fade");
     assert!(app.hover_progress_at(&id, off).is_some_and(|t| t > 0.5), "they fade back out");
     assert_eq!(app.hover_progress_at(&id, off + fade), None, "and are gone after it");
+}
+
+/// Desktop's `proIndicators` keep their place under the hover action, and fade and shrink away while it grows in.
+#[test]
+fn unread_counts_give_way_to_hover_actions_like_desktop() {
+    use iced_test::selector::Candidate;
+    let mut app = demo_app("count-hover");
+    let id = "!wa_family:beeper.com".to_string();
+    let accent = |app: &BeeperGuiApp| {
+        let mut sim = Simulator::with_size(Default::default(), Size::new(400.0, 800.0), app.view_sidebar());
+        let title = sim.find("Family").expect("the title").bounds();
+        let near = move |c: Candidate<'_>| match c {
+            Candidate::Text { content: "2", bounds, .. } if bounds.x > title.x && (bounds.y - title.y).abs() < 30.0 => Some(bounds),
+            _ => None,
+        };
+        let count = sim.find(near).expect("the count keeps its place");
+        let shot = crate::focus::tests::pixels(&mut sim, &iced::Theme::Light, "count-hover");
+        let k = shot.width() / 400;
+        // The pill's edge, left of its digit.
+        let [r, g, b, _] = shot.get_pixel((count.x as u32 - 2) * k, count.center_y() as u32 * k).0;
+        Color::from_rgb8(r, g, b) == app.pal.accent
+    };
+    assert!(accent(&app), "the count shows");
+    let _ = app.update(UiMessage::ChatList(chat_list::Msg::Hover(id, true)));
+    app.hover_at = Some(std::time::Instant::now() - std::time::Duration::from_secs(1));
+    assert!(!accent(&app), "and is gone under the hover action");
 }
 
 /// Desktop's view-limited media: a pill in place of the media, the viewer that counts a view, the Play queue of the
