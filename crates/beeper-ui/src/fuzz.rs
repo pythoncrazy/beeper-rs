@@ -1588,6 +1588,18 @@ fn threads_like_desktop() {
         let ids: Vec<&str> = app.timeline(&st).0.iter().map(|m| m.id.as_str()).collect();
         assert!(ids.contains(&"msg_1010") && !ids.contains(&"msg_1011"), "a reply only in the thread stays out");
     }
+    {
+        // Desktop's `ThreadRootLine` is `--color-on-surface-variant`, and the replies button's label is
+        // `--semantic-colors-text-primary`.
+        let st = app.store.read();
+        let ink = |view: El<'_>, c: Color| {
+            let (shot, c) = (crate::focus::tests::shot(view, Size::new(400.0, 40.0), "thread-ink"), c.into_rgba8());
+            shot.pixels().filter(|px| (0..3).all(|i| px[i].abs_diff(c[i]) < 3)).count()
+        };
+        assert!(ink(app.thread_root_line(&st, root, false), app.pal.muted) > 20, "the root line");
+        let button = app.thread_replies_button(&st, st.chat(chat), root).expect("the replies button");
+        assert!(ink(button, app.pal.fg) > 20, "the replies label");
+    }
     let mut sim = simulator(app.view_main());
     assert!(sim.find("Replying to: ").is_ok(), "a reply also sent to the chat shows its root");
     let _ = sim.click("4 replies").expect("the replies button under the root");
