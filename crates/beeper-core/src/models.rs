@@ -343,7 +343,7 @@ pub struct Profile {
     /// Desktop's `loggedInUser.analyticsDisabled`, where a missing value is true.
     pub analytics_disabled: bool,
     /// Desktop's `loggedInUser.features`, the feature flags until the account data has them.
-    pub features: serde_json::Value,
+    pub features: Box<serde_json::Value>,
 }
 
 impl Default for Profile {
@@ -356,7 +356,7 @@ impl Default for Profile {
             can_subscribe: true,
             internal: false,
             analytics_disabled: true,
-            features: serde_json::Value::Null,
+            features: Box::default(),
         }
     }
 }
