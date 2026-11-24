@@ -282,6 +282,9 @@ pub fn to_attributes(font: Font) -> cosmic_text::Attrs<'static> {
         }
         rest = next;
     }
+    if name == "icons" {
+        attrs = attrs.cache_key_flags(cosmic_text::CacheKeyFlags::DISABLE_HINTING);
+    }
     attrs.family(cosmic_text::Family::Name(name))
 }
 
@@ -386,4 +389,19 @@ pub fn to_color(color: Color) -> cosmic_text::Color {
 pub trait Renderer {
     /// Draws the given [`Raw`] text.
     fn fill_raw(&mut self, raw: Raw);
+}
+
+/// beeper-rs: the cache key and the pixel of `glyph` on the baseline `line_y` of a text at `(left, top)`.
+/// cosmic-text keeps a baseline on whole pixels (its hinting in the Y axis), which suits text. A glyph of a font
+/// without hinting (the icon font: Desktop draws icons as SVGs, wherever their boxes land) takes its place to a
+/// quarter of a pixel instead, so an icon is not up to 1.5 px above its place on a screen at scale 1.
+pub fn place(glyph: &cosmic_text::LayoutGlyph, line_y: f32, (left, top): (f32, f32), scale: f32) -> (cosmic_text::CacheKey, i32, i32) {
+    let physical = glyph.physical((left, top), scale);
+    if !glyph.cache_key_flags.contains(cosmic_text::CacheKeyFlags::DISABLE_HINTING) {
+        return (physical.cache_key, physical.x, physical.y + (line_y * scale).round() as i32);
+    }
+    // swash draws a glyph `y_bin` above its baseline, so the baseline is the next pixel down.
+    let y = (glyph.y - glyph.font_size * glyph.y_offset + line_y) * scale + top;
+    let (whole, y_bin) = cosmic_text::SubpixelBin::new(y.ceil() - y);
+    (cosmic_text::CacheKey { y_bin, ..physical.cache_key }, physical.x, y.ceil() as i32 - whole)
 }

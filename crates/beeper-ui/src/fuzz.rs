@@ -7363,7 +7363,19 @@ fn previews_start_the_name_2_px_after_the_sender_like_desktop() {
         iced_test::selector::Candidate::Text { content, bounds, .. } if content.starts_with("Mom: Dinner") => Some(bounds),
         _ => None,
     });
-    assert_eq!(name.expect("the preview").x - title.x, 14.0);
+    let name = name.expect("the preview");
+    assert_eq!(name.x - title.x, 14.0);
+    // `.ThreadListItem-module__previewText { opacity: .7 }` fades the avatar with the text: no pixel of it is darker
+    // than its gradient at 0.7 over the list.
+    let shot = crate::message::tests::pixels(&mut sim);
+    let k = shot.width() as f32 / 1024.0;
+    let &(bottom, top) = pick("Mom", &crate::style::AVATAR_GRADIENTS);
+    let (ground, bottom, top) = (shot.get_pixel(2, 2).0, hex(bottom).into_rgba8(), hex(top).into_rgba8());
+    let face = (0..12 * k as u32).flat_map(|i| (0..12 * k as u32).map(move |j| (i, j)));
+    let face = face.map(|(i, j)| shot.get_pixel((title.x * k) as u32 + i, ((name.y + 2.0) * k) as u32 + j).0);
+    let darkest: Vec<u8> = (0..3).map(|c| face.clone().map(|px| px[c]).min().unwrap()).collect();
+    let faded = |c: usize| 0.7 * f32::from(bottom[c].min(top[c])) + 0.3 * f32::from(ground[c]);
+    assert!((0..3).all(|c| (f32::from(darkest[c]) - faded(c)).abs() < 4.0), "{darkest:?} {bottom:?} {top:?} on {ground:?}");
 }
 
 /// Desktop's colored network badge (`BrandNetworkIcon`) is the brand tile with 35 % corners, where a circle leaves the
