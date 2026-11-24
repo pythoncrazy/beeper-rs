@@ -6671,6 +6671,34 @@ fn archive_and_low_priority_toasts_undo_like_desktop() {
     assert!(app.shown_undo().is_none());
 }
 
+/// The signed-in Desktop's two-line toast with an icon: 48 px tall under the window's 8 px, its text 8 px under the top
+/// beside the 20 px icon of a 2rem box with a -8 px margin (16 px of the row), and the icon in the middle of the text.
+#[test]
+fn icon_toast_keeps_desktop_padding() {
+    let mut app = demo_app("toast-padding");
+    let main = app.main_window.expect("the main window");
+    let _ = app.update(UiMessage::Window(windows::Msg::Resized(main, Size::new(1200.0, 800.0))));
+    {
+        let mut st = app.store.write();
+        st.features.flags["features"]["*"]["personal-room-overrides"] = true.into();
+        st.beeper_state.verified = true;
+        st.beeper_state.secrets.recovery_code.clear();
+        st.settings.recovery_reminder_dismissed_at = 0;
+    }
+    let size = Size::new(1200.0, 800.0);
+    let mut sim = Simulator::with_size(Default::default(), size, app.view_main());
+    let text = sim.find("Check if you still have access to a recovery key.").expect("the reminder toast").bounds();
+    assert_eq!((text.x, text.y, text.height), (108.0, 752.0, 32.0), "two lines 8 px under the toast's top at 744");
+    // The lock's ink: Desktop's path is 10.2 by 14.6 px at (86.9, 760.7).
+    let shot = crate::message::tests::pixels(&mut sim);
+    let k = shot.width() as f32 / size.width;
+    let dark = |x: u32, y: u32| shot.get_pixel(x, y).0[0] < 0x80;
+    let rows: Vec<u32> =
+        (((750.0 * k) as u32)..((790.0 * k) as u32)).filter(|&y| ((82.0 * k) as u32..(102.0 * k) as u32).any(|x| dark(x, y))).collect();
+    let (top, bottom) = (rows[0] as f32 / k, (rows[rows.len() - 1] + 1) as f32 / k);
+    assert!((top - 760.7).abs() <= 0.5 && (bottom - 775.3).abs() <= 0.5, "the lock's ink rows: {top}..{bottom}");
+}
+
 #[test]
 fn toasts_stack_like_desktop() {
     let mut app = demo_app("toast-stack");
@@ -10345,34 +10373,6 @@ fn the_open_chat_card_keeps_its_round_corners_and_shadow_like_desktop() {
     // Desktop's frame above the card is #E3E4E9 at the top of the window and #DCDDE1 at the card, 8 px below.
     let dark = i32::from(at(700, 0)[0]) - i32::from(at(700, 7)[0]);
     assert!((5..=8).contains(&dark), "the shadow grows by 7 towards the card: {dark}");
-}
-
-/// The signed-in Desktop's two-line toast with an icon: 48 px tall under the window's 8 px, its text 8 px under the top
-/// beside the 20 px icon of a 2rem box with a -8 px margin (16 px of the row), and the icon in the middle of the text.
-#[test]
-fn icon_toast_keeps_desktop_padding() {
-    let mut app = demo_app("toast-padding");
-    let main = app.main_window.expect("the main window");
-    let _ = app.update(UiMessage::Window(windows::Msg::Resized(main, Size::new(1200.0, 800.0))));
-    {
-        let mut st = app.store.write();
-        st.features.flags["features"]["*"]["personal-room-overrides"] = true.into();
-        st.beeper_state.verified = true;
-        st.beeper_state.secrets.recovery_code.clear();
-        st.settings.recovery_reminder_dismissed_at = 0;
-    }
-    let size = Size::new(1200.0, 800.0);
-    let mut sim = Simulator::with_size(Default::default(), size, app.view_main());
-    let text = sim.find("Check if you still have access to a recovery key.").expect("the reminder toast").bounds();
-    assert_eq!((text.x, text.y, text.height), (108.0, 752.0, 32.0), "two lines 8 px under the toast's top at 744");
-    // The lock's ink: Desktop's path is 10.2 by 14.6 px at (86.9, 760.7).
-    let shot = crate::message::tests::pixels(&mut sim);
-    let k = shot.width() as f32 / size.width;
-    let dark = |x: u32, y: u32| shot.get_pixel(x, y).0[0] < 0x80;
-    let rows: Vec<u32> =
-        (((750.0 * k) as u32)..((790.0 * k) as u32)).filter(|&y| ((82.0 * k) as u32..(102.0 * k) as u32).any(|x| dark(x, y))).collect();
-    let (top, bottom) = (rows[0] as f32 / k, (rows[rows.len() - 1] + 1) as f32 / k);
-    assert!((top - 760.7).abs() <= 0.5 && (bottom - 775.3).abs() <= 0.5, "the lock's ink rows: {top}..{bottom}");
 }
 
 /// Desktop's `thread-header-name-chevron` after the chat's name in the header: the Material `chevron_forward` of a
