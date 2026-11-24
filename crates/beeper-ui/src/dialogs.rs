@@ -948,7 +948,8 @@ impl BeeperGuiApp {
         let tile = container(label_tile(&tile, 26.0, 18.0, 13.0, p.strong)).padding(2).style(fill_box(p.card, 15.0));
         let width = 56.0 + (n - 1) as f32 * 33.0;
         let stack = stack![container(faces).padding(Padding::ZERO.top(13.0)), container(tile).align_right(width + 13.0),];
-        let headline = semi(tr("Organize chats in custom spaces."), 13.0).color(p.strong).align_x(Center);
+        let headline =
+            t(tr("Organize chats in custom spaces."), 13.0, spaced(Weight::Semibold, 0.1 / rem(13.0))).color(p.strong).align_x(Center);
         let intro = column![stack, headline].spacing(16).align_x(Center);
         let plus = container(badge(p, prefs::Badge::Plus)).align_right(Fill).padding(Padding::new(12.0).right(14.0));
         stack![container(intro).center(Fill), plus].into()

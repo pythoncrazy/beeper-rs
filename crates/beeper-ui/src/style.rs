@@ -270,6 +270,11 @@ pub const fn fw(weight: Weight) -> Font {
     Font { family: Family::Name("Inter"), weight, ..Font::DEFAULT }
 }
 
+/// Inter at `w` with Desktop's `--semantic-typo-letter-spacing-display-*`, -0.04687rem, on a text of `size` rem px.
+pub fn display(w: Weight, size: f32) -> Font {
+    spaced(w, -0.04687 * 16.0 / size)
+}
+
 /// The face of a text: Inter at a [`Weight`], or a [`Font`], such as a [`spaced`] one.
 pub trait Face: Copy {
     fn font(self) -> Font;
@@ -706,7 +711,7 @@ pub fn gradient_text(s: &str, size: f32, line: f32) -> (svg::Handle, f32) {
         ensure_fonts_loaded();
         let mut fs = font_system().write().expect("font system");
         let mut buf = cosmic_text::Buffer::new(fs.raw(), cosmic_text::Metrics::new(size, line));
-        buf.set_text(fs.raw(), s, &to_attributes(spaced(Weight::Bold, -0.75 / size)), cosmic_text::Shaping::Advanced, None);
+        buf.set_text(fs.raw(), s, &to_attributes(display(Weight::Bold, size)), cosmic_text::Shaping::Advanced, None);
         let mut swash = cosmic_text::SwashCache::new();
         let (mut d, mut width) = (String::new(), 0.0);
         let runs: Vec<_> = buf.layout_runs().map(|r| (r.line_y, r.line_w, r.glyphs.to_vec())).collect();

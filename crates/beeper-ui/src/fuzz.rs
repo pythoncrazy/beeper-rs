@@ -5502,6 +5502,17 @@ fn message_times_keep_their_px_size_like_desktop() {
     }
 }
 
+/// Desktop's letter spacing: the filter count (`.FilterButton-module__count`, 11 px with 0.25 px) "2" is 6.906 px
+/// wide in Desktop 4.3.308, where Inter alone makes it 6.656.
+#[test]
+fn filter_count_is_spaced_like_desktop() {
+    let mut app = demo_app("letter-spacing");
+    let main = app.main_window.expect("the main window");
+    app.set_filters(0b11);
+    let count = Simulator::with_size(Default::default(), app.pane.size, app.view(main)).find("2").expect("the count").bounds().width;
+    assert!((count - 6.906).abs() < 0.05, "{count}");
+}
+
 /// Text that Desktop sets in px keeps its size at any Font size: the filter count (`.FilterButton-module__count`,
 /// 11 px), the empty command bar (`.command-bar .empty`, 14 px), the title and the empty list of the Keyboard
 /// Shortcuts (`.modal h3`, 24 px, and `.hotkey-search-empty`, 16 px) and the tiles of the chat theme

@@ -450,13 +450,14 @@ impl BeeperGuiApp {
         let body: El<'_> = match &self.profile.recovery_key {
             None => Space::new().into(),
             // `verifiedContainer`: the 36 px `done` icon in green over "Verified", 4 px apart.
-            Some(KeyStep::Verified) => {
-                column![tinted(&COPIED_ICON, 36.0, hex(0x19ba3b)), semi(tr("Verified"), 28.0).line_height(lh(36.0)).color(p.strong)]
-                    .spacing(4)
-                    .align_x(Center)
-                    .width(Fill)
-                    .into()
-            }
+            Some(KeyStep::Verified) => column![
+                tinted(&COPIED_ICON, 36.0, hex(0x19ba3b)),
+                t(tr("Verified"), 28.0, crate::style::display(Weight::Semibold, 28.0)).line_height(lh(36.0)).color(p.strong)
+            ]
+            .spacing(4)
+            .align_x(Center)
+            .width(Fill)
+            .into(),
             Some(KeyStep::Verify(typed, busy, error)) => {
                 let heading = if *busy { tr("Verifying...") } else { tr("Verify recovery key") };
                 let heading = semi(heading, 18.0).line_height(lh(26.0)).color(p.accent).center().width(Fill);
@@ -469,7 +470,7 @@ impl BeeperGuiApp {
             Some(KeyStep::Display(copied)) => {
                 let key = crate::verify::format_recovery_key(&st.beeper_state.secrets.recovery_code);
                 // `ClippableRecoveryCode` without its copy text: the key on a gray card, which a click copies.
-                let key = txt(key, 28.0).font(fw(Weight::Semibold)).line_height(lh(36.0)).color(p.strong).center();
+                let key = t(key, 28.0, crate::style::display(Weight::Semibold, 28.0)).line_height(lh(36.0)).color(p.strong).center();
                 let key = button(container(key).center_x(Fill).padding([12, 16]))
                     .padding(0)
                     .style(btn_style([p.chip; 3], [p.strong; 3], 8.0))

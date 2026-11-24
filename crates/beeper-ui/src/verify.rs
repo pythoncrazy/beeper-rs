@@ -3,7 +3,6 @@
 use crate::i18n::{tr, trn_named, trx};
 use crate::login::{art, brand_gradient, Screen, H3};
 use crate::prelude::*;
-use crate::style::t;
 use iced::widget::column;
 use iced::{border, window};
 
@@ -245,7 +244,8 @@ impl BeeperGuiApp {
             (None, Some(_)) => tr("QR Verification"),
             (None, None) => trx("Loading...", "verification modal title"),
         };
-        let title = t(title, 28.0, Weight::ExtraBold).line_height(lh(38.0)).color(p.strong).center();
+        // `.VerificationModal-module__title` has a -0.75 px letter spacing.
+        let title = t(title, 28.0, spaced(Weight::ExtraBold, -0.75 / rem(28.0))).line_height(lh(38.0)).color(p.strong).center();
         let code = qr.map(|qr| -> El<'_> {
             let emojis = v.is_some_and(|v| v.methods.contains(&"sas")).then(|| {
                 let label = trx("Confirm using emojis instead", "button label");
@@ -762,7 +762,7 @@ impl BeeperGuiApp {
         .padding([0, 24]);
         let reset = brand_btn(p, trx("Reset Recovery Key", "button label"), Brand::Danger, LoginMsg::ConfirmReset.into());
         let back = brand_btn(p, trx("Cancel", "button label"), Brand::Muted, LoginMsg::Show(Screen::Verify).into());
-        let title = bold(tr("Reset your Recovery Key"), H3).color(p.text_danger).center().width(Fill);
+        let title = t(tr("Reset your Recovery Key"), H3, crate::style::display(Weight::Bold, H3)).color(p.text_danger).center().width(Fill);
         column![Space::new().height(40), container(title).padding([0, 8]), container(warning).center(Fill)]
             .push(actions(vec![reset, back], 24.0))
             .into()

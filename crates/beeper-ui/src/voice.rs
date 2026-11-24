@@ -602,8 +602,10 @@ impl BeeperGuiApp {
         };
         let total = format!(" / {}", clock(clip.secs()));
         let elapsed = (w > 135.0).then(|| clock(pos) + if w > 205.0 { &total } else { "" });
-        let time_w = 4.0 + elapsed.as_ref().map_or(0.0, |e| text_width(e, 11.0, Weight::Normal) + 8.0) + 10.0;
-        let elapsed = elapsed.map(|e| txt(e, 11.0).color(p.strong));
+        // `.GlobalAudioControls-module__time` has a 0.25 px letter spacing.
+        let face = spaced(Weight::Normal, 0.25 / rem(11.0));
+        let time_w = 4.0 + elapsed.as_ref().map_or(0.0, |e| text_width(e, 11.0, face) + 8.0) + 10.0;
+        let elapsed = elapsed.map(|e| crate::style::t(e, 11.0, face).color(p.strong));
         let close = icon_btn(4, 10.0, p.strong, Some(UiMessage::Voice(Msg::Close)));
         let time = row![].push(elapsed).push(close).spacing(8).align_y(Center).padding(Padding::ZERO.left(4));
         let chat = st.resolve_chat_idx(&t.chat).map(|i| &st.chats[i]).filter(|_| w > 163.0);

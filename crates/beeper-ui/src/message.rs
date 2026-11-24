@@ -4691,7 +4691,7 @@ pub(crate) mod tests {
             m.text = Some("the quoted text".into());
         });
         change(&app, &reply, |m| m.linked_message_id = Some(quoted.clone()));
-        assert_eq!(alone(&app, &reply).find("Z").expect("the reply avatar").bounds().height, 12.0, "24 px");
+        assert_eq!(alone(&app, &reply).find("ZQ").expect("the reply avatar").bounds().height, 12.0, "24 px");
         // Whether the top edge of the box around `label` has gaps.
         let dashed = |app: &BeeperGuiApp, label: &str| {
             let mut sim = alone(app, &reply);
@@ -4715,7 +4715,7 @@ pub(crate) mod tests {
             let i = st.resolve_chat_idx(&cid).expect("the group");
             st.update_chat(i, |c| c.chat_type = "single".into());
         }
-        assert!(alone(&app, &reply).find("Z").is_err(), "a DM has no reply avatar");
+        assert!(alone(&app, &reply).find("ZQ").is_err(), "a DM has no reply avatar");
     }
 
     /// Desktop's `dir="auto"`: the wrapped lines of a right-to-left message start at the right of its bubble, so its
