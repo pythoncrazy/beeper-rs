@@ -1568,148 +1568,16 @@ impl BeeperGuiApp {
 
     pub(crate) fn composer(&mut self, msg: Msg) -> Task<UiMessage> {
         match msg {
-            Msg::EditMenu(word) => {
-                let text = self.pane.composer.text();
-                if let Some(r) = &word {
-                    self.pane.composer = format::content(&text, r.clone());
-                }
-                let word = word.map(|r| (r.clone(), spell::suggest(&text[r])));
-                self.pane.edit_menu = Some((self.cursor.get(), word));
-            }
-            Msg::MenuEdit(edit) => {
-                let (_, word) = self.pane.edit_menu.take().expect("the edit menu is open");
-                let old = self.pane.composer.text();
-                let sel = format::selection(&self.pane.composer).map_or("", |r| &old[r]).to_owned();
-                let focus = operation::focus("composer-input");
-                return match edit {
-                    MenuEdit::Replace(fix) => {
-                        let (r, _) = word.expect("a suggestion has a word");
-                        let text = format!("{}{fix}{}", &old[..r.start], &old[r.end..]);
-                        self.pane.composer = format::content(&text, r.start + fix.len()..r.start + fix.len());
-                        Task::batch([self.composer_changed(old), focus])
-                    }
-                    MenuEdit::Learn => match spell::learn(&old[word.expect("Learn Spelling has a word").0]) {
-                        Ok(()) => focus,
-                        Err(e) => {
-                            self.status_banner = e.to_string();
-                            focus
-                        }
-                    },
-                    MenuEdit::Copy => Task::batch([iced::clipboard::write(sel), focus]),
-                    MenuEdit::Cut => {
-                        self.pane.composer.perform(text_editor::Action::Edit(text_editor::Edit::Delete));
-                        Task::batch([iced::clipboard::write(sel), self.composer_changed(old), focus])
-                    }
-                    MenuEdit::Paste => Task::batch([self.update(UiMessage::Composer(Msg::Paste)), focus]),
-                };
-            }
-            Msg::Edit(action) if !action.is_edit() && self.pane.att_focus.is_some() => {
-                self.pane.att_focus = None;
-                return self.update(UiMessage::Composer(Msg::Edit(action)));
-            }
-            Msg::Edit(action) if !action.is_edit() => {
-                self.pane.emoticon = None;
-                self.pane.composer.perform(action);
-            }
-            Msg::Edit(action) => {
-                use text_editor::{Action, Edit};
-                self.hold_compose_target();
-                let old = self.pane.composer.text();
-                match (action, self.pane.emoticon.take().filter(|(after, ..)| *after == old)) {
-                    (Action::Edit(Edit::Backspace), Some((_, typed, at))) => {
-                        self.pane.composer = format::content(&typed, at..at);
-                    }
-                    (action, _) => {
-                        let typed = matches!(action, Action::Edit(Edit::Insert(_)));
-                        self.pane.composer.perform(action);
-                        let text = self.pane.composer.text();
-                        let at = format::offset(&text, self.pane.composer.cursor().position);
-                        let rules = typed && !self.store.read().settings.on("keepEmoticons");
-                        if let Some((new, caret)) = rules.then(|| emoji::replace_emoticon(&text, at)).flatten() {
-                            self.pane.composer = format::content(&new, caret..caret);
-                            self.pane.emoticon = Some((new, text, at));
-                        }
-                    }
-                }
-                return self.composer_changed(old);
-            }
-            Msg::DeleteTo(to, back) => {
-                if self.pane.composer.selection().is_none() {
-                    self.pane.composer.perform(text_editor::Action::Select(to));
-                }
-                let edit = if back { text_editor::Edit::Backspace } else { text_editor::Edit::Delete };
-                return self.update(UiMessage::Composer(Msg::Edit(text_editor::Action::Edit(edit))));
-            }
-            Msg::Undo(false) if let Some(undo) = self.shown_undo() => {
-                return self.update(UiMessage::Toast(toasts::Msg::Action(None, Box::new(undo))));
-            }
-            Msg::Undo(false) if self.queued_here() => return self.update(UiMessage::Composer(Msg::UndoSend)),
-            Msg::Undo(true) if self.queued_here() => {
-                return self.update(UiMessage::Composer(Msg::SendQueued(self.pane.selected_chat_id.clone())));
-            }
-            Msg::Undo(redo) => {
-                let h = &mut self.pane.history;
-                let (from, to) = if redo { (&mut h.redo, &mut h.undo) } else { (&mut h.undo, &mut h.redo) };
-                let Some(text) = from.pop() else { return Task::none() };
-                let now = self.pane.composer.text();
-                let at = format::diff(&text, &now).1;
-                to.push(now);
-                h.last = None;
-                self.pane.emoticon = None;
-                self.pane.composer = format::content(&text, at..at);
-                return self.composer_effects();
-            }
-            Msg::Changed(v) => {
-                let old = self.pane.composer.text();
-                self.pane.composer = composer_with(&v);
-                return self.composer_changed(old);
-            }
-            // Tiptap's list keys, which work in the focused composer of a chat that supports the list.
-            Msg::FormatKey(i, Caret::Field) if self.formats() & 1 << i != 0 => {
-                return self.update(UiMessage::Composer(Msg::Format(i)));
-            }
-            Msg::FormatKey(..) => {}
-            Msg::Format(format::CODE) if format::selection(&self.pane.composer).is_none() => {
-                let insert = text_editor::Action::Edit(text_editor::Edit::Insert('`'));
-                return self.update(UiMessage::Composer(Msg::Edit(insert)));
-            }
-            Msg::Format(i) => {
-                let old = self.pane.composer.text();
-                let caret = format::offset(&old, self.pane.composer.cursor().position);
-                let r = format::selection(&self.pane.composer).unwrap_or(caret..caret);
-                if i == format::LINK && !format::active(i, &old, &r) {
-                    self.pane.link_dialog = Some((String::new(), old[r].to_owned()));
-                    return operation::focus("link-url");
-                }
-                // Desktop's format keys: Tiptap's toggles of the marks that the chat supports, and else the marks as
-                // text (`_`). Inline code without that support does nothing, as `toggleCode` does not exist there.
-                let formats = self.formats();
-                let (text, r) = match i {
-                    0..=2 | format::CODE if formats & 1 << i != 0 => format::toggle_mark(i, &old, r),
-                    0..=2 => format::insert_marks(i, &old, r),
-                    format::CODE => return Task::none(),
-                    _ if r.is_empty() && i != format::LINK => format::toggle_line(i, &old, r.start),
-                    _ => format::toggle(i, &old, r),
-                };
-                self.pane.composer = format::content(&text, r);
-                return Task::batch([self.composer_changed(old), operation::focus("composer-input")]);
-            }
-            Msg::LinkDialog(d) => {
-                let closed = d.is_none();
-                self.pane.link_dialog = d;
-                if closed {
-                    return operation::focus("composer-input");
-                }
-            }
-            Msg::SaveLink => {
-                let (url, label) = self.pane.link_dialog.take().expect("the link dialog is open");
-                let old = self.pane.composer.text();
-                let caret = format::offset(&old, self.pane.composer.cursor().position);
-                let r = format::selection(&self.pane.composer).unwrap_or(caret..caret);
-                let (text, r) = format::link(&old, r, url.trim(), label.trim());
-                self.pane.composer = format::content(&text, r);
-                return Task::batch([self.composer_changed(old), operation::focus("composer-input")]);
-            }
+            msg @ (Msg::EditMenu(..)
+            | Msg::MenuEdit(..)
+            | Msg::Edit(..)
+            | Msg::DeleteTo(..)
+            | Msg::Undo(..)
+            | Msg::Changed(..)
+            | Msg::FormatKey(..)
+            | Msg::Format(..)
+            | Msg::LinkDialog(..)
+            | Msg::SaveLink) => return self.composer_text(msg),
             Msg::Submit if self.suggestions(&self.store.read()).is_some() => {
                 return self.update(UiMessage::Composer(Msg::PickSuggestion(self.pane.suggest)));
             }
@@ -1855,6 +1723,82 @@ impl BeeperGuiApp {
                 return Task::batch([focus, enter]);
             }
             Msg::Enter(_) => {}
+            msg @ (Msg::Paste
+            | Msg::Pasted(..)
+            | Msg::PasteText(..)
+            | Msg::DiscardAttachment(..)
+            | Msg::FocusAttachment(..)
+            | Msg::AttachmentKey(..)
+            | Msg::PickFiles
+            | Msg::FilesPicked(..)
+            | Msg::FilesLoaded(..)
+            | Msg::FileHover(..)
+            | Msg::FileDropped(..)
+            | Msg::DropEnded
+            | Msg::LinkPreviewLoaded(..)
+            | Msg::RemoveLinkPreview(..)) => return self.composer_files(msg),
+            Msg::UndoSend => {
+                let open = self.pane.selected_chat_id.as_ref();
+                let Some(i) = self.queued.iter().position(|q| Some(&q.chat) == open) else { return Task::none() };
+                let q = self.queued.remove(i);
+                let mut st = self.store.write();
+                for (id, _) in &q.sends {
+                    st.remove_message(&q.chat, id).expect("a queued message is in its chat");
+                }
+                drop(st);
+                self.pane.composer = composer_with(&q.text);
+                (self.pane.reply_to_message_id, self.pane.attachments) = (q.reply_to, q.files);
+                return Task::batch([self.composer_effects(), operation::focus("composer-input")]);
+            }
+            Msg::SendQueued(chat) => {
+                let now = now_unix_millis();
+                let (send, keep) =
+                    std::mem::take(&mut self.queued).into_iter().partition(|q| chat.as_ref().map_or(q.due <= now, |c| q.chat == *c));
+                self.queued = keep;
+                let mut st = self.store.write();
+                for q in send.into_iter().flat_map(|q: Queued| q.sends.into_iter().map(move |s| (q.to.clone(), s.1))) {
+                    st.queue(&q.0, q.1);
+                }
+            }
+            Msg::TogglePicker(kind) => {
+                let open = self.pane.picker != Some(kind) && self.supports(kind);
+                self.pane.picker = open.then_some(kind);
+                if open && kind == Picker::Sticker {
+                    return self.load_sticker_packs();
+                }
+                if open && kind == Picker::Gif {
+                    self.pane.show_attach_menu = true;
+                    let focus = operation::focus("gif-search-input");
+                    if self.gifs.is_empty() && !self.gif_loading {
+                        self.gif_loading = true;
+                        self.gif_error = None;
+                        return Task::batch([focus, self.update(UiMessage::Gifs(gifs::Msg::Search(self.gif_query.clone())))]);
+                    }
+                    return focus;
+                }
+            }
+            Msg::ToggleAttachMenu => {
+                self.pane.show_attach_menu = !self.pane.show_attach_menu;
+                if !self.pane.show_attach_menu {
+                    self.pane.picker = None;
+                }
+            }
+            Msg::Clip(cut) => {
+                let Some(text) = self.pane.composer.selection() else { return Task::none() };
+                let copy = iced::clipboard::write(text);
+                if !cut {
+                    return copy;
+                }
+                let delete = self.update(UiMessage::Composer(Msg::Edit(text_editor::Action::Edit(text_editor::Edit::Delete))));
+                return Task::batch([copy, delete]);
+            }
+        }
+        self.settle()
+    }
+
+    /// The files of the composer: paste, the file picker, drops, attachments and link previews.
+    fn composer_files(&mut self, msg: Msg) -> Task<UiMessage> {
+        match msg {
             Msg::Paste => return Task::perform(clipboard_paste(), |r| UiMessage::Composer(Msg::Pasted(r))),
             // Desktop's `paste` handler: copied files go to the attachments, and a text goes into the composer.
             Msg::Pasted(r) => match r {
@@ -2014,61 +1958,157 @@ impl BeeperGuiApp {
             Msg::RemoveLinkPreview(url) => {
                 self.pane.composer_links.iter_mut().filter(|(u, _)| *u == url).for_each(|(_, s)| *s = LinkState::Discarded);
             }
-            Msg::UndoSend => {
-                let open = self.pane.selected_chat_id.as_ref();
-                let Some(i) = self.queued.iter().position(|q| Some(&q.chat) == open) else { return Task::none() };
-                let q = self.queued.remove(i);
-                let mut st = self.store.write();
-                for (id, _) in &q.sends {
-                    st.remove_message(&q.chat, id).expect("a queued message is in its chat");
+            _ => unreachable!("not a composer_files message"),
+        }
+        self.settle()
+    }
+
+    /// The editing of the text of the composer: typing, undo, the edit menu, the format keys and links.
+    fn composer_text(&mut self, msg: Msg) -> Task<UiMessage> {
+        match msg {
+            Msg::EditMenu(word) => {
+                let text = self.pane.composer.text();
+                if let Some(r) = &word {
+                    self.pane.composer = format::content(&text, r.clone());
                 }
-                drop(st);
-                self.pane.composer = composer_with(&q.text);
-                (self.pane.reply_to_message_id, self.pane.attachments) = (q.reply_to, q.files);
-                return Task::batch([self.composer_effects(), operation::focus("composer-input")]);
+                let word = word.map(|r| (r.clone(), spell::suggest(&text[r])));
+                self.pane.edit_menu = Some((self.cursor.get(), word));
             }
-            Msg::SendQueued(chat) => {
-                let now = now_unix_millis();
-                let (send, keep) =
-                    std::mem::take(&mut self.queued).into_iter().partition(|q| chat.as_ref().map_or(q.due <= now, |c| q.chat == *c));
-                self.queued = keep;
-                let mut st = self.store.write();
-                for q in send.into_iter().flat_map(|q: Queued| q.sends.into_iter().map(move |s| (q.to.clone(), s.1))) {
-                    st.queue(&q.0, q.1);
-                }
-            }
-            Msg::TogglePicker(kind) => {
-                let open = self.pane.picker != Some(kind) && self.supports(kind);
-                self.pane.picker = open.then_some(kind);
-                if open && kind == Picker::Sticker {
-                    return self.load_sticker_packs();
-                }
-                if open && kind == Picker::Gif {
-                    self.pane.show_attach_menu = true;
-                    let focus = operation::focus("gif-search-input");
-                    if self.gifs.is_empty() && !self.gif_loading {
-                        self.gif_loading = true;
-                        self.gif_error = None;
-                        return Task::batch([focus, self.update(UiMessage::Gifs(gifs::Msg::Search(self.gif_query.clone())))]);
+            Msg::MenuEdit(edit) => {
+                let (_, word) = self.pane.edit_menu.take().expect("the edit menu is open");
+                let old = self.pane.composer.text();
+                let sel = format::selection(&self.pane.composer).map_or("", |r| &old[r]).to_owned();
+                let focus = operation::focus("composer-input");
+                return match edit {
+                    MenuEdit::Replace(fix) => {
+                        let (r, _) = word.expect("a suggestion has a word");
+                        let text = format!("{}{fix}{}", &old[..r.start], &old[r.end..]);
+                        self.pane.composer = format::content(&text, r.start + fix.len()..r.start + fix.len());
+                        Task::batch([self.composer_changed(old), focus])
                     }
-                    return focus;
+                    MenuEdit::Learn => match spell::learn(&old[word.expect("Learn Spelling has a word").0]) {
+                        Ok(()) => focus,
+                        Err(e) => {
+                            self.status_banner = e.to_string();
+                            focus
+                        }
+                    },
+                    MenuEdit::Copy => Task::batch([iced::clipboard::write(sel), focus]),
+                    MenuEdit::Cut => {
+                        self.pane.composer.perform(text_editor::Action::Edit(text_editor::Edit::Delete));
+                        Task::batch([iced::clipboard::write(sel), self.composer_changed(old), focus])
+                    }
+                    MenuEdit::Paste => Task::batch([self.update(UiMessage::Composer(Msg::Paste)), focus]),
+                };
+            }
+            Msg::Edit(action) if !action.is_edit() && self.pane.att_focus.is_some() => {
+                self.pane.att_focus = None;
+                return self.update(UiMessage::Composer(Msg::Edit(action)));
+            }
+            Msg::Edit(action) if !action.is_edit() => {
+                self.pane.emoticon = None;
+                self.pane.composer.perform(action);
+            }
+            Msg::Edit(action) => {
+                use text_editor::{Action, Edit};
+                self.hold_compose_target();
+                let old = self.pane.composer.text();
+                match (action, self.pane.emoticon.take().filter(|(after, ..)| *after == old)) {
+                    (Action::Edit(Edit::Backspace), Some((_, typed, at))) => {
+                        self.pane.composer = format::content(&typed, at..at);
+                    }
+                    (action, _) => {
+                        let typed = matches!(action, Action::Edit(Edit::Insert(_)));
+                        self.pane.composer.perform(action);
+                        let text = self.pane.composer.text();
+                        let at = format::offset(&text, self.pane.composer.cursor().position);
+                        let rules = typed && !self.store.read().settings.on("keepEmoticons");
+                        if let Some((new, caret)) = rules.then(|| emoji::replace_emoticon(&text, at)).flatten() {
+                            self.pane.composer = format::content(&new, caret..caret);
+                            self.pane.emoticon = Some((new, text, at));
+                        }
+                    }
+                }
+                return self.composer_changed(old);
+            }
+            Msg::DeleteTo(to, back) => {
+                if self.pane.composer.selection().is_none() {
+                    self.pane.composer.perform(text_editor::Action::Select(to));
+                }
+                let edit = if back { text_editor::Edit::Backspace } else { text_editor::Edit::Delete };
+                return self.update(UiMessage::Composer(Msg::Edit(text_editor::Action::Edit(edit))));
+            }
+            Msg::Undo(false) if let Some(undo) = self.shown_undo() => {
+                return self.update(UiMessage::Toast(toasts::Msg::Action(None, Box::new(undo))));
+            }
+            Msg::Undo(false) if self.queued_here() => return self.update(UiMessage::Composer(Msg::UndoSend)),
+            Msg::Undo(true) if self.queued_here() => {
+                return self.update(UiMessage::Composer(Msg::SendQueued(self.pane.selected_chat_id.clone())));
+            }
+            Msg::Undo(redo) => {
+                let h = &mut self.pane.history;
+                let (from, to) = if redo { (&mut h.redo, &mut h.undo) } else { (&mut h.undo, &mut h.redo) };
+                let Some(text) = from.pop() else { return Task::none() };
+                let now = self.pane.composer.text();
+                let at = format::diff(&text, &now).1;
+                to.push(now);
+                h.last = None;
+                self.pane.emoticon = None;
+                self.pane.composer = format::content(&text, at..at);
+                return self.composer_effects();
+            }
+            Msg::Changed(v) => {
+                let old = self.pane.composer.text();
+                self.pane.composer = composer_with(&v);
+                return self.composer_changed(old);
+            }
+            // Tiptap's list keys, which work in the focused composer of a chat that supports the list.
+            Msg::FormatKey(i, Caret::Field) if self.formats() & 1 << i != 0 => {
+                return self.update(UiMessage::Composer(Msg::Format(i)));
+            }
+            Msg::FormatKey(..) => {}
+            Msg::Format(format::CODE) if format::selection(&self.pane.composer).is_none() => {
+                let insert = text_editor::Action::Edit(text_editor::Edit::Insert('`'));
+                return self.update(UiMessage::Composer(Msg::Edit(insert)));
+            }
+            Msg::Format(i) => {
+                let old = self.pane.composer.text();
+                let caret = format::offset(&old, self.pane.composer.cursor().position);
+                let r = format::selection(&self.pane.composer).unwrap_or(caret..caret);
+                if i == format::LINK && !format::active(i, &old, &r) {
+                    self.pane.link_dialog = Some((String::new(), old[r].to_owned()));
+                    return operation::focus("link-url");
+                }
+                // Desktop's format keys: Tiptap's toggles of the marks that the chat supports, and else the marks as
+                // text (`_`). Inline code without that support does nothing, as `toggleCode` does not exist there.
+                let formats = self.formats();
+                let (text, r) = match i {
+                    0..=2 | format::CODE if formats & 1 << i != 0 => format::toggle_mark(i, &old, r),
+                    0..=2 => format::insert_marks(i, &old, r),
+                    format::CODE => return Task::none(),
+                    _ if r.is_empty() && i != format::LINK => format::toggle_line(i, &old, r.start),
+                    _ => format::toggle(i, &old, r),
+                };
+                self.pane.composer = format::content(&text, r);
+                return Task::batch([self.composer_changed(old), operation::focus("composer-input")]);
+            }
+            Msg::LinkDialog(d) => {
+                let closed = d.is_none();
+                self.pane.link_dialog = d;
+                if closed {
+                    return operation::focus("composer-input");
                 }
             }
-            Msg::ToggleAttachMenu => {
-                self.pane.show_attach_menu = !self.pane.show_attach_menu;
-                if !self.pane.show_attach_menu {
-                    self.pane.picker = None;
-                }
+            Msg::SaveLink => {
+                let (url, label) = self.pane.link_dialog.take().expect("the link dialog is open");
+                let old = self.pane.composer.text();
+                let caret = format::offset(&old, self.pane.composer.cursor().position);
+                let r = format::selection(&self.pane.composer).unwrap_or(caret..caret);
+                let (text, r) = format::link(&old, r, url.trim(), label.trim());
+                self.pane.composer = format::content(&text, r);
+                return Task::batch([self.composer_changed(old), operation::focus("composer-input")]);
             }
-            Msg::Clip(cut) => {
-                let Some(text) = self.pane.composer.selection() else { return Task::none() };
-                let copy = iced::clipboard::write(text);
-                if !cut {
-                    return copy;
-                }
-                let delete = self.update(UiMessage::Composer(Msg::Edit(text_editor::Action::Edit(text_editor::Edit::Delete))));
-                return Task::batch([copy, delete]);
-            }
+            _ => unreachable!("not a composer_text message"),
         }
         self.settle()
     }

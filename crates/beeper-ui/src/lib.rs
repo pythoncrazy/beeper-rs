@@ -4460,105 +4460,24 @@ impl BeeperGuiApp {
                 return Task::batch(notices);
             }
             UiMessage::SaveDrafts => self.save_drafts(),
-            UiMessage::OpenPollCreator(chat) => {
-                if let Some(d) = self.poll_windows.iter().find(|d| d.chat == chat) {
-                    return self.raise(d.id);
-                }
-                let (id, open) = self.open_child(Size::new(400.0, 620.0));
-                let question = format!("poll-{chat}");
-                self.poll_windows.push(PollDraft::new(id, chat));
-                return open.chain(operation::focus(question));
-            }
-            UiMessage::Poll(id, edit) => return self.poll_edit(id, edit),
-            UiMessage::OpenEditSpaces => {
-                self.list.chat_menu = None;
-                if let Some(d) = &self.spaces_window {
-                    return self.raise(d.id);
-                }
-                let (id, open) = self.open_child(SPACES_SIZE);
-                let st = self.store.read();
-                let order = rail_spaces(&st).into_iter().chain([SPACES_DIVIDER.into()]).chain(hidden_spaces(&st));
-                let order = order.collect();
-                drop(st);
-                self.spaces_window = Some(SpacesDraft { id, order, search: String::new(), drag: None, menu: None, scrolled: false });
-                return open;
-            }
-            UiMessage::Spaces(e) => return self.spaces_edit(e),
-            UiMessage::OpenEditGroup(chat) => {
-                self.list.chat_menu = None;
-                if let Some(d) = &self.group_window {
-                    return self.raise(d.id);
-                }
-                let (id, open) = self.open_child(GROUP_SIZE);
-                let st = self.store.read();
-                let c = &st.chats[st.resolve_chat_idx(&chat).expect("an edited group")];
-                let (title, topic) = (c.room_title().to_string(), composer_with(c.description.as_deref().unwrap_or_default()));
-                drop(st);
-                self.group_window = Some(with_defaults!(GroupDraft {
-                    id,
-                    chat,
-                    title,
-                    topic,
-                }, default: photo, hover, personal, saving, dropping));
-                return open;
-            }
-            UiMessage::OpenEditForMe(chat) => return self.open_edit_for_me(chat),
-            UiMessage::Group(e) => return self.group_edit(e),
-            UiMessage::Profile(m) => return self.update_profile(m),
-            UiMessage::UndoAction => {
-                let Some((what, undo)) = self.undo_stack.pop() else { return Task::none() };
-                let depth = self.undo_stack.len();
-                let task = self.update(undo);
-                self.undo_stack.truncate(depth);
-                self.toast = None;
-                self.status_banner = format!("{} {what}", tr("Undo:"));
-                self.undo_note = Some(what);
-                return task;
-            }
-            UiMessage::Modifiers(mods) => {
-                // Electron's `autoHideMenuBar`: Alt on its own shows the menu bar, and hides it again.
-                let was = std::mem::replace(&mut self.mods, mods);
-                match (was == Modifiers::ALT, mods == Modifiers::ALT) {
-                    (false, true) if was.is_empty() => self.alt_alone = true,
-                    (true, false) if mods.is_empty() && std::mem::take(&mut self.alt_alone) => {
-                        if self.main_window.or(self.login_window).is_some() {
-                            self.menu_bar = if self.menu_bar.is_some() { None } else { Some(None) };
-                        }
-                    }
-                    _ => self.alt_alone = false,
-                }
-                if self.cycling && !mods.control() {
-                    self.cycling = false;
-                    if let Some(c) = self.pane.selected_chat_id.clone() {
-                        self.push_history(&c);
-                    }
-                }
-            }
-            UiMessage::InputEscape(id) if Some(id) == self.settings_window && self.integrations.add.is_some() => {
-                self.integrations.add = None;
-            }
-            // Desktop's Escape in the search clears it, and Escape in a field of Settings takes the focus away.
-            UiMessage::InputEscape(id) if Some(id) == self.settings_window => {
-                let clear = self.update(UiMessage::Settings(settings::Msg::Query(String::new())));
-                return Task::batch([clear, focus::blur()]);
-            }
-            UiMessage::InputEscape(id) => {
-                return self.update(UiMessage::WindowKey(id, Key::Named(Named::Escape), keyboard::Modifiers::empty()));
-            }
-            UiMessage::WindowText(id, text) => return self.window_text(id, text),
-            UiMessage::WindowKey(id, key, mods) => return self.window_key(id, key, mods),
-            UiMessage::Commands(msgs) => return Task::batch(msgs.into_iter().map(|m| self.update(m)).collect::<Vec<_>>()),
-            UiMessage::RunHotkey(name) => {
-                self.list.chat_menu = None;
-                return self.run_hotkey(name, 0);
-            }
-            UiMessage::Ask(dialog) => (self.confirm, self.list.reminder_menu) = (dialog, None),
-            UiMessage::Logout => {
-                self.confirm = None;
-                return Task::perform(beeper_core::matrix::logout(self.store.clone()), UiMessage::LoggedOut);
-            }
-            UiMessage::LoggedOut(Ok(())) => restart(),
-            UiMessage::LoggedOut(Err(e)) => self.fail(Toast::new(format!("Could not log out: {e}"))),
+            msg @ (UiMessage::OpenPollCreator(..)
+            | UiMessage::Poll(..)
+            | UiMessage::OpenEditSpaces
+            | UiMessage::Spaces(..)
+            | UiMessage::OpenEditGroup(..)
+            | UiMessage::OpenEditForMe(..)
+            | UiMessage::Group(..)
+            | UiMessage::Profile(..)
+            | UiMessage::UndoAction) => return self.handle_editors(msg),
+            msg @ (UiMessage::Modifiers(..)
+            | UiMessage::InputEscape(..)
+            | UiMessage::WindowText(..)
+            | UiMessage::WindowKey(..)
+            | UiMessage::Commands(..)
+            | UiMessage::RunHotkey(..)
+            | UiMessage::Ask(..)
+            | UiMessage::Logout
+            | UiMessage::LoggedOut(..)) => return self.handle_keys(msg),
             // Desktop's "Close Chat Info" of a detached Chat Info closes its window.
             UiMessage::ToggleRightPanel if self.pane.info => return self.close_window(self.swapped.expect("a window")),
             UiMessage::ToggleRightPanel => {
@@ -4579,61 +4498,12 @@ impl BeeperGuiApp {
             }
             UiMessage::QuickEmoji(None) => self.pane.emoji = None,
             UiMessage::Emoji(m) => return self.update_emoji(m),
-            UiMessage::Upserted(m) => {
-                // Desktop's thread pane reads a new reply that comes into view at the bottom of the thread.
-                let thread = self.pane.thread.as_ref().filter(|t| t.thread_root.is_some() && t.thread_root == m.thread_root);
-                let read_thread = self.focused && !self.idle && thread.is_some_and(|t| t.scrolled_up.is_none_or(|(up, _)| !up));
-                let st = self.store.read();
-                let open = self.pane.selected_chat_id.as_deref().and_then(|c| st.resolve_canonical_chat_id(c));
-                // A write lock moves the store generation, which empties the memo of the views, so only a change
-                // takes one: a scheduled message that can be due or canceled, or the read of the thread.
-                let changes = read_thread || !st.scheduled.is_empty();
-                drop(st);
-                let mut due = Vec::new();
-                if changes {
-                    let mut st = self.store.write();
-                    due = st.take_due_scheduled(now_unix_millis());
-                    if open.as_ref() == Some(&m.chat_id)
-                        && self.pane.sched_fold == (false, false)
-                        && st.scheduled.iter().any(|s| s.chat_id == m.chat_id && !s.canceled)
-                    {
-                        self.pane.sched_fold = (true, true);
-                    }
-                    if read_thread {
-                        st.mark_thread_read(&m.chat_id, m.thread_root.as_deref().expect("a thread reply"), None);
-                    }
-                }
-                if open.as_ref() == Some(&m.chat_id) {
-                    self.read_open_chat();
-                }
-                self.send_scheduled(due);
-                self.message_sound(&m);
-                self.maybe_nudge(&m);
-                let note = self.notify_message(&m);
-                let failed = self.notify_failed(&m);
-                return Task::batch([self.update(UiMessage::StoreChanged), note, failed]);
-            }
-            UiMessage::ChatUpserted(c) => {
-                let note = self.notify_chat(&c);
-                return Task::batch([self.update(UiMessage::StoreChanged), note]);
-            }
-            UiMessage::Typing(chat) => {
-                self.typing_changed(&chat);
-                let note = self.notify_typing(chat);
-                return Task::batch([self.update(UiMessage::StoreChanged), note]);
-            }
-            UiMessage::AnimationTick => {
-                self.confetti.take_if(|c| !c.running());
-                if let Some(c) = self.confetti.as_mut() {
-                    c.advance();
-                }
-            }
-            UiMessage::Pushed(Ok(())) => {}
-            UiMessage::DismissRecoveryReminder => {
-                let now = beeper_core::config::now_unix_millis();
-                self.patch_settings(|s| s.recovery_reminder_dismissed_at = now);
-            }
-            UiMessage::Pushed(Err(e)) => self.fail(Toast::new(format!("Could not send to Matrix: {e}"))),
+            msg @ (UiMessage::Upserted(..)
+            | UiMessage::ChatUpserted(..)
+            | UiMessage::Typing(..)
+            | UiMessage::AnimationTick
+            | UiMessage::Pushed(..)
+            | UiMessage::DismissRecoveryReminder) => return self.handle_sync(msg),
             UiMessage::OpenQuickLook(title, detail) => {
                 self.quick_look_target = Some((title, detail));
             }
@@ -4647,35 +4517,7 @@ impl BeeperGuiApp {
                 return Task::none();
             }
             UiMessage::LoadWanted => return Task::batch([self.load_avatars(), self.load_media(), self.load_quotes()]),
-            UiMessage::OpenUrl(url) if url.starts_with(SPOILER) => {
-                self.pane.spoilers.insert(url[SPOILER.len()..].to_string());
-            }
-            // Desktop's `b2t`: a click on a mention opens its menu.
-            UiMessage::OpenUrl(url) if url.starts_with(MENTION) => {
-                self.list.chat_menu = Some((format!("mention:{}", &url[MENTION.len()..]), self.cursor.get()));
-            }
-            UiMessage::OpenUrl(url) => {
-                let (cmd, args) = open_url_or_path_command(self.os, &url);
-                let open = move || match std::process::Command::new(&cmd).args(args).status() {
-                    Ok(s) if s.success() => Ok(()),
-                    Ok(s) => Err(format!("Could not open {url}: {cmd} {s}")),
-                    Err(e) => Err(format!("Could not open {url}: {cmd}: {e}")),
-                };
-                return Task::perform(async { tokio::task::spawn_blocking(open).await.expect("URL opener thread") }, UiMessage::Opened);
-            }
-            UiMessage::Opened(r) => {
-                if let Err(e) = r {
-                    self.status_banner = e;
-                }
-            }
-            // Without a file manager that selects the file, the folder opens.
-            UiMessage::ShowInFolder(path) => {
-                let folder = path.parent().expect("a saved file is in a folder").to_string_lossy().into_owned();
-                return Task::perform(portal::show_item(path), move |r| match r {
-                    Ok(()) => UiMessage::Noop,
-                    Err(_) => UiMessage::OpenUrl(folder.clone()),
-                });
-            }
+            msg @ (UiMessage::OpenUrl(..) | UiMessage::Opened(..) | UiMessage::ShowInFolder(..)) => return self.handle_links(msg),
             UiMessage::Confetti => self.confetti = Some(confetti::Confetti::fire(self.pane.size)),
             UiMessage::ToggleRedacted => self.redacted ^= true,
             UiMessage::ToggleIncognito => {
@@ -4799,6 +4641,220 @@ impl BeeperGuiApp {
             UiMessage::KeyPressed(key, mods) => return self.key_pressed(key, mods),
         }
         self.settle()
+    }
+
+    /// Opening links, mentions, spoilers and files.
+    fn handle_links(&mut self, msg: UiMessage) -> Task<UiMessage> {
+        match msg {
+            UiMessage::OpenUrl(url) if url.starts_with(SPOILER) => {
+                self.pane.spoilers.insert(url[SPOILER.len()..].to_string());
+            }
+            // Desktop's `b2t`: a click on a mention opens its menu.
+            UiMessage::OpenUrl(url) if url.starts_with(MENTION) => {
+                self.list.chat_menu = Some((format!("mention:{}", &url[MENTION.len()..]), self.cursor.get()));
+            }
+            UiMessage::OpenUrl(url) => {
+                let (cmd, args) = open_url_or_path_command(self.os, &url);
+                let open = move || match std::process::Command::new(&cmd).args(args).status() {
+                    Ok(s) if s.success() => Ok(()),
+                    Ok(s) => Err(format!("Could not open {url}: {cmd} {s}")),
+                    Err(e) => Err(format!("Could not open {url}: {cmd}: {e}")),
+                };
+                return Task::perform(async { tokio::task::spawn_blocking(open).await.expect("URL opener thread") }, UiMessage::Opened);
+            }
+            UiMessage::Opened(r) => {
+                if let Err(e) = r {
+                    self.status_banner = e;
+                }
+            }
+            // Without a file manager that selects the file, the folder opens.
+            UiMessage::ShowInFolder(path) => {
+                let folder = path.parent().expect("a saved file is in a folder").to_string_lossy().into_owned();
+                return Task::perform(portal::show_item(path), move |r| match r {
+                    Ok(()) => UiMessage::Noop,
+                    Err(_) => UiMessage::OpenUrl(folder.clone()),
+                });
+            }
+            _ => unreachable!("not a handle_links message"),
+        }
+        self.settle()
+    }
+
+    /// What the sync brings: upserted messages and chats, typing, and the result of pushes.
+    fn handle_sync(&mut self, msg: UiMessage) -> Task<UiMessage> {
+        match msg {
+            UiMessage::Upserted(m) => {
+                // Desktop's thread pane reads a new reply that comes into view at the bottom of the thread.
+                let thread = self.pane.thread.as_ref().filter(|t| t.thread_root.is_some() && t.thread_root == m.thread_root);
+                let read_thread = self.focused && !self.idle && thread.is_some_and(|t| t.scrolled_up.is_none_or(|(up, _)| !up));
+                let st = self.store.read();
+                let open = self.pane.selected_chat_id.as_deref().and_then(|c| st.resolve_canonical_chat_id(c));
+                // A write lock moves the store generation, which empties the memo of the views, so only a change
+                // takes one: a scheduled message that can be due or canceled, or the read of the thread.
+                let changes = read_thread || !st.scheduled.is_empty();
+                drop(st);
+                let mut due = Vec::new();
+                if changes {
+                    let mut st = self.store.write();
+                    due = st.take_due_scheduled(now_unix_millis());
+                    if open.as_ref() == Some(&m.chat_id)
+                        && self.pane.sched_fold == (false, false)
+                        && st.scheduled.iter().any(|s| s.chat_id == m.chat_id && !s.canceled)
+                    {
+                        self.pane.sched_fold = (true, true);
+                    }
+                    if read_thread {
+                        st.mark_thread_read(&m.chat_id, m.thread_root.as_deref().expect("a thread reply"), None);
+                    }
+                }
+                if open.as_ref() == Some(&m.chat_id) {
+                    self.read_open_chat();
+                }
+                self.send_scheduled(due);
+                self.message_sound(&m);
+                self.maybe_nudge(&m);
+                let note = self.notify_message(&m);
+                let failed = self.notify_failed(&m);
+                return Task::batch([self.update(UiMessage::StoreChanged), note, failed]);
+            }
+            UiMessage::ChatUpserted(c) => {
+                let note = self.notify_chat(&c);
+                return Task::batch([self.update(UiMessage::StoreChanged), note]);
+            }
+            UiMessage::Typing(chat) => {
+                self.typing_changed(&chat);
+                let note = self.notify_typing(chat);
+                return Task::batch([self.update(UiMessage::StoreChanged), note]);
+            }
+            UiMessage::AnimationTick => {
+                self.confetti.take_if(|c| !c.running());
+                if let Some(c) = self.confetti.as_mut() {
+                    c.advance();
+                }
+            }
+            UiMessage::Pushed(Ok(())) => {}
+            UiMessage::DismissRecoveryReminder => {
+                let now = beeper_core::config::now_unix_millis();
+                self.patch_settings(|s| s.recovery_reminder_dismissed_at = now);
+            }
+            UiMessage::Pushed(Err(e)) => self.fail(Toast::new(format!("Could not send to Matrix: {e}"))),
+            _ => unreachable!("not a handle_sync message"),
+        }
+        self.settle()
+    }
+
+    /// The keys and modifiers of the windows, the hotkeys, and logout.
+    fn handle_keys(&mut self, msg: UiMessage) -> Task<UiMessage> {
+        match msg {
+            UiMessage::Modifiers(mods) => {
+                // Electron's `autoHideMenuBar`: Alt on its own shows the menu bar, and hides it again.
+                let was = std::mem::replace(&mut self.mods, mods);
+                match (was == Modifiers::ALT, mods == Modifiers::ALT) {
+                    (false, true) if was.is_empty() => self.alt_alone = true,
+                    (true, false) if mods.is_empty() && std::mem::take(&mut self.alt_alone) => {
+                        if self.main_window.or(self.login_window).is_some() {
+                            self.menu_bar = if self.menu_bar.is_some() { None } else { Some(None) };
+                        }
+                    }
+                    _ => self.alt_alone = false,
+                }
+                if self.cycling && !mods.control() {
+                    self.cycling = false;
+                    if let Some(c) = self.pane.selected_chat_id.clone() {
+                        self.push_history(&c);
+                    }
+                }
+            }
+            UiMessage::InputEscape(id) if Some(id) == self.settings_window && self.integrations.add.is_some() => {
+                self.integrations.add = None;
+            }
+            // Desktop's Escape in the search clears it, and Escape in a field of Settings takes the focus away.
+            UiMessage::InputEscape(id) if Some(id) == self.settings_window => {
+                let clear = self.update(UiMessage::Settings(settings::Msg::Query(String::new())));
+                return Task::batch([clear, focus::blur()]);
+            }
+            UiMessage::InputEscape(id) => {
+                return self.update(UiMessage::WindowKey(id, Key::Named(Named::Escape), keyboard::Modifiers::empty()));
+            }
+            UiMessage::WindowText(id, text) => return self.window_text(id, text),
+            UiMessage::WindowKey(id, key, mods) => return self.window_key(id, key, mods),
+            UiMessage::Commands(msgs) => return Task::batch(msgs.into_iter().map(|m| self.update(m)).collect::<Vec<_>>()),
+            UiMessage::RunHotkey(name) => {
+                self.list.chat_menu = None;
+                return self.run_hotkey(name, 0);
+            }
+            UiMessage::Ask(dialog) => (self.confirm, self.list.reminder_menu) = (dialog, None),
+            UiMessage::Logout => {
+                self.confirm = None;
+                return Task::perform(beeper_core::matrix::logout(self.store.clone()), UiMessage::LoggedOut);
+            }
+            UiMessage::LoggedOut(Ok(())) => restart(),
+            UiMessage::LoggedOut(Err(e)) => self.fail(Toast::new(format!("Could not log out: {e}"))),
+            _ => unreachable!("not a handle_keys message"),
+        }
+        self.settle()
+    }
+
+    /// The editors that open in their own windows: polls, spaces, groups, profiles, and the undo of an action.
+    fn handle_editors(&mut self, msg: UiMessage) -> Task<UiMessage> {
+        match msg {
+            UiMessage::OpenPollCreator(chat) => {
+                if let Some(d) = self.poll_windows.iter().find(|d| d.chat == chat) {
+                    return self.raise(d.id);
+                }
+                let (id, open) = self.open_child(Size::new(400.0, 620.0));
+                let question = format!("poll-{chat}");
+                self.poll_windows.push(PollDraft::new(id, chat));
+                open.chain(operation::focus(question))
+            }
+            UiMessage::Poll(id, edit) => self.poll_edit(id, edit),
+            UiMessage::OpenEditSpaces => {
+                self.list.chat_menu = None;
+                if let Some(d) = &self.spaces_window {
+                    return self.raise(d.id);
+                }
+                let (id, open) = self.open_child(SPACES_SIZE);
+                let st = self.store.read();
+                let order = rail_spaces(&st).into_iter().chain([SPACES_DIVIDER.into()]).chain(hidden_spaces(&st));
+                let order = order.collect();
+                drop(st);
+                self.spaces_window = Some(SpacesDraft { id, order, search: String::new(), drag: None, menu: None, scrolled: false });
+                open
+            }
+            UiMessage::Spaces(e) => self.spaces_edit(e),
+            UiMessage::OpenEditGroup(chat) => {
+                self.list.chat_menu = None;
+                if let Some(d) = &self.group_window {
+                    return self.raise(d.id);
+                }
+                let (id, open) = self.open_child(GROUP_SIZE);
+                let st = self.store.read();
+                let c = &st.chats[st.resolve_chat_idx(&chat).expect("an edited group")];
+                let (title, topic) = (c.room_title().to_string(), composer_with(c.description.as_deref().unwrap_or_default()));
+                drop(st);
+                self.group_window = Some(with_defaults!(GroupDraft {
+                    id,
+                    chat,
+                    title,
+                    topic,
+                }, default: photo, hover, personal, saving, dropping));
+                open
+            }
+            UiMessage::OpenEditForMe(chat) => self.open_edit_for_me(chat),
+            UiMessage::Group(e) => self.group_edit(e),
+            UiMessage::Profile(m) => self.update_profile(m),
+            UiMessage::UndoAction => {
+                let Some((what, undo)) = self.undo_stack.pop() else { return Task::none() };
+                let depth = self.undo_stack.len();
+                let task = self.update(undo);
+                self.undo_stack.truncate(depth);
+                self.toast = None;
+                self.status_banner = format!("{} {what}", tr("Undo:"));
+                self.undo_note = Some(what);
+                task
+            }
+            _ => unreachable!("not a handle_editors message"),
+        }
     }
 
     /// The end of a message that did not return its own task: shows a new Matrix error, and loads the avatars and
