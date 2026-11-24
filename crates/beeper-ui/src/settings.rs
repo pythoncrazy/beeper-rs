@@ -529,7 +529,6 @@ impl BeeperGuiApp {
         let n = self.search_rows();
         match key {
             Key::Named(Named::Escape) if self.confirm.is_some() => self.confirm = None,
-            Key::Named(Named::Escape) if self.integrations.add.is_some() => self.integrations.add = None,
             // Desktop's add input of the time suggestions cancels on Escape and keeps the window open.
             Key::Named(Named::Escape) if self.time_edit.input.is_some() => {
                 let settings = self.settings_window.expect("the settings window is open");
@@ -896,7 +895,6 @@ impl BeeperGuiApp {
         let base = container(row![left, container(right).padding(Padding::new(8.0).right(0.0))]).width(Fill).height(Fill);
         drop(st);
         let confirm = self.confirm.filter(|d| SETTINGS_DIALOGS.contains(d)).map(|d| self.view_confirm(d));
-        let add = self.integrations.add.as_ref().map(|a| self.view_add_token(a));
         // The menu of an account row of the Accounts settings, or of the actions of an account page.
         let menu = self.list().chat_menu.as_ref().and_then(|(cid, at)| {
             let (id, kind) = match cid.strip_prefix(ROW_MENU) {
@@ -925,11 +923,11 @@ impl BeeperGuiApp {
             let picker = container(mouse_area(picker).on_press(UiMessage::Noop)).center(Fill);
             crate::backdrop(picker).on_press(UiMessage::QuickEmoji(None))
         });
-        stack![base.style(fill_box(p.window, 0.0))].push(menu).push(add).push(confirm).push(profile).push(picker).into()
+        stack![base.style(fill_box(p.window, 0.0))].push(menu).push(confirm).push(profile).push(picker).into()
     }
 
-    /// Desktop's `BeeperConnectAddTokenModal`, over the Settings window.
-    fn view_add_token<'a>(&'a self, a: &'a AddToken) -> El<'a> {
+    /// Desktop's `BeeperConnectAddTokenModal` in its window.
+    pub(crate) fn view_add_token<'a>(&'a self, a: &'a AddToken) -> El<'a> {
         let p = &self.pal;
         let label = |t: &'static str| txt(tr(t), 12.0).color(p.text);
         let content: El<'a> = match &a.token {
@@ -990,8 +988,7 @@ impl BeeperGuiApp {
         };
         let title = container(semi(tr("Create a new token for Beeper Desktop API"), 13.0).color(p.strong)).center_x(Fill).padding([8, 0]);
         let pane = column![title, container(content).padding(Padding::new(16.0).top(16.0))];
-        let pane = container(pane).width(Fill).height(Fill).style(fill_box(p.prefs_pane, 10.0));
-        crate::backdrop(container(pane).padding(8)).on_press(UiMessage::Noop).into()
+        crate::integrations::modal_frame(p, pane.into())
     }
 
     /// Desktop's `TakeBeeperWithYou` card.

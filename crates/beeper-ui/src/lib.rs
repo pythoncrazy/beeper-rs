@@ -4834,9 +4834,6 @@ impl BeeperGuiApp {
                     }
                 }
             }
-            UiMessage::InputEscape(id) if Some(id) == self.settings_window && self.integrations.add.is_some() => {
-                self.integrations.add = None;
-            }
             // Desktop's Escape in the search clears it, and Escape in a field of Settings takes the focus away.
             UiMessage::InputEscape(id) if Some(id) == self.settings_window => {
                 let clear = self.update(UiMessage::Settings(settings::Msg::Query(String::new())));
@@ -5593,9 +5590,8 @@ impl BeeperGuiApp {
             .push(scrim)
             .push(palette_menu)
             .push(select);
-        let token = self.token_ask.as_ref().map(|a| self.view_token_ask(a));
         let confetti = self.confetti.as_ref().filter(|_| in_main).map(confetti::Confetti::view);
-        layers.push(confirm).push(hotkeys).push(token).push(confetti).into()
+        layers.push(confirm).push(hotkeys).push(confetti).into()
     }
 
     /// Desktop's "Remove from Beeper" button of the delete dialog.
