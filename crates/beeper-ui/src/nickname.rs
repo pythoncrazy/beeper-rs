@@ -120,7 +120,7 @@ impl BeeperGuiApp {
         let account: El<'a> = match found {
             Some(b) => {
                 let icon = svg(brand_svg(brand_key(&d.account))).width(64).height(64);
-                let placeholder = new_chat::default_account_display_name(&st, &d.account, &rail_accounts(&st));
+                let placeholder = new_chat::default_account_display_name(&st, &d.account, rail_accounts(&st));
                 let shown = if d.name.is_empty() { &placeholder } else { &d.name };
                 let width = text_width(shown, 14.0, Weight::Semibold).max(text_width("0", 14.0, Weight::Semibold));
                 let input = text_input(&placeholder, &d.name)
