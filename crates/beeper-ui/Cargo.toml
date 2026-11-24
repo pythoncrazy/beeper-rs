@@ -21,6 +21,8 @@ iced_wgpu = { version = "0.14.0", default-features = false }
 iced_tiny_skia = { version = "0.14.1", default-features = false }
 iced_winit = { version = "0.14.0", default-features = false }
 iced = { version = "0.14.0", default-features = false, features = ["svg", "image-without-codecs", "advanced", "advanced-shaping", "linux-theme-detection", "wgpu-bare", "tiny-skia", "tokio", "x11", "wayland", "web-colors", "crisp", "selector"] }
+# The cache of shaped words, which iced leaves off.
+cosmic-text = { version = "0.15.0", default-features = false, features = ["shape-run-cache"] }
 spellbook = "0.4.2"
 flate2 = { version = "1.1", default-features = false, features = ["rust_backend"] }
 hayro = "0.9.0"

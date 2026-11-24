@@ -132,7 +132,7 @@ pub fn apply(p: &mut Palette, theme: UiTheme, dark: bool, now_ms: i64) {
         p.action = primary;
     }
     // `--toggle-style-knob-on`, `--checkbox-style-bg-selected` and `--app-focus-ring`.
-    (p.toggle_on, p.checked, p.focus_ring) = (primary, primary, primary);
+    (p.toggle_on, p.focus_ring) = (primary, primary);
     // `.button-sentiment--main`: the primary color, and 14% of it (26% in the dark theme) behind the secondary text.
     p.main = primary;
     p.main_muted = mixed(primary, if dark { 26.0 } else { 14.0 });
@@ -445,7 +445,6 @@ mod tests {
                     ("accent", p.accent),
                     ("sent", p.sent),
                     ("toggle_on", p.toggle_on),
-                    ("checked", p.checked),
                     ("focus_ring", p.focus_ring),
                     ("main", p.main),
                     ("main_text", p.main_text),

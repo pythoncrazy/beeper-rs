@@ -233,3 +233,111 @@ impl<'a, Message: Clone + 'a> From<Above<'a, Message>> for Element<'a, Message> 
         Element::new(a)
     }
 }
+
+/// Desktop's `BrandTooltip` with its `position-try: flip-block` (`flip-inline` beside the trigger): `tooltip`, which
+/// iced puts on the side `at` and keeps inside the window, goes to the other side of the trigger when its margin box
+/// does not fit on its own side and fits there.
+pub struct Tip<'a, Message> {
+    tooltip: iced::widget::Tooltip<'a, Message>,
+    at: iced::widget::tooltip::Position,
+}
+
+pub fn tip<'a, Message>(tooltip: iced::widget::Tooltip<'a, Message>, at: iced::widget::tooltip::Position) -> Tip<'a, Message> {
+    Tip { tooltip, at }
+}
+
+impl<Message> Tip<'_, Message> {
+    /// Desktop's `delayTime`.
+    pub fn delay(self, delay: std::time::Duration) -> Self {
+        Self { tooltip: self.tooltip.delay(delay), ..self }
+    }
+}
+
+impl<'a, Message: 'a> From<Tip<'a, Message>> for Element<'a, Message> {
+    fn from(t: Tip<'a, Message>) -> Self {
+        Element::new(Flip { content: t.tooltip.into(), at: t.at })
+    }
+}
+
+struct Flip<'a, Message> {
+    content: Element<'a, Message>,
+    at: iced::widget::tooltip::Position,
+}
+
+impl<Message> Widget<Message, Theme, Renderer> for Flip<'_, Message> {
+    crate::delegate::delegate!(children, diff, size, layout, operate, update(Message), mouse_interaction, draw);
+
+    fn overlay<'b>(
+        &'b mut self, tree: &'b mut widget::Tree, layout: Layout<'b>, renderer: &Renderer, viewport: &Rectangle, translation: Vector,
+    ) -> Option<overlay::Element<'b, Message, Theme, Renderer>> {
+        let trigger = layout.bounds() + translation;
+        let inner = self.content.as_widget_mut().overlay(&mut tree.children[0], layout, renderer, viewport, translation)?;
+        Some(overlay::Element::new(Box::new(Flipped { inner, trigger, at: self.at })))
+    }
+}
+
+/// The overlays of a tooltip, whose last one is its card.
+struct Flipped<'b, Message> {
+    inner: overlay::Element<'b, Message, Theme, Renderer>,
+    trigger: Rectangle,
+    at: iced::widget::tooltip::Position,
+}
+
+impl<Message> Flipped<'_, Message> {
+    /// Where the card `card` goes in a window of `size`: on the other side of the trigger when it does not fit on its
+    /// own and fits there, else where iced put it.
+    fn place(&self, card: Rectangle, size: Size) -> Point {
+        use iced::widget::tooltip::Position::*;
+        let t = self.trigger;
+        let (above, below) = (t.y - card.height, t.y + t.height);
+        let (before, after) = (t.x - card.width, t.x + t.width);
+        let fits_y = |y: f32| y >= 0.0 && y + card.height <= size.height;
+        let fits_x = |x: f32| x >= 0.0 && x + card.width <= size.width;
+        match self.at {
+            Top if !fits_y(above) && fits_y(below) => Point::new(card.x, below),
+            Bottom if !fits_y(below) && fits_y(above) => Point::new(card.x, above),
+            Left if !fits_x(before) && fits_x(after) => Point::new(after, card.y),
+            Right if !fits_x(after) && fits_x(before) => Point::new(before, card.y),
+            _ => card.position(),
+        }
+    }
+}
+
+impl<Message> overlay::Overlay<Message, Theme, Renderer> for Flipped<'_, Message> {
+    fn layout(&mut self, renderer: &Renderer, bounds: Size) -> layout::Node {
+        let node = self.inner.as_overlay_mut().layout(renderer, bounds);
+        let mut children = node.children().to_vec();
+        if let Some(card) = children.last_mut() {
+            let at = self.place(card.bounds(), bounds);
+            card.move_to_mut(at);
+        }
+        layout::Node::with_children(node.size(), children).move_to(node.bounds().position())
+    }
+
+    fn draw(&self, renderer: &mut Renderer, theme: &Theme, style: &renderer::Style, layout: Layout<'_>, cursor: mouse::Cursor) {
+        self.inner.as_overlay().draw(renderer, theme, style, layout, cursor);
+    }
+
+    fn operate(&mut self, layout: Layout<'_>, renderer: &Renderer, operation: &mut dyn widget::Operation) {
+        self.inner.as_overlay_mut().operate(layout, renderer, operation);
+    }
+
+    fn update(
+        &mut self, event: &Event, layout: Layout<'_>, cursor: mouse::Cursor, renderer: &Renderer, clipboard: &mut dyn Clipboard,
+        shell: &mut Shell<'_, Message>,
+    ) {
+        self.inner.as_overlay_mut().update(event, layout, cursor, renderer, clipboard, shell);
+    }
+
+    fn mouse_interaction(&self, layout: Layout<'_>, cursor: mouse::Cursor, renderer: &Renderer) -> mouse::Interaction {
+        self.inner.as_overlay().mouse_interaction(layout, cursor, renderer)
+    }
+
+    fn overlay<'c>(&'c mut self, layout: Layout<'c>, renderer: &Renderer) -> Option<overlay::Element<'c, Message, Theme, Renderer>> {
+        self.inner.as_overlay_mut().overlay(layout, renderer)
+    }
+
+    fn index(&self) -> f32 {
+        self.inner.as_overlay().index()
+    }
+}

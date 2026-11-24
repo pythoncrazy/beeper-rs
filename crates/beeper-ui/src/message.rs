@@ -436,9 +436,6 @@ fn action_button<'a>(p: &crate::style::Palette, b: &ActionButton, press: Option<
         .into()
 }
 
-/// Desktop's `--color-on-error-container`, the same in the light and dark themes.
-const ON_ERROR_CONTAINER: Color = Color::from_rgb8(0xdc, 0x36, 0x2e);
-
 /// Desktop's `kf`: the box of an inline image or video, at most `share` of the window wide and 400 px high and never
 /// upscaled. A very tall one shows 160×400 and a very wide one an 80 px high strip, both cropped (`cover`), and one of
 /// unknown size is 400 px high. Gives the width, the height and whether it crops.
@@ -1336,7 +1333,7 @@ impl BeeperGuiApp {
         };
         let id = &chat.id;
         let actions = row![]
-            .push(decline.then(|| pill("Decline", hex(0xdc362e), UiMessage::ChatList(chat_list::Msg::Delete(id.clone(), false)))))
+            .push(decline.then(|| pill("Decline", ON_ERROR, UiMessage::ChatList(chat_list::Msg::Delete(id.clone(), false)))))
             .push(accept.then(|| pill("Accept", p.strong, UiMessage::ChatList(chat_list::Msg::AcceptRequest(id.clone())))))
             .spacing(8);
         let avatar = container(self.chat_avatar(chat, 40.0, 0.0)).padding(Padding::ZERO.top(14.0).bottom(8.0));
@@ -1637,10 +1634,10 @@ impl BeeperGuiApp {
     /// Desktop's `MessageErrorTooltip`: the label, and the error icon whose tooltip is the error of the send.
     fn error_tooltip<'a>(&self, e: &beeper_core::models::SendError, label: &'a str) -> El<'a> {
         let icon = svg(ERROR_OUTLINE.clone()).width(20).height(20);
-        let icon = icon.style(|_, _| svg::Style { color: Some(ON_ERROR_CONTAINER) });
+        let icon = icon.style(|_, _| svg::Style { color: Some(ON_ERROR) });
         let error = e.message.clone().unwrap_or_else(|| tr("Unknown error occurred").into());
         let tip = self.tip(icon.into(), error, vec![], tooltip::Position::Left);
-        row![crate::style::fixed(label, 11.0, Weight::Normal).color(ON_ERROR_CONTAINER), tip].spacing(4).align_y(Center).into()
+        row![crate::style::fixed(label, 11.0, Weight::Normal).color(ON_ERROR), tip].spacing(4).align_y(Center).into()
     }
 
     /// Desktop's `jumpToMessage` and `revealMessage`: shows message `mid` of chat `cid` 80 px under the top of the
@@ -1706,9 +1703,9 @@ impl BeeperGuiApp {
         let color = if hush { p.rule } else { p.accent };
         let line = || container(Space::new()).width(Fill).height(1).style(fill_box(color, 0.0));
         if !hush {
-            // `.unread-divider span`: label-sm at 0.8 opacity, 12 px above and below, 10 px from the primary lines.
+            // `.unread-divider span`: label-sm in full primary, 12 px above and below, 10 px from the primary lines.
             let label = txt(trx("New", "unread message divider label"), 11.0).line_height(lh(14.0));
-            return row![line(), label.color(p.accent.scale_alpha(0.8)), line()].spacing(10).align_y(Center).padding([12, 0]).into();
+            return row![line(), label.color(p.accent), line()].spacing(10).align_y(Center).padding([12, 0]).into();
         }
         let label = txt(format!("🫣 {}", tr("Unread until you reply")), 11.0);
         let days = st.features.trial_days_left().map(|n| {
@@ -1783,7 +1780,7 @@ impl BeeperGuiApp {
             let chevron = tinted(&CHEVRON_DOWN, 20.0, fade(p.text).scale_alpha(0.8));
             container(chevron).center(20).into()
         };
-        let shadow = Shadow { color: fade(Color::from_rgba(0.0, 0.0, 0.0, 0.15)), offset: Vector::ZERO, blur_radius: 20.0 };
+        let shadow = Shadow { color: fade(p.shadow), offset: Vector::ZERO, blur_radius: 20.0 };
         let style = button::Style { background: Some(fade(p.card).into()), border: border::rounded(30), shadow, ..Default::default() };
         let button = button(body)
             .padding(4)
@@ -4434,6 +4431,16 @@ pub(crate) mod tests {
         let shot = pixels(&mut iced_test::Simulator::with_size(Default::default(), Size::new(200.0, 100.0), button));
         let ink = shot.pixels().map(|px| px.0).min_by_key(|px| px[0]).expect("pixels");
         assert!(ink[0] < 128 && ink[0] == ink[1] && ink[1] == ink[2], "{ink:?}");
+        // `--shadow-large-15` is white at 0.2 in the dark theme, so the button glows on the black background.
+        drop(st);
+        (app.dark, app.pal) = (true, crate::style::BEEPER_DARK);
+        let st = app.store.read();
+        let button = app.view_scroll_to_bottom(&st, st.chat("!note_self:beeper.com")).expect("the button");
+        let view = container(button).style(fill_box(app.pal.card, 0.0));
+        let shot = pixels(&mut iced_test::Simulator::with_size(Default::default(), Size::new(200.0, 100.0), view));
+        // The 28 px circle sits 27.5 px above the bottom, in the middle: 4 px under it, the glow shows.
+        let k = shot.width() / 200;
+        assert!(shot.get_pixel(100 * k, 76 * k).0[0] > 4 && shot.get_pixel(k, k).0[0] == 0, "the glow");
     }
 
     /// Desktop's `ActionButtons` under a message of the system user: the buttons that can open their link or post to
@@ -4572,6 +4579,20 @@ pub(crate) mod tests {
         assert!(has(&app) && app.pane.menu_linked.as_deref() == Some(ids[1].as_str()));
         let _ = app.update(UiMessage::Message(Msg::OpenMenu(ids[0].clone())));
         assert!(!has(&app), "another right click forgets the quote");
+    }
+
+    /// Desktop's `.unread-divider span` draws "New" in full `--color-primary`: no rule of 4.3.308 sets an opacity on
+    /// it or on the timeline around it.
+    #[test]
+    fn the_unread_label_is_full_primary_like_desktop() {
+        let app = crate::fuzz::demo_app("unread-label");
+        let st = app.store.read();
+        let mut sim = iced_test::Simulator::with_size(Default::default(), Size::new(200.0, 40.0), app.unread_divider(&st));
+        let shot = pixels(&mut sim);
+        // The label sits between the lines, 12 px under the top; its most covered pixel is primary itself.
+        let label = (180..220).flat_map(|x| (24..52).map(move |y| (x, y)));
+        let darkest = label.map(|(x, y)| shot.get_pixel(x, y).0).min_by_key(|px| px[0]).expect("pixels");
+        assert!(near(darkest, app.pal.accent), "{darkest:?}");
     }
 
     /// The pixels of a frame of `sim`, at its scale of 2. The simulator does not find the text of overlays.
@@ -4914,7 +4935,8 @@ pub(crate) mod tests {
         let time = |minute| format_short_ts(&at(minute), h24);
         let label = alone(&app, &mid).find("Edited").expect("the Edited button").bounds();
         let tip = hover_change(&app, &mid, label.center()).expect("Edited after 3m");
-        assert!(tip.y + tip.height <= label.y, "{tip:?} is above the button");
+        // The top tooltip has no room over the button at the top of the view, so `flip-block` puts it under.
+        assert!(tip.y >= label.y + label.height, "{tip:?} is under the button");
         assert!(alone(&app, &mid).find(time(1)).is_err());
         let _ = app.update(UiMessage::Message(Msg::ToggleEditHistory(mid.clone())));
         let mut sim = alone(&app, &mid);
