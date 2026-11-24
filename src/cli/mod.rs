@@ -17,6 +17,7 @@ mod targets;
 mod verify;
 
 use beeper_api::client::{ApiError, BeeperClient};
+pub use beeper_core::codec::truthy;
 use serde_json::{json, Map, Value};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -562,17 +563,6 @@ pub fn js_string(v: &Value) -> String {
         Value::Array(a) => a.iter().map(|v| if v.is_null() { String::new() } else { js_string(v) }).collect::<Vec<_>>().join(","),
         Value::Object(_) => "[object Object]".into(),
         v => v.to_string(),
-    }
-}
-
-/// The truth value of JavaScript.
-pub fn truthy(v: &Value) -> bool {
-    match v {
-        Value::Null => false,
-        Value::Bool(b) => *b,
-        Value::Number(n) => n.as_f64().is_some_and(|f| f != 0.0),
-        Value::String(s) => !s.is_empty(),
-        _ => true,
     }
 }
 

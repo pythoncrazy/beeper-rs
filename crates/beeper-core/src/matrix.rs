@@ -1,3 +1,4 @@
+use crate::codec::truthy;
 use crate::config::{now_rfc3339_millis, now_unix_millis, rfc3339_from_millis};
 use crate::import::DesktopCrypto;
 use crate::models::{
@@ -4707,17 +4708,6 @@ fn group_packs(events: &[PackEvent]) -> Vec<InstalledPack> {
         });
     }
     out
-}
-
-/// Whether a JSON value is true in JavaScript.
-fn truthy(v: &Value) -> bool {
-    match v {
-        Value::Null => false,
-        Value::Bool(b) => *b,
-        Value::Number(n) => n.as_f64().is_some_and(|n| n != 0.0),
-        Value::String(s) => !s.is_empty(),
-        _ => true,
-    }
 }
 
 /// Desktop's `jCt`: the name of a combined pack without the " (part 1)" of its first part, in any case.
