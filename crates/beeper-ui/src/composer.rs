@@ -1341,7 +1341,9 @@ impl BeeperGuiApp {
         let details =
             row![tinted(&COMPOSER_ICONS[6], 24.0, p.accent), semi(when, 11.0).color(p.accent), tinted(&CHEVRON_DOWN, 14.0, p.accent)];
         let details = button(details.spacing(4).align_y(Center)).bare(p.accent).on_press(UiMessage::Scheduled(scheduled::Msg::Open));
-        let close = icon_btn(p, icon::CLOSE, 14.0, 20.0, p.accent, UiMessage::Scheduled(scheduled::Msg::Set(None)));
+        // `.SendLaterBanner-module__close`: Desktop's 14 px `close` system icon in 20 px.
+        let close = button(container(tinted(&voice::ICONS[4], 14.0, p.accent)).center(20)).padding(0).style(crate::ghost(p, 8.0));
+        let close = close.on_press(UiMessage::Scheduled(scheduled::Msg::Set(None)));
         // `.SendLaterBanner-module__banner`: 14 % of `--color-primary`, 26 % in the dark theme.
         let tint = p.accent.scale_alpha(if self.dark { 0.26 } else { 0.14 });
         let banner =

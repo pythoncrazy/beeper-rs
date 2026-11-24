@@ -1015,9 +1015,16 @@ fn material_icons(share: f32) -> HashMap<&'static str, svg::Handle> {
 /// Desktop's Material icons by name, with their whole view box.
 static MATERIAL: std::sync::LazyLock<HashMap<&str, svg::Handle>> = std::sync::LazyLock::new(|| material_icons(1.0));
 
-/// Desktop's `PlatformIcon` of a Material icon: a `size` px box that its inline `scale(1.2)` draws past.
+/// Desktop's `PlatformIcon`: `icon` drawn at its inline `scale(1.2)`, past its box. A glyph of the icons font keeps
+/// the text color around it.
+fn platform<'a>(icon: impl Into<El<'a>>) -> El<'a> {
+    crate::lift::shrink(icon, 1.2).into()
+}
+
+/// Desktop's `PlatformIcon` of a Material icon: a `size` px box that its `scale(1.2)` draws past and that clips it
+/// (`.materialIcon { overflow: hidden }`).
 fn material<'a>(name: &str, size: f32, color: Color) -> El<'a> {
-    crate::lift::shrink(tinted(&MATERIAL[name], size, color), 1.2).into()
+    container(platform(tinted(&MATERIAL[name], size, color))).width(size).height(size).clip(true).into()
 }
 
 /// Desktop's `yD`: the label icons by id, in the order of the picker.
@@ -1425,8 +1432,6 @@ svg_static!(CALL, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 2
 svg_static!(ADD_ACCOUNT, include_bytes!("../assets/add_account.svg"));
 // Desktop's `CircleInfoIcon` of the Chat Info toggle.
 svg_static!(INFO_CIRCLE, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path fill="currentColor" d="M9.167 14.164h1.667v-5H9.167zm.833-6.667q.354 0 .594-.24.24-.239.24-.593t-.24-.594A.8.8 0 0 0 10 5.83a.8.8 0 0 0-.594.24.8.8 0 0 0-.24.594q0 .354.24.594.24.24.594.24m0 10.834a8.1 8.1 0 0 1-3.25-.657 8.4 8.4 0 0 1-2.646-1.78 8.4 8.4 0 0 1-1.78-2.647A8.1 8.1 0 0 1 1.666 10q0-1.729.656-3.25a8.4 8.4 0 0 1 1.781-2.646 8.4 8.4 0 0 1 2.646-1.781A8.1 8.1 0 0 1 10 1.664q1.73 0 3.25.656a8.4 8.4 0 0 1 2.646 1.781 8.4 8.4 0 0 1 1.781 2.646q.656 1.52.656 3.25t-.656 3.25a8.4 8.4 0 0 1-1.781 2.646 8.4 8.4 0 0 1-2.646 1.781 8.1 8.1 0 0 1-3.25.657m0-1.667q2.79 0 4.729-1.937Q16.667 12.79 16.667 10t-1.938-4.729T10 3.331 5.271 5.27 3.334 10t1.937 4.73T10 16.663"/></svg>"##);
-// Desktop's `chevron-compact-right` icon, the Material `chevron_forward`.
-svg_static!(CHEVRON_FORWARD, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -960 960 960"><path d="M504-480 320-664l56-56 240 240-240 240-56-56 184-184Z"/></svg>"##);
 // Desktop's `undo` icon of the Revert button of a hotkey.
 svg_static!(REVERT, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><path d="M212.333 224.333H12c-6.627 0-12-5.373-12-12V12C0 5.373 5.373 0 12 0h48c6.627 0 12 5.373 12 12v78.112C117.773 39.279 184.26 7.47 258.175 8.007c136.906.994 246.448 111.623 246.157 248.532C504.041 393.258 393.12 504 256.333 504c-64.089 0-122.496-24.313-166.51-64.215-5.099-4.622-5.334-12.554-.467-17.42l33.967-33.967c4.474-4.474 11.662-4.717 16.401-.525C170.76 415.336 211.58 432 256.333 432c97.268 0 176-78.716 176-176 0-97.267-78.716-176-176-176-58.496 0-110.28 28.476-142.274 72.333h98.274c6.627 0 12 5.373 12 12v48c0 6.627-5.373 12-12 12z"/></svg>"##);
 svg_static!(CLAUDE_LOGO, include_bytes!("../assets/integrations/claude.svg"));
@@ -1462,14 +1467,7 @@ fn distance(ms: i64) -> String {
         }
     }
 }
-// Desktop's Material `info`, `account_circle`, `sell`, `event_busy`, `alternate_email` and `forum` icons of the
-// Chat Info behavior line, its menu and the How It Works window.
-svg_static!(INFO_ICON, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -960 960 960"><path d="M440-280h80v-240h-80v240Zm40-320q17 0 28.5-11.5T520-640q0-17-11.5-28.5T480-680q-17 0-28.5 11.5T440-640q0 17 11.5 28.5T480-600Zm0 520q-83 0-156-31.5T197-197q-54-54-85.5-127T80-480q0-83 31.5-156T197-763q54-54 127-85.5T480-880q83 0 156 31.5T763-763q54 54 85.5 127T880-480q0 83-31.5 156T763-197q-54 54-127 85.5T480-80Zm0-80q134 0 227-93t93-227q0-134-93-227t-227-93q-134 0-227 93t-93 227q0 134 93 227t227 93Zm0-320Z"/></svg>"##);
-svg_static!(ACCOUNT_CIRCLE, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -960 960 960"><path d="M234-276q51-39 114-61.5T480-360q69 0 132 22.5T726-276q35-41 54.5-93T800-480q0-133-93.5-226.5T480-800q-133 0-226.5 93.5T160-480q0 59 19.5 111t54.5 93Zm246-164q-59 0-99.5-40.5T340-580q0-59 40.5-99.5T480-720q59 0 99.5 40.5T620-580q0 59-40.5 99.5T480-440Zm0 360q-83 0-156-31.5T197-197q-54-54-85.5-127T80-480q0-83 31.5-156T197-763q54-54 127-85.5T480-880q83 0 156 31.5T763-763q54 54 85.5 127T880-480q0 83-31.5 156T763-197q-54 54-127 85.5T480-80Zm0-80q53 0 100-15.5t86-44.5q-39-29-86-44.5T480-280q-53 0-100 15.5T294-220q39 29 86 44.5T480-160Zm0-360q26 0 43-17t17-43q0-26-17-43t-43-17q-26 0-43 17t-17 43q0 26 17 43t43 17Zm0-60Zm0 360Z"/></svg>"##);
-svg_static!(SELL, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -960 960 960"><path d="M856-390 570-104q-12 12-27 18t-30 6q-15 0-30-6t-27-18L103-457q-11-11-17-25.5T80-513v-287q0-33 23.5-56.5T160-880h287q16 0 31 6.5t26 17.5l352 353q12 12 17.5 27t5.5 30q0 15-5.5 29.5T856-390ZM513-160l286-286-353-354H160v286l353 354ZM260-640q25 0 42.5-17.5T320-700q0-25-17.5-42.5T260-760q-25 0-42.5 17.5T200-700q0 25 17.5 42.5T260-640Zm220 160Z"/></svg>"##);
-svg_static!(EVENT_BUSY, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -960 960 960"><path d="m388-212-56-56 92-92-92-92 56-56 92 92 92-92 56 56-92 92 92 92-56 56-92-92-92 92ZM200-80q-33 0-56.5-23.5T120-160v-560q0-33 23.5-56.5T200-800h40v-80h80v80h320v-80h80v80h40q33 0 56.5 23.5T840-720v560q0 33-23.5 56.5T760-80H200Zm0-80h560v-400H200v400Zm0-480h560v-80H200v80Zm0 0v-80 80Z"/></svg>"##);
-svg_static!(ALTERNATE_EMAIL, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -960 960 960"><path d="M480-80q-83 0-156-31.5T197-197q-54-54-85.5-127T80-480q0-83 31.5-156T197-763q54-54 127-85.5T480-880q83 0 156 31.5T763-763q54 54 85.5 127T880-480v58q0 59-40.5 100.5T740-280q-35 0-66-15t-52-43q-29 29-65.5 43.5T480-280q-83 0-141.5-58.5T280-480q0-83 58.5-141.5T480-680q83 0 141.5 58.5T680-480v58q0 26 17 44t43 18q26 0 43-18t17-44v-58q0-134-93-227t-227-93q-134 0-227 93t-93 227q0 134 93 227t227 93h200v80H480Zm0-280q50 0 85-35t35-85q0-50-35-85t-85-35q-50 0-85 35t-35 85q0 50 35 85t85 35Z"/></svg>"##);
-svg_static!(FORUM, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -960 960 960"><path d="M280-240q-17 0-28.5-11.5T240-280v-80h520v-360h80q17 0 28.5 11.5T880-680v600L720-240H280ZM80-280v-560q0-17 11.5-28.5T120-880h520q17 0 28.5 11.5T680-840v360q0 17-11.5 28.5T640-440H240L80-280Zm520-240v-280H160v280h440Zm-440 0v-280 280Z"/></svg>"##);
+
 // Desktop's `FullScreenClose` icon of the zoomed Chat Info avatar.
 svg_static!(FULL_SCREEN_CLOSE, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M6 18 18 6M6 6l12 12" fill="none" stroke="#000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>"##);
 svg_static!(SELECT_ARROW, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><path d="M1 3.25 5 7.25 9 3.25" fill="none" stroke="#000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>"##);
@@ -1569,6 +1567,8 @@ static SENT: std::sync::LazyLock<[svg::Handle; 2]> = std::sync::LazyLock::new(||
 
 // Desktop's `DownloadIcon` of a contact card's download button.
 svg_static!(DOWNLOAD_ICON, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill-rule="evenodd" d="M20 15.25a.75.75 0 01.743.648l.007.102v2.2a2.55 2.55 0 01-2.382 2.545l-.168.005H5.8a2.55 2.55 0 01-2.545-2.382L3.25 18.2V16a.75.75 0 011.493-.102L4.75 16v2.2c0 .541.41.987.936 1.044l.114.006h12.4c.541 0 .987-.41 1.044-.936l.006-.114V16a.75.75 0 01.75-.75zM12 3.8c.418 0 .757.339.757.757v8.772l3.25-3.25a.757.757 0 011.071 1.07l-4.543 4.544a.757.757 0 01-1.07 0L6.922 11.15a.757.757 0 011.07-1.071l3.25 3.25V4.557c0-.418.34-.757.758-.757z"/></svg>"##);
+// Desktop's `add-outline` system icon of "Add to a Label".
+svg_static!(ADD_OUTLINE, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path d="M16.232 4.44A8.28 8.28 0 0 0 10.335 2a8.28 8.28 0 0 0-5.897 2.44c-3.25 3.252-3.25 8.538 0 11.79a8.28 8.28 0 0 0 5.897 2.44 8.28 8.28 0 0 0 5.897-2.44 8.27 8.27 0 0 0 2.438-5.89 8.3 8.3 0 0 0-2.438-5.9m-1.177 10.623a6.67 6.67 0 0 1-4.72 1.95 6.67 6.67 0 0 1-4.72-1.95c-2.604-2.607-2.604-6.84 0-9.435a6.63 6.63 0 0 1 4.72-1.95c1.782 0 3.459.699 4.72 1.95a6.63 6.63 0 0 1 1.948 4.723c0 1.782-.698 3.45-1.948 4.712"/><path d="M13.669 9.506h-2.5V7.004a.836.836 0 0 0-.834-.834.836.836 0 0 0-.834.834v2.502h-2.5a.836.836 0 0 0-.834.834c0 .459.376.834.834.834h2.5v2.502c0 .46.376.834.834.834a.836.836 0 0 0 .833-.834v-2.502h2.501a.836.836 0 0 0 .833-.834.836.836 0 0 0-.833-.834"/></svg>"##);
 // Desktop's `MessagePendingIcon`.
 svg_static!(PENDING, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 12 12"><circle cx="6" cy="6" r="5.375" fill="none" stroke="#000" stroke-width="1.25"/><circle cx="3.3" cy="6" r=".9"/><circle cx="6" cy="6" r=".9"/><circle cx="8.7" cy="6" r=".9"/></svg>"##);
 

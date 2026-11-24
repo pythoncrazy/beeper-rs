@@ -939,7 +939,7 @@ impl BeeperGuiApp {
         let st = self.store.read();
         let item = |checked: bool, glyph: char, label: String, hotkey: String, bit: u8| -> El<'_> {
             // Desktop's `left-icon`: a 12 px Material icon at `scale(1.2)`, 5 px before the label.
-            let icon = container(crate::lift::shrink(ic(glyph, 12.0), 1.2)).padding(Padding::ZERO.right(5.0));
+            let icon = container(platform(ic(glyph, 12.0))).padding(Padding::ZERO.right(5.0));
             let lead = row![menu_check(checked), icon].align_y(Center);
             menu_item(p, Some(lead.into()), label, hotkey, Some(UiMessage::ChatList(chat_list::Msg::PickFilter(bit))))
         };

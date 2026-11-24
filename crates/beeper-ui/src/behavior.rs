@@ -182,12 +182,12 @@ impl Behavior {
         })
     }
 
-    /// Desktop's `iKe`: the icon of the line.
-    pub(crate) fn icon(&self) -> &'static svg::Handle {
+    /// Desktop's `iKe`: the Material icon of the line.
+    pub(crate) fn icon(&self) -> &'static str {
         let kinds = [&self.visibility, &self.notification];
         match kinds.iter().any(|s| s.as_ref().is_some_and(|s| s.kind == Kind::Snooze)) {
-            true => &MOON_STARS,
-            false => &TUNE,
+            true => "moon_stars",
+            false => "tune",
         }
     }
 }
@@ -215,7 +215,7 @@ impl BeeperGuiApp {
         let dim = p.sub;
         // `--semantic-colors-text-primary`, with the icons in `--semantic-colors-text-secondary`.
         let text = txt(line, 12.0).line_height(lh(15.0)).color(p.fg).wrapping(iced::widget::text::Wrapping::None);
-        let label = row![tinted(b.icon(), 14.0, dim), text, tinted(&CHEVRON_FORWARD, 10.0, dim)].spacing(5).align_y(Center);
+        let label = row![material(b.icon(), 14.0, dim), text, material("chevron_right", 10.0, dim)].spacing(5).align_y(Center);
         let open = UiMessage::ChatList(chat_list::Msg::OpenMenu(format!("{BEHAVIOR_MENU}{}", chat.id)));
         let btn = button(label).bare(p.fg).on_press(open);
         Some(container(btn).center_x(Fill).clip(true).padding(Padding::ZERO.top(4.0).bottom(8.0)).into())
@@ -235,8 +235,8 @@ impl BeeperGuiApp {
         for entry in &b.contributors {
             let s = &entry.source;
             let (name, icon): (String, El) = match s.kind {
-                Kind::Snooze => (trx("Chat Snooze", "chat behavior explanation row").into(), tinted(&MOON_STARS, 16.0, p.text)),
-                Kind::Chat => (trx("Chat Settings", "chat behavior explanation row").into(), tinted(&TUNE, 16.0, p.text)),
+                Kind::Snooze => (trx("Chat Snooze", "chat behavior explanation row").into(), material("moon_stars", 16.0, p.text)),
+                Kind::Chat => (trx("Chat Settings", "chat behavior explanation row").into(), material("tune", 16.0, p.text)),
                 Kind::Network => (s.name.clone(), svg(brand_svg(brand_key(&s.id))).width(16).height(16).into()),
                 Kind::Label => {
                     let label = st.labels.iter().find(|l| l.id == s.id).cloned().unwrap_or_default();
@@ -261,7 +261,7 @@ impl BeeperGuiApp {
         }
         let how = tr("How It Works");
         width = width.max(14.0 + 14.0 + text_width(how, 13.0, Weight::Normal) + 26.0);
-        let info = container(tinted(&INFO_ICON, 14.0, p.text)).center_x(16);
+        let info = material("info", 14.0, p.text);
         let how = menu_item(
             p,
             Some(row![info].padding(Padding::ZERO.right(5.0)).into()),
@@ -277,22 +277,23 @@ impl BeeperGuiApp {
     pub(crate) fn view_how_it_works(&self) -> El<'_> {
         let p = &self.pal;
         let rules = [
-            (&ACCOUNT_CIRCLE, tr("You Come First"), tr("If you mute or snooze a chat, labels can’t change it.")),
-            (&SELL, tr("Labels Set the Rules"), tr("If any label hides a chat, it’s hidden. If any label notifies, you’re notified.")),
+            ("account_circle", tr("You Come First"), tr("If you mute or snooze a chat, labels can’t change it.")),
+            ("sell", tr("Labels Set the Rules"), tr("If any label hides a chat, it’s hidden. If any label notifies, you’re notified.")),
             (
-                &EVENT_BUSY,
+                "event_busy",
                 tr("Away and Snoozed Labels"),
                 tr("Outside active hours or while snoozed, a label hides or mutes its chats, unless another label applies right now."),
             ),
             (
-                &ALTERNATE_EMAIL,
+                "alternate_email",
                 tr("Mentions"),
                 tr("Mentions notify in muted chats. Outside active hours, only if you allow them. Never while snoozed."),
             ),
-            (&FORUM, tr("Chats Without a Label"), tr("They follow their chat app account’s settings.")),
+            ("forum", tr("Chats Without a Label"), tr("They follow their chat app account’s settings.")),
         ];
         let rows = rules.into_iter().map(|(icon, title, body)| -> El<'_> {
-            let icon = container(tinted(icon, 18.0, p.strong)).center(28);
+            // `.howIcon`: an 18 px `PlatformIcon` in a 28 px square.
+            let icon = container(material(icon, 18.0, p.strong)).center(28);
             let text = column![med(title, 13.0).line_height(lh(16.0)).color(p.strong), txt(body, 13.0).line_height(lh(16.0)).color(p.sub)]
                 .spacing(2)
                 .padding(Padding::ZERO.left(4.0).top(5.0));

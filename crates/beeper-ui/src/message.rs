@@ -1522,7 +1522,7 @@ impl BeeperGuiApp {
             let (day, time) = (reminder_day(remind_at_ms), clock(remind_at_ms, st.settings.pref("timeFormat") == 1));
             let at = if day_of(remind_at_ms) == today() { time.clone() } else { format!("{time} {day}") };
             let tip = if if_no_reply { trf("Set to remind at %s if no reply", &[&at]) } else { trf("Set to remind at %s", &[&at]) };
-            let label = row![ic(icon::SCHEDULE, 16.0).color(ORANGE), semi(format!("{day} {time}"), 11.0).color(ORANGE)];
+            let label = row![crate::platform(ic(icon::SCHEDULE, 16.0).color(ORANGE)), semi(format!("{day} {time}"), 11.0).color(ORANGE)];
             let pill = container(label.spacing(4).align_y(Center))
                 .padding(pad(2.0, 8.0, 2.0, 4.0))
                 .style(fill_box(mix(p.card, ORANGE, 0.1), 30.0));
