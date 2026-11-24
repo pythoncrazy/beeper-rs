@@ -12,7 +12,6 @@ use crate::reply_line::{reply_line, Segment, Shape};
 use crate::style::pane_card;
 use crate::time::{clock, day_label, day_of, locale_string};
 use crate::timeline;
-use crate::toasts::Toast;
 use crate::windows;
 use crate::{
     anim, badged, brightness, can_thread, chat_theme, copy_text, edit_open, editable, enter_key, file_icon, gallery, handle, has_older,

@@ -10,7 +10,7 @@ use crate::{
     SYS_DOWNLOAD, SYS_EMOJI, SYS_REPLY, SYS_ROTATE,
 };
 use beeper_core::models::*;
-use iced::keyboard::{self, key::Named};
+use iced::keyboard;
 use iced::widget::column;
 use iced::{border, mouse, window};
 
@@ -18,7 +18,7 @@ use iced::{border, mouse, window};
 /// end, as many encoders write them, needs an input that ffmpeg can seek, which a pipe is not.
 pub(crate) fn run_ffmpeg(bytes: &[u8], args: &[&str]) -> Result<Vec<u8>, String> {
     use std::io::Write;
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::atomic::AtomicU64;
     static NEXT: AtomicU64 = AtomicU64::new(0);
     let n = NEXT.fetch_add(1, Ordering::Relaxed);
     let path = std::env::temp_dir().join(format!("beeper-rs-ffmpeg-{}-{n}", std::process::id()));

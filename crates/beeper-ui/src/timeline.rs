@@ -3,8 +3,8 @@
 
 use super::*;
 use crate::prelude::*;
+use iced::advanced::layout;
 use iced::advanced::widget::operation as op;
-use iced::advanced::{layout, Layout};
 
 #[derive(Clone)]
 pub enum Msg {

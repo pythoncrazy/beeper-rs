@@ -6,7 +6,6 @@ use crate::modals::Modal;
 use crate::portal;
 use crate::prelude::*;
 use crate::settings;
-use crate::verify::Brand;
 use crate::{COPIED_ICON, COPY_ICON};
 use beeper_core::models::Plan;
 use iced::widget::column;

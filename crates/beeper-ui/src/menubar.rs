@@ -5,7 +5,6 @@ use crate::i18n::{tr, trf, trx};
 use crate::prelude::*;
 use crate::settings;
 use crate::windows;
-use iced::font::Weight;
 use iced::widget::column;
 
 /// The height of the menu bar.

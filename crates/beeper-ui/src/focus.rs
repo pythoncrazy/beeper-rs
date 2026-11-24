@@ -7,7 +7,7 @@
 
 use super::*;
 use crate::prelude::*;
-use iced::advanced::widget::operation::{Focusable, Operation, Outcome, Scrollable};
+use iced::advanced::widget::operation::{Focusable, Outcome, Scrollable};
 use iced::advanced::widget::{self as advanced};
 
 /// Tells when the text field inside `content` takes or loses the keyboard focus, like the DOM's `focus` and `blur`

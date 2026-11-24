@@ -19,7 +19,7 @@ use beeper_core::config::APP_VERSION;
 use beeper_core::models::*;
 use beeper_core::prefs;
 use beeper_core::storage;
-use iced::keyboard::{self, key::Named};
+use iced::keyboard;
 use iced::widget::{column, operation};
 use iced::window;
 

@@ -150,7 +150,7 @@ use rail::{all_spaces, RailDrag, LABEL_NUDGE, RAIL_MENU};
 use rail::{SpacesDraft, SpacesEdit, SPACES_DIVIDER, SPACES_SIZE};
 use reminders::{remind_label, reminder_day};
 use scheduled::next_send;
-use time::{clock, day_label, day_num, day_of, locale_string, today, WEEKDAYS};
+use time::{clock, day_label, day_of, locale_string, today, WEEKDAYS};
 use toasts::{Toast, TOAST_TICK};
 use units::human_size;
 use user_card::UserHover;

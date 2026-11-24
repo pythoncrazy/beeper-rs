@@ -5,7 +5,6 @@ use crate::style::gradient_text;
 use beeper_core::import::{read_beeper_data, BeeperData};
 use beeper_core::models::{BridgeAccountInfo, MatrixSession, Profile};
 use beeper_core::store::Setup;
-use iced::keyboard::key::Named;
 use iced::widget::{column, operation};
 use iced::{border, window};
 
