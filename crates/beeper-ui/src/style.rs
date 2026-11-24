@@ -1199,15 +1199,6 @@ pub fn cubic_bezier(x: f32, [x1, y1, x2, y2]: [f32; 4]) -> f32 {
 mod tests {
     use super::*;
 
-    /// Desktop's space bar, `--color-backing-shade` on `--left-pane-bg` with Chromium's 26/255 for its 0.1: #D5D6DB in
-    /// the light theme (measured) and #323334 in the dark one.
-    #[test]
-    fn the_space_bar_blends_like_chromium() {
-        for (p, want) in [(BEEPER_LIGHT, [0xd5, 0xd6, 0xdb]), (BEEPER_DARK, [0x32, 0x33, 0x34])] {
-            assert_eq!(flat(p.window, p.hover).into_rgba8()[..3], want);
-        }
-    }
-
     /// cosmic-text keeps the glyphs of each shaped word: a text measures the same from the kept words as when it was
     /// first shaped, and again after the trims dropped them.
     #[test]
@@ -1475,6 +1466,15 @@ mod tests {
         ];
         for (token, field, light, dark) in rows {
             assert_eq!((field(&BEEPER_LIGHT), field(&BEEPER_DARK)), (light, dark), "{token}");
+        }
+    }
+
+    /// Desktop's space bar, `--color-backing-shade` on `--left-pane-bg` with Chromium's 26/255 for its 0.1: #D5D6DB in
+    /// the light theme (measured) and #323334 in the dark one.
+    #[test]
+    fn the_space_bar_blends_like_chromium() {
+        for (p, want) in [(BEEPER_LIGHT, [0xd5, 0xd6, 0xdb]), (BEEPER_DARK, [0x32, 0x33, 0x34])] {
+            assert_eq!(flat(p.window, p.hover).into_rgba8()[..3], want);
         }
     }
 
