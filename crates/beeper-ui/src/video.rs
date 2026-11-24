@@ -664,8 +664,7 @@ impl BeeperGuiApp {
         // Desktop's video menu is a native menu at the cursor, which here stays inside the window, with the speed
         // submenu level with its row and beside the menu where it fits.
         let menu_h = 8.0 + rows.iter().map(|r| r.1).sum::<f32>();
-        let col = Column::with_children(rows.into_iter().map(|r| r.0)).padding([4, 0]);
-        let menu = container(col).width(PIP_MENU_W).style(shadow_box(self.pal.menu, self.pal.menu_border, 6.0, 16.0));
+        let menu = crate::menu_card(&self.pal, Column::with_children(rows.into_iter().map(|r| r.0)), PIP_MENU_W);
         let x = if at.x + PIP_MENU_W > w { at.x - PIP_MENU_W } else { at.x };
         let y = at.y.min(h - menu_h);
         let sub = self.view_speed_menu(&v.mid).map(|sub| {

@@ -214,7 +214,7 @@ impl BeeperGuiApp {
         };
         let pill = |(kind, text): (Pill, String)| -> El<'_> {
             let icon = (kind == Pill::Syncing).then(|| tinted(&MAT_SYNC, 12.0, p.strong));
-            let body = row![].push(icon).push(txt(text, 12.0).color(p.strong)).spacing(4).align_y(Center);
+            let body = row![].push(icon).push(txt(text, 11.0).line_height(lh(14.0)).color(p.strong)).spacing(4).align_y(Center);
             let style = move |_: &Theme| container::Style {
                 background: Some(p.card.into()),
                 border: border::rounded(17.0),
@@ -290,7 +290,7 @@ impl BeeperGuiApp {
     pub(crate) fn toast_card<'a>(&'a self, t: &Toast, older: Option<usize>) -> El<'a> {
         let p = &self.pal;
         let (bg, fg) = match t.error {
-            true => (hex(0xdc362e), Color::WHITE),
+            true => (ON_ERROR, Color::WHITE),
             false => (p.card, p.strong),
         };
         let btn = |(label, msg): &(&'static str, UiMessage), fg: Color| {

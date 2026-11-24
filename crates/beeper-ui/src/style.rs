@@ -76,6 +76,12 @@ const INTER: [&[u8]; 8] = [
 /// Desktop's `redacted_regular` font of "Redact names and pictures", whose letters are bars.
 const REDACTED_WOFF: &[u8] = font!("Redacted-Regular.woff");
 pub const CLEAR: Color = Color::TRANSPARENT;
+/// `--color-on-error-container`, the same in both themes: error toasts, Decline and Remove Account.
+pub const ON_ERROR: Color = hex(0xdc362e);
+/// `--error-color`: the errored chat icon and a hotkey that another one already uses.
+pub const ERROR: Color = hex(0xf44336);
+/// `--color-delete`: the Poll Creator's errors and Delete buttons, and the `danger` `BrandButton`.
+pub const DELETE_RED: Color = hex(0xff2627);
 
 thread_local! {
     /// While a view draws: Desktop's `redactedMode`, and whether the widgets that it makes are in a
@@ -262,6 +268,12 @@ pub fn lh(px: f32) -> iced::Pixels {
 
 pub const fn fw(weight: Weight) -> Font {
     Font { family: Family::Name("Inter"), weight, ..Font::DEFAULT }
+}
+
+/// Drops the shaped words that no text used for five checks, each a minute apart: cosmic-text keeps the glyphs of each
+/// word that it shaped, so a word that shows again is not shaped again.
+pub(crate) fn trim_shaped_words() {
+    font_system().write().expect("font system").raw().shape_run_cache.trim(5);
 }
 
 fn shape<T>(s: &str, size: f32, w: Weight, width: Option<f32>, f: impl FnOnce(&cosmic_text::Buffer) -> T) -> T {
@@ -1044,10 +1056,8 @@ palette! {
     rule: Color = hex(0xb3b3b3), hex(0x4c4c4c);
     /// `--color-primary`.
     accent: Color = hex(0x0d4ffb), hex(0x2561fb);
-    /// `--toggle-style-knob-on`.
+    /// `--toggle-style-knob-on`, and `--checkbox-style-bg-selected`: the fill of a checked `Checkbox`.
     toggle_on: Color = hex(0x0d4ffb), hex(0x0d4ffb);
-    /// The fill of a checked `Checkbox`, `--checkbox-style-bg-selected`.
-    checked: Color = hex(0x0e4df2), hex(0x0e4df2);
     /// `--color-highlight-reaction`: your own reactions, which a monochrome theme fills with its backdrop.
     highlight: Color = hex(0xcbd9ff), hex(0x1b43aa);
     /// The color of the quote of your own message (`LinkedMessage` `isSender`) under a rich theme, else `None`.
@@ -1061,7 +1071,7 @@ palette! {
     brand_stops: Option<[Color; 2]> = None, None;
     /// The text of the white unread counts, `AccountBadge` dots and pinned bubbles of a dark rich theme.
     badge: Option<Color> = None, None;
-    /// `--toggle-style-border` and `--toggle-style-knob-off`.
+    /// `--toggle-style-border`, `--toggle-style-knob-off` and `--checkbox-style-border`.
     toggle_off: Color = hexa(0x000000, 0.302), hexa(0xffffff, 0.302);
     /// `--color-background-grouped-weak`.
     prefs_pane: Color = hex(0xf3f3f3), hex(0x161616);
@@ -1073,8 +1083,6 @@ palette! {
     prefs_group: Color = hex(0xffffff), hex(0x1c1c1c);
     /// `--color-border-neutrals-weak`.
     prefs_border: Color = hex(0xededed), hex(0x282828);
-    /// `--color-border-neutrals`.
-    neutral_border: Color = hex(0xe2e2e2), hex(0x343434);
     /// `--color-on-surface` at 0.05: the Settings search field.
     search: Color = hexa(0x202124, 0.05), hexa(0xf6f6f6, 0.05);
     /// `--color-secondary-container`.
@@ -1185,6 +1193,19 @@ pub fn cubic_bezier(x: f32, [x1, y1, x2, y2]: [f32; 4]) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// cosmic-text keeps the glyphs of each shaped word: a text measures the same from the kept words as when it was
+    /// first shaped, and again after the trims dropped them.
+    #[test]
+    fn kept_words_shape_like_new_ones() {
+        let width =
+            |s: &str| shape(s, 14.0, Weight::Normal, None, |b| b.layout_runs().flat_map(|r| r.glyphs.iter()).map(|g| g.w).sum::<f32>());
+        let (hello, both) = (width("Hello"), width("Hello there"));
+        assert!(hello > 0.0 && both > hello);
+        assert_eq!((width("Hello"), width("Hello there")), (hello, both), "the kept words");
+        (0..7).for_each(|_| trim_shaped_words());
+        assert_eq!((width("Hello"), width("Hello there")), (hello, both), "shaped again after the trims");
+    }
 
     /// The lines that the widgets lay out, which [`surely_fits`] may skip only when they are one.
     fn shaped_lines(s: &str, max: f32, size: f32) -> usize {

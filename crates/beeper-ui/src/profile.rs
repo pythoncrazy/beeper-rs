@@ -1,11 +1,16 @@
 //! Desktop's Beeper Profile page of Settings (`ProfileSubView`), with its menu and prompts.
 
 use crate::i18n::{tr, trf, trx, trxf};
+use crate::login::{brand_button_with, BrandLook};
+use crate::modals::Modal;
 use crate::portal;
 use crate::prelude::*;
 use crate::settings;
+use crate::verify::Brand;
+use crate::{COPIED_ICON, COPY_ICON};
 use beeper_core::models::Plan;
 use iced::widget::column;
+use iced::window;
 
 /// The edits and the open prompts of the Beeper Profile page.
 #[derive(Default)]
@@ -19,9 +24,10 @@ pub struct ProfileForm {
     pub menu: bool,
     /// Desktop's `DeleteAccountPrompt`: the typed username, whether the deletion runs, and its error.
     pub delete: Option<(String, bool, Option<String>)>,
-    /// Desktop's `ChangeEmailModal`: the current, new and confirmed email, whether it saves, and its error.
+    /// Desktop's `ChangeEmailModal` in its window: the current, new and confirmed email, whether it saves, and its
+    /// error.
     pub change_email: Option<([String; 3], bool, Option<String>)>,
-    /// Desktop's `ShowRecoveryKeyModal` and its step.
+    /// Desktop's `ShowRecoveryKeyModal` in its window, and its step.
     pub recovery_key: Option<KeyStep>,
     /// The section that waits for the answer to "You have unsaved changes".
     pub leaving: Option<SettingsTab>,
@@ -29,6 +35,9 @@ pub struct ProfileForm {
 
 /// Desktop's `DEFERRED_RECOVERY_CODE_SETUP` banner shows a day after the recovery key was made.
 const KEY_BANNER_AFTER: i64 = 24 * 60 * 60 * 1000;
+
+/// The `setWindowMinSize(name, undefined, 175)` of `ShowRecoveryKeyModal`, which keeps Electron's minimum width.
+const KEY_MIN_SIZE: Size = Size::new(330.0, 175.0);
 
 /// The steps of Desktop's `ShowRecoveryKeyModal`.
 pub enum KeyStep {
@@ -53,6 +62,10 @@ pub enum Msg {
     /// "Save key now" of the banner: the recovery key in Settings, and no banner for the rest of the session.
     SaveKeyNow,
     CopyRecoveryKey,
+    /// Two seconds after the copy of a key that is backed up, the button shows "Copy to Clipboard" again.
+    CopiedOver,
+    /// A click on the key, which copies it and changes nothing else (`ClippableRecoveryCode`).
+    CopyKeyText,
     /// Next after the copy: the key is typed again to check that it was saved.
     KeyNext,
     KeyEdit(text_editor::Action),
@@ -126,20 +139,29 @@ impl BeeperGuiApp {
                 let me = st.me();
                 let name = f.name.as_deref().map(str::trim).filter(|n| *n != me.full_name.as_deref().unwrap_or_default());
                 let email = f.email.as_deref().map(str::trim).filter(|e| *e != me.email.as_deref().unwrap_or_default());
-                if let Some(email) = email {
-                    f.change_email = Some(([String::new(), email.to_string(), String::new()], false, None));
-                }
+                // Desktop's `TNt(email).open()`, which an open window only raises.
+                let email = email.map(|e| [String::new(), e.to_string(), String::new()]);
                 let (name, avatar) = (name.map(str::to_string), f.avatar.take().map(|(b, m, _)| (b, m)));
                 drop(st);
+                let email = email.map(|e| {
+                    if self.modal_window(Modal::ChangeEmail).is_none() {
+                        self.profile.change_email = Some((e, false, None));
+                    }
+                    let open = self.open_modal(Modal::ChangeEmail, None);
+                    open.chain(iced::widget::operation::focus(CURRENT_EMAIL))
+                });
                 if name.is_none() && avatar.is_none() {
-                    return Task::none();
+                    return email.unwrap_or_else(Task::none);
                 }
+                let f = &mut self.profile;
                 f.saving = true;
-                if self.store.read().config.demo {
-                    return Task::done(UiMessage::Profile(Msg::Saved(Ok(()))));
-                }
-                let save = beeper_core::matrix::set_profile(self.store.clone(), name, avatar);
-                return Task::perform(save, |r| UiMessage::Profile(Msg::Saved(r)));
+                let save = match self.store.read().config.demo {
+                    true => Task::done(UiMessage::Profile(Msg::Saved(Ok(())))),
+                    false => Task::perform(beeper_core::matrix::set_profile(self.store.clone(), name, avatar), |r| {
+                        UiMessage::Profile(Msg::Saved(r))
+                    }),
+                };
+                return Task::batch([save].into_iter().chain(email));
             }
             Msg::Saved(r) => {
                 (f.saving, f.name) = (false, None);
@@ -148,15 +170,29 @@ impl BeeperGuiApp {
                 }
             }
             Msg::Menu => f.menu = !f.menu,
-            Msg::RecoveryKey(open) => f.recovery_key = open.then_some(KeyStep::Display(false)),
+            Msg::RecoveryKey(true) => return self.open_recovery_key(self.settings_window),
+            Msg::RecoveryKey(false) => return self.close_modal(Modal::RecoveryKey),
+            // Desktop's banner opens the key over the main window, and hides for the rest of the session.
             Msg::SaveKeyNow => {
-                (f.recovery_key, self.key_banner_closed) = (Some(KeyStep::Display(false)), true);
-                return self.open_settings(SettingsTab::Profile);
+                self.key_banner_closed = true;
+                return self.open_recovery_key(self.main_window);
             }
             Msg::CopyRecoveryKey => {
                 f.recovery_key = Some(KeyStep::Display(true));
-                return iced::clipboard::write(self.store.read().beeper_state.secrets.recovery_code.clone());
+                let st = self.store.read();
+                let copy = iced::clipboard::write(st.beeper_state.secrets.recovery_code.clone());
+                let over = st.beeper_state.has_backed_up_code;
+                drop(st);
+                let over =
+                    over.then(|| self.timers.key_copied.after(std::time::Duration::from_secs(2), UiMessage::Profile(Msg::CopiedOver)));
+                return Task::batch([copy].into_iter().chain(over));
             }
+            Msg::CopiedOver => {
+                if let Some(KeyStep::Display(copied)) = &mut f.recovery_key {
+                    *copied = false;
+                }
+            }
+            Msg::CopyKeyText => return iced::clipboard::write(self.store.read().beeper_state.secrets.recovery_code.clone()),
             Msg::KeyNext => f.recovery_key = Some(KeyStep::Verify(text_editor::Content::new(), false, None)),
             Msg::KeyEdit(action) => {
                 let Some(KeyStep::Verify(typed, false, error)) = &mut f.recovery_key else { return Task::none() };
@@ -174,12 +210,14 @@ impl BeeperGuiApp {
             Msg::KeyVerified(Ok(())) => {
                 beeper_core::matrix::mark_recovery_key_backed_up(&self.store);
                 f.recovery_key = Some(KeyStep::Verified);
+                return self.fit_recovery_key();
             }
             Msg::KeyVerified(Err(e)) => {
                 if let Some(KeyStep::Verify(_, busy, error)) = &mut f.recovery_key {
                     *busy = false;
                     *error = Some(trxf("Error: %s", "recovery key verification error", &[&e]));
                 }
+                return self.fit_recovery_key();
             }
             Msg::Delete(text) => {
                 let busy = f.delete.as_ref().is_some_and(|d| d.1);
@@ -217,13 +255,13 @@ impl BeeperGuiApp {
             }
             Msg::EmailSaved(Ok(())) => {
                 (f.change_email, f.email) = (None, None);
-                return self.refresh_cloud_accounts();
+                return Task::batch([self.close_modal(Modal::ChangeEmail), self.refresh_cloud_accounts()]);
             }
             Msg::EmailSaved(Err(e)) => {
                 let c = f.change_email.as_mut().expect("the Change Email prompt is open");
                 (c.1, c.2) = (false, Some(e));
             }
-            Msg::CloseEmail => f.change_email = None,
+            Msg::CloseEmail => return self.close_modal(Modal::ChangeEmail),
             Msg::Leave(save) => {
                 let to = f.leaving.take().expect("a section waits");
                 let task = match save {
@@ -360,7 +398,7 @@ impl BeeperGuiApp {
             let warning = tr("<strong>Warning: This is a permanent action.</strong> When you delete your account:");
             let (strong, rest) = warning.trim_start_matches("<strong>").split_once("</strong>").expect("a bold warning");
             let item = |t: &'static str| {
-                row![ic(icon::CLOSE, 14.0).color(p.danger), txt(tr(t), 13.0).color(p.text)].spacing(8).align_y(Center).into()
+                row![ic(icon::CLOSE, 14.0).color(p.text_danger), txt(tr(t), 13.0).color(p.text)].spacing(8).align_y(Center).into()
             };
             let content = column![
                 bold(tr("Delete account"), 17.0).color(p.strong),
@@ -374,87 +412,141 @@ impl BeeperGuiApp {
                 txt(trf("To confirm, type your username %s below.", &[&username]), 13.0).color(p.text),
                 input(typed, "", Box::new(|v| UiMessage::Profile(Msg::Delete(Some(v))))).on_submit(UiMessage::Profile(Msg::ConfirmDelete)),
             ]
-            .push(error.as_ref().map(|e| txt(e.clone(), 12.0).color(p.danger)))
+            .push(error.as_ref().map(|e| txt(e.clone(), 12.0).color(p.text_danger)))
             .push(buttons(*busy, UiMessage::Profile(Msg::Delete(None)), tr("Delete account"), ok, true))
             .spacing(12);
             return Some(card(content.into(), 360.0, UiMessage::Profile(Msg::Delete(None))));
         }
-        if let Some(([now, new, again], busy, error)) = &f.change_email {
-            let current = st.me().email.clone().unwrap_or_default();
-            let valid = same_email(now, &current) && same_email(new, again) && !new.trim().is_empty();
-            let field = |label: &'static str, value: &str, hint: &'static str, i: usize| -> El<'_> {
-                column![
-                    semi(tr(label), 11.0).color(p.sub),
-                    input(value, tr(hint), Box::new(move |v| UiMessage::Profile(Msg::EmailField(i, v))))
+        None
+    }
+
+    /// Desktop's `setVisibleModal(SHOW_RECOVERY_KEY)` from window `from`: the window of the key to copy, once.
+    fn open_recovery_key(&mut self, from: Option<window::Id>) -> Task<UiMessage> {
+        if self.modal_window(Modal::RecoveryKey).is_none() {
+            self.profile.recovery_key = Some(KeyStep::Display(false));
+        }
+        let open = self.open_modal(Modal::RecoveryKey, from);
+        let id = self.modal_window(Modal::RecoveryKey).expect("the Recovery Key window is open");
+        let min = Size::new(KEY_MIN_SIZE.width, KEY_MIN_SIZE.height - self.title_bar()) * (1.0 / self.zoom);
+        open.chain(window::set_min_size(id, Some(min)))
+    }
+
+    /// The layout effect of `ShowRecoveryKeyModal`, which fits its window to the step: 350 by 175 once verified, and
+    /// 350 by 350 while the typed key has an error.
+    fn fit_recovery_key(&self) -> Task<UiMessage> {
+        let size = match &self.profile.recovery_key {
+            Some(KeyStep::Verified) => Size::new(350.0, 175.0),
+            Some(KeyStep::Verify(_, _, Some(_))) => Size::new(350.0, 350.0),
+            _ => return Task::none(),
+        };
+        let Some(id) = self.modal_window(Modal::RecoveryKey) else { return Task::none() };
+        self.resize_around(id, size)
+    }
+
+    /// Desktop's `ShowRecoveryKeyModal` in its window: the key to copy, then the key typed again, then Verified.
+    pub(crate) fn view_recovery_key(&self) -> El<'_> {
+        let p = &self.pal;
+        let st = self.store.read();
+        let body: El<'_> = match &self.profile.recovery_key {
+            None => Space::new().into(),
+            // `verifiedContainer`: the 36 px `done` icon in green over "Verified", 4 px apart.
+            Some(KeyStep::Verified) => {
+                column![tinted(&COPIED_ICON, 36.0, hex(0x19ba3b)), semi(tr("Verified"), 28.0).line_height(lh(36.0)).color(p.strong)]
+                    .spacing(4)
+                    .align_x(Center)
+                    .width(Fill)
+                    .into()
+            }
+            Some(KeyStep::Verify(typed, busy, error)) => {
+                let heading = if *busy { tr("Verifying...") } else { tr("Verify recovery key") };
+                let heading = semi(heading, 18.0).line_height(lh(26.0)).color(p.accent).center().width(Fill);
+                let edit = |a| UiMessage::Profile(Msg::KeyEdit(a));
+                let input = crate::verify::key_field(p, typed, error.is_some(), edit, UiMessage::Profile(Msg::KeyPaste));
+                // `error` sits 6 px up into the 12 px gap, in `--color-on-error-container`.
+                let error = error.as_ref().map(|e| txt(e.clone(), 11.0).line_height(lh(14.0)).color(ON_ERROR).center().width(Fill));
+                column![container(heading).padding(Padding::ZERO.bottom(8.0)), column![input].push(error).spacing(6)].spacing(12).into()
+            }
+            Some(KeyStep::Display(copied)) => {
+                let key = crate::verify::format_recovery_key(&st.beeper_state.secrets.recovery_code);
+                // `ClippableRecoveryCode` without its copy text: the key on a gray card, which a click copies.
+                let key = txt(key, 28.0).font(fw(Weight::Semibold)).line_height(lh(36.0)).color(p.strong).center();
+                let key = button(container(key).center_x(Fill).padding([12, 16]))
+                    .padding(0)
+                    .style(btn_style([p.chip; 3], [p.strong; 3], 8.0))
+                    .on_press(UiMessage::Profile(Msg::CopyKeyText));
+                // `hint`: two 10 px lines, the second with Learn more, which opens Desktop's privacy page.
+                let learn = span(tr("Learn more")).color(p.accent).link(UiMessage::OpenUrl(crate::login::PRIVACY_URL.into()));
+                let hint = rich_text![
+                    span(format!("{}\n{} ", tr("Do not share your recovery key."), tr("Put it in a safe place."))).color(p.muted),
+                    learn
                 ]
+                .on_link_click(|m: UiMessage| m)
+                .size(rem(10.0))
+                .line_height(lh(12.0))
+                .center()
+                .width(Fill);
+                // The button: "Copy to Clipboard", then "Next" to verify the key, or "Copied" once it is backed up.
+                let backed_up = st.beeper_state.has_backed_up_code;
+                let (label, press): (El<'_>, Msg) = match (copied, backed_up) {
+                    (false, _) => {
+                        let copy = tinted(&COPY_ICON, 16.0, Color::WHITE);
+                        (row![copy, med(tr("Copy to Clipboard"), 13.0)].spacing(8).align_y(Center).into(), Msg::CopyRecoveryKey)
+                    }
+                    (true, true) => (med(tr("Copied"), 13.0).into(), Msg::CopyRecoveryKey),
+                    (true, false) => (med(trx("Next", "button label"), 13.0).into(), Msg::KeyNext),
+                };
+                // `primaryButton`: a small `BrandButton` as wide as its label, in `--color-primary`, at least 36 px high.
+                let look = BrandLook { fill: Some(p.accent), width: Shrink, min_height: 36.0, ..BrandLook::SMALL };
+                let button = brand_button_with(p, label, Brand::Primary, Some(UiMessage::Profile(press)), false, look);
+                column![key, hint, container(button).center_x(Fill)].spacing(12).into()
+            }
+        };
+        let page = container(body).padding(18).width(Fill).height(Fill).style(fill_box(p.card, 0.0));
+        page.into()
+    }
+
+    /// Desktop's `ChangeEmailModal` in its frameless window: the current email, the new one twice, the error, and
+    /// Cancel and Save at the bottom. Its background moves the window.
+    pub(crate) fn view_change_email(&self) -> El<'_> {
+        let p = &self.pal;
+        let Some(([now, new, again], busy, error)) = &self.profile.change_email else { return Space::new().into() };
+        let current = self.store.read().me().email.clone().unwrap_or_default();
+        let valid = same_email(now, &current) && same_email(new, again) && !new.trim().is_empty();
+        let field = |label: &'static str, value: &str, hint: &'static str, i: usize| -> El<'_> {
+            let input = text_input(tr(hint), value)
+                .on_input(move |v| UiMessage::Profile(Msg::EmailField(i, v)))
+                .on_submit(UiMessage::Profile(Msg::SaveEmail))
+                .size(rem(14.0))
+                .line_height(lh(18.0))
+                .padding([8, 11])
+                .style(input_style(p.chip, p.strong, p.muted, p.accent, 10.0));
+            let input = if i == 0 { input.id(CURRENT_EMAIL) } else { input };
+            column![container(semi(tr(label), 11.0).line_height(lh(14.0)).color(p.muted)).padding(Padding::ZERO.left(8.0)), input]
                 .spacing(4)
                 .into()
-            };
-            let content = column![
-                bold(tr("Change Email"), 17.0).color(p.strong),
-                txt(tr("To change your email, please confirm your current email address first."), 13.0).color(p.sub),
-                field("Current Email", now, "Enter your current email", 0),
-                field("New Email", new, "Enter your new email", 1),
-                field("Confirm New Email", again, "Confirm your new email", 2),
-            ]
-            .push(error.as_ref().map(|e| txt(e.clone(), 12.0).color(p.danger)))
-            .push(buttons(
-                *busy,
-                UiMessage::Profile(Msg::CloseEmail),
-                trx("Save", "button label"),
-                valid.then_some(UiMessage::Profile(Msg::SaveEmail)),
-                false,
-            ))
-            .spacing(12);
-            return Some(card(content.into(), 350.0, UiMessage::Profile(Msg::CloseEmail)));
-        }
-        let close = UiMessage::Profile(Msg::RecoveryKey(false));
-        let copied = match f.recovery_key.as_ref()? {
-            KeyStep::Display(copied) => *copied,
-            KeyStep::Verify(typed, busy, error) => {
-                // Desktop's verify step: the key typed again, which checks itself once it is complete.
-                let heading = if *busy { tr("Verifying...") } else { tr("Verify recovery key") };
-                let input = crate::verify::key_input(
-                    p,
-                    typed,
-                    error.is_some(),
-                    |a| UiMessage::Profile(Msg::KeyEdit(a)),
-                    UiMessage::Profile(Msg::KeyPaste),
-                );
-                let content = column![semi(heading, 15.0).color(p.strong), input]
-                    .push(error.as_ref().map(|e| txt(e.clone(), 11.0).color(p.danger)))
-                    .spacing(12)
-                    .align_x(Center);
-                return Some(card(content.into(), 350.0, close));
-            }
-            KeyStep::Verified => {
-                let done = ic(icon::CHECK, 36.0).color(p.accent);
-                let content = column![done, semi(tr("Verified"), 15.0).color(p.strong)].spacing(8).align_x(Center);
-                return Some(card(content.into(), 350.0, close));
-            }
         };
-        let key = st.beeper_state.secrets.recovery_code.clone();
-        // Desktop's button: "Copy to Clipboard", then "Next" to verify the key, or "Copied" once it is backed up.
-        let (label, press) = match (copied, st.beeper_state.has_backed_up_code) {
-            (false, _) => (tr("Copy to Clipboard"), Msg::CopyRecoveryKey),
-            (true, true) => (tr("Copied"), Msg::CopyRecoveryKey),
-            (true, false) => (trx("Next", "button label"), Msg::KeyNext),
-        };
-        let copy = button(med(label, 13.0).color(Color::WHITE))
-            .padding([6, 14])
-            .style(btn_style([p.accent; 3], [Color::WHITE; 3], 8.0))
-            .on_press(UiMessage::Profile(press));
-        let content = column![
-            container(txt(key, 15.0).font(fw(Weight::Semibold)).color(p.strong).center())
-                .padding(12)
-                .width(Fill)
-                .style(fill_box(p.chip, 8.0)),
-            txt(format!("{}\n{}", tr("Do not share your recovery key."), tr("Put it in a safe place.")), 12.0).color(p.sub).center(),
-            copy,
+        let form = column![
+            semi(tr("Change Email"), 15.0).line_height(lh(20.0)).color(p.strong),
+            txt(tr("To change your email, please confirm your current email address first."), 13.0).color(p.muted),
+            field("Current Email", now, "Enter your current email", 0),
+            field("New Email", new, "Enter your new email", 1),
+            field("Confirm New Email", again, "Confirm your new email", 2),
         ]
-        .spacing(12)
-        .align_x(Center);
-        Some(card(content.into(), 350.0, close))
+        .push(error.as_ref().map(|e| txt(e.clone(), 11.0).line_height(lh(14.0)).color(p.strong)))
+        .spacing(12);
+        // `buttons`: two standard `BrandButton`s that share the width, the Save one with Desktop's spinner while it
+        // saves.
+        let standard = |label: El<'static>, variant, msg| brand_button_with(p, label, variant, msg, false, BrandLook::STANDARD);
+        let cancel =
+            standard(med(trx("Cancel", "button label"), 14.0).into(), Brand::Muted, (!busy).then_some(UiMessage::Profile(Msg::CloseEmail)));
+        let save: El<'static> = match busy {
+            true => crate::verify::spinner(16.0, p.on_secondary),
+            false => med(trx("Save", "button label"), 14.0).into(),
+        };
+        let save = standard(save, Brand::Primary, (valid && !busy).then_some(UiMessage::Profile(Msg::SaveEmail)));
+        let page = column![form, Space::new().height(Fill), row![cancel, save].spacing(8)].padding(16);
+        let page = container(page).width(Fill).height(Fill).style(fill_box(p.card, 0.0));
+        self.drag_area(self.modal_window(Modal::ChangeEmail), page)
     }
 
     /// Desktop's `HeaderBanners` backup banner over the chat list: a recovery key this device made over a day ago and
@@ -491,12 +583,15 @@ impl BeeperGuiApp {
         }
         if key != mine {
             *error = Some(tr("Entered key does not match your recovery key").into());
-            return Task::none();
+            return self.fit_recovery_key();
         }
         *busy = true;
         Task::perform(beeper_core::matrix::recover(self.store.clone(), key), |r| UiMessage::Profile(Msg::KeyVerified(r)))
     }
 }
+
+/// The widget ID of the Current Email field of Change Email, which has the focus when the window opens.
+const CURRENT_EMAIL: &str = "change-email-current";
 
 /// Desktop's `ProfileSubView` input: semibold text in an 8 px rounded box, gray when it is disabled.
 fn profile_input(p: &Palette) -> impl Fn(&Theme, text_input::Status) -> text_input::Style + use<> {

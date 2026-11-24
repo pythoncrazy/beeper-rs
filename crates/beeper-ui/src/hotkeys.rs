@@ -233,9 +233,7 @@ impl BeeperGuiApp {
             }
             "Zoom In" => Some(UiMessage::Zoom(zoom::Msg::Step(1))),
             "Zoom Out" => Some(UiMessage::Zoom(zoom::Msg::Step(-1))),
-            "Download Attachments" => selected
-                .filter(|_| self.selected_message().is_some_and(|m| !m.attachments.is_empty()))
-                .map(|m| UiMessage::Message(message::Msg::Download(m, None))),
+            "Download Attachments" => chat.and_then(|_| self.download_selected(&self.store.read())),
             "Message: Edit" => {
                 let edit = self.selected_message().filter(|m| self.can_edit(m));
                 let m = chat.and_then(|_| edit.or_else(|| self.last_own_message()));

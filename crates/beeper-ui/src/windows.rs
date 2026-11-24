@@ -9,6 +9,8 @@ pub enum Msg {
     ToggleMaximize(Option<window::Id>),
     /// The Minimize item of the Window menu.
     Minimize(window::Id),
+    /// A press on the background of a frameless window, which moves it.
+    Drag(window::Id),
     /// Whether the main window is minimized, as the window manager says after the window lost the focus.
     Minimized(bool),
     Opened(window::Id),
@@ -76,6 +78,7 @@ impl BeeperGuiApp {
                 RELAUNCH.store(true, std::sync::atomic::Ordering::Relaxed);
                 return self.quit();
             }
+            Msg::Drag(id) => return window::drag(id),
             Msg::Minimize(id) => {
                 self.tray_sent.1 = true;
                 self.minimized |= Some(id) == self.main_window;
@@ -257,6 +260,7 @@ impl BeeperGuiApp {
                     self.devices_busy = false;
                 }
                 self.enter_key.window = self.enter_key.window.filter(|w| *w != id);
+                self.modal_closed(id);
                 if Some(id) == self.settings_window {
                     self.settings_window = None;
                     self.time_edit = Default::default();
@@ -672,15 +676,21 @@ impl BeeperGuiApp {
     /// Desktop's renderer opens its `minWidth` and `minHeight` too, so the 303 px wide Edit Labels window is 330 px
     /// wide, and a fixed size grows to it.
     fn open_centered(&mut self, size: Size, resizable: bool) -> (window::Id, Task<UiMessage>) {
-        let size = size.max(MIN_SIZE);
-        let min_size = resizable.then_some(MIN_SIZE);
-        let (id, open) = self.open_window(window::Settings { resizable, min_size, ..Self::window_settings(size) });
-        // The main window, or the sign-in window of the onboarding.
-        let (parent, around) = match self.main_window {
+        let settings = window::Settings { resizable, min_size: resizable.then_some(MIN_SIZE), ..Self::window_settings(size) };
+        self.open_over(settings, None)
+    }
+
+    /// A window of `settings` over the middle of window `parent` of its size in screen pixels, else of the main window
+    /// or the sign-in window of the onboarding. It grows to Desktop's minimum size, but centers at the size that it
+    /// asked for, like Desktop's `center: "parent"` and `gm`, which place the window before Electron grows it.
+    pub(crate) fn open_over(&mut self, settings: window::Settings, parent: Option<(window::Id, Size)>) -> (window::Id, Task<UiMessage>) {
+        let asked = settings.size;
+        let (id, open) = self.open_window(window::Settings { size: asked.max(MIN_SIZE), ..settings });
+        let (parent, around) = parent.unwrap_or_else(|| match self.main_window {
             Some(main) => (main, self.pane.size * self.zoom),
             None => (self.login_window.expect("the main or the sign-in window is open"), login::SIZE),
-        };
-        (id, open.then(move |_| center_over(id, parent, around, size)))
+        });
+        (id, open.then(move |_| center_over(id, parent, around, asked)))
     }
 
     /// One of Desktop's sheets that `v3` sizes (New Label, Label Settings, Edit Label, Chats and How It Works): it
@@ -788,7 +798,7 @@ impl BeeperGuiApp {
         let lists = lists.chain(self.labels_windows.iter().map(|w| w.0)).chain(self.vote_windows.iter().map(|w| w.0));
         let group = self.group_window.as_ref().map(|d| d.id);
         let lists = lists.chain(self.poll_windows.iter().map(|w| w.id)).chain(self.add_accounts.iter().map(|a| a.id));
-        let lists = lists.chain(self.nickname_windows.iter().map(|d| d.id));
+        let lists = lists.chain(self.nickname_windows.iter().map(|d| d.id)).chain(self.modals.iter().map(|w| w.0));
         singles.chain([group, self.blocked_window, self.how_window, self.networks.window]).flatten().chain(lists).collect()
     }
 

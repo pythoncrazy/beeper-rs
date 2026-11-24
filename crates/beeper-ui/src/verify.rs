@@ -620,6 +620,13 @@ pub(crate) const KEY_INPUT: &str = "recovery-key-input";
 pub(crate) fn key_input<'a>(
     p: &Palette, content: &'a text_editor::Content, error: bool, edit: fn(text_editor::Action) -> UiMessage, on_paste: UiMessage,
 ) -> El<'a> {
+    container(key_field(p, content, error, edit, on_paste)).padding([24, 18]).into()
+}
+
+/// [`key_input`] without the space of the onboarding around it.
+pub(crate) fn key_field<'a>(
+    p: &Palette, content: &'a text_editor::Content, error: bool, edit: fn(text_editor::Action) -> UiMessage, on_paste: UiMessage,
+) -> El<'a> {
     let p = *p;
     let edge = if error { p.text_danger } else { CLEAR };
     let editor = text_editor(content).id(KEY_INPUT).on_action(edit).size(rem(17.0)).height(4.0 * 17.0 * 1.3 + 24.0).padding(12).style(
@@ -633,7 +640,7 @@ pub(crate) fn key_input<'a>(
     );
     let paste = txt(trx("Paste from Clipboard", "button label"), 12.0).color(p.on_secondary);
     let paste = button(paste).padding(4).style(btn_style([CLEAR, p.chip, p.chip], [p.on_secondary; 3], 6.0));
-    column![editor, paste.on_press(on_paste)].spacing(4).align_x(Center).padding([24, 18]).into()
+    column![editor, paste.on_press(on_paste)].spacing(4).align_x(Center).into()
 }
 
 /// Desktop's `useAutoSubmitRecoveryCode`: the recovery key on the clipboard, unless it was tried.
