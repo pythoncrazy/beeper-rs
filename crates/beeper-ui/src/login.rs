@@ -24,8 +24,6 @@ const USERNAME_INPUT: &str = "login-username";
 const PASSWORD_INPUT: &str = "login-password";
 const TERMS_URL: &str = "https://www.beeper.com/terms-onboarding";
 pub(crate) const PRIVACY_URL: &str = "https://www.beeper.com/privacy";
-/// Desktop's `--color-on-error-container`: the error toast.
-const ERROR_RED: Color = Color::from_rgb8(220, 54, 46);
 /// Desktop's `Y0.UNKNOWN_ERROR` and `Y0.NO_EMAIL_SUPPORT` of `provisionLogin`.
 const UNKNOWN_ERROR: &str = "Something went wrong. Please try again or contact support.";
 const NO_EMAIL_LOGIN: &str = "The server does not support email-based login. Try logging in with a username instead.";
@@ -564,7 +562,7 @@ fn card_style(bg: Color) -> impl Fn(&Theme) -> container::Style {
 /// Desktop's onboarding error toast: 300x32 at the top of the window, with an info icon and a close button.
 /// Desktop's `showToast`: a neutral toast with centered text and no close button, which goes after 3 s.
 fn toast<'a>(p: &Palette, text: &'a str, error: bool) -> El<'a> {
-    let (bg, fg) = if error { (ERROR_RED, Color::WHITE) } else { (p.card, p.strong) };
+    let (bg, fg) = if error { (ON_ERROR, Color::WHITE) } else { (p.card, p.strong) };
     let text = txt(text, 13.0).line_height(iced::Pixels(rem(16.0))).color(fg).width(Fill);
     let line: El<'a> = match error {
         true => {
@@ -642,7 +640,7 @@ pub(crate) fn brand_button_with<'a>(
         (true, Brand::Primary) => (None, Color::WHITE, CLEAR),
         (true, Brand::Secondary) => (Some(CLEAR), p.brand, p.brand),
         (true, Brand::Muted) => (Some(p.chip), p.strong, CLEAR),
-        (true, Brand::Danger) => (Some(p.danger), Color::WHITE, CLEAR),
+        (true, Brand::Danger) => (Some(DELETE_RED), Color::WHITE, CLEAR),
     };
     let dots = loading.then(|| {
         // `BrandButton-module__bounce`: each dot moves 33 % of its size up and down in 0.5 s, a third apart.
@@ -1386,13 +1384,13 @@ impl BeeperGuiApp {
         let error = l.error.is_some();
         let focused = l.stop() == Some(Stop::Field);
         let slots = row((0..6).map(|i| {
-            let ink = if error { ERROR_RED } else { p.strong };
+            let ink = if error { ON_ERROR } else { p.strong };
             let digit: Option<El<'_>> =
                 l.code.chars().nth(i).map(|c| semi(c.to_string(), 28.0).line_height(iced::Pixels(rem(36.0))).color(ink).into());
             let at = focused && i == l.slot;
             let caret = (at && i >= l.code.len()).then(|| container(Space::new()).width(1.5).height(28).style(fill_box(ink, 0.0)).into());
             let edge = match (error, at) {
-                (true, _) => ERROR_RED,
+                (true, _) => ON_ERROR,
                 (false, true) => p.accent,
                 (false, false) => CLEAR,
             };

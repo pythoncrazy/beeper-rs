@@ -1241,7 +1241,7 @@ impl BeeperGuiApp {
                     None => Vec::new(),
                     Some(Err(_)) => {
                         let error = tr("Failed to fetch devices. Please report a problem if this keeps happening.");
-                        vec![txt(error, 13.0).color(p.danger).into()]
+                        vec![txt(error, 13.0).color(p.text_danger).into()]
                     }
                     Some(Ok(all)) => [
                         (tr("Current Device"), all.iter().filter(|d| d.current).collect::<Vec<_>>()),
@@ -1508,7 +1508,7 @@ impl BeeperGuiApp {
             self.storage_ages(0),
             self.storage_kinds(0, busy),
             warning(),
-            link(label(0), p.danger, 13.0, !busy && s.kinds[0] != 0, UiMessage::Ask(Some(ASK_CLEAR_STORAGE)))
+            link(label(0), p.text_danger, 13.0, !busy && s.kinds[0] != 0, UiMessage::Ask(Some(ASK_CLEAR_STORAGE)))
         ]
         .spacing(12)
         .align_x(Center)
@@ -1577,7 +1577,7 @@ impl BeeperGuiApp {
                 let panel =
                     column![body(tr("Clear storage older than").into(), p.muted), self.storage_ages(1), self.storage_kinds(1, busy)]
                         .push((s.kinds[1] & 1 << 4 != 0).then(warning))
-                        .push(link(label(2), p.danger, 13.0, !busy && s.kinds[1] != 0, UiMessage::Ask(Some(ASK_CLEAR_CHAT))))
+                        .push(link(label(2), p.text_danger, 13.0, !busy && s.kinds[1] != 0, UiMessage::Ask(Some(ASK_CLEAR_CHAT))))
                         .spacing(12)
                         .align_x(Center)
                         .padding(Padding::new(16.0).top(12.0));
@@ -1642,8 +1642,8 @@ impl BeeperGuiApp {
             let shown = rec.map_or_else(|| keys.to_string(), HotkeyRec::combo);
             let recorder = (keys != "disabled").then(|| {
                 let ink = match (conflict, rec) {
-                    (Some(_), _) => p.danger,
-                    (None, Some(_)) => p.muted,
+                    (Some(_), _) => ERROR,
+                    (None, Some(_)) => p.weak,
                     (None, None) => p.text,
                 };
                 let label: El<'_> = match prefs::hotkey_label(&shown) {
@@ -1662,7 +1662,7 @@ impl BeeperGuiApp {
                     ),
                 };
                 let border = match (conflict, rec) {
-                    (Some(_), _) => p.danger,
+                    (Some(_), _) => ERROR,
                     (None, Some(_)) => p.accent,
                     (None, None) => edge,
                 };
@@ -1889,9 +1889,9 @@ impl BeeperGuiApp {
         });
         // Desktop's `AccountDeleteButton`.
         let remove = bridge.map(|_| {
-            let label = semi(tr("Remove Account"), 13.0).color(p.danger).width(Fill).center();
+            let label = semi(tr("Remove Account"), 13.0).color(ON_ERROR).width(Fill).center();
             button(label)
-                .bare(p.danger)
+                .bare(ON_ERROR)
                 .padding([5, 0])
                 .width(Fill)
                 .on_press(UiMessage::Accounts(accounts::Msg::AskRemove(id.into())))

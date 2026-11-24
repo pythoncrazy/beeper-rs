@@ -288,7 +288,7 @@ impl BeeperGuiApp {
     pub(crate) fn toast_card<'a>(&'a self, t: &Toast, older: Option<usize>) -> El<'a> {
         let p = &self.pal;
         let (bg, fg) = match t.error {
-            true => (hex(0xdc362e), Color::WHITE),
+            true => (ON_ERROR, Color::WHITE),
             false => (p.card, p.strong),
         };
         let btn = |(label, msg): &(&'static str, UiMessage), fg: Color| {

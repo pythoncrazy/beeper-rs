@@ -69,6 +69,12 @@ fn prefs() -> impl Iterator<Item = (SettingsTab, &'static prefs::Pref)> {
         .map(move |(page, p)| (tab(page), p))
 }
 
+/// The pixels of `view` at `size` that are `c`, give or take 2 of each channel.
+fn ink(view: El<'_>, size: Size, c: Color) -> usize {
+    let c = c.into_rgba8();
+    crate::focus::tests::shot(view, size, "ink").pixels().filter(|px| (0..3).all(|i| px[i].abs_diff(c[i]) < 3)).count()
+}
+
 pub(crate) fn demo_app(name: &str) -> BeeperGuiApp {
     BeeperGuiApp::boot(beeper_core::testing::demo_store(name)).0
 }
@@ -5639,6 +5645,9 @@ fn hotkey_recorder_like_desktop() {
     let _ = app.update(UiMessage::Hotkeys(hotkeys::Msg::Record("Search")));
     let _ = app.settings_key(ch("j"), Modifiers::CTRL);
     assert!(simulator(app.view_settings()).find("Ctrl J is already used by Command Bar").is_ok());
+    let size = Size::new(800.0, 4000.0);
+    let (error, danger) = (ink(app.view_settings(), size, ERROR), ink(app.view_settings(), size, app.pal.danger));
+    assert!(error > 20 && danger == 0, "`.shortcut-recorder.error` is `--error-color`: {error} {danger}");
     let _ = app.update(UiMessage::Hotkeys(hotkeys::Msg::Recorder(true)));
     assert_eq!(keys(&app), "ctrl+k", "a used combination is not saved");
     let _ = app.settings_key(Key::Named(Named::Shift), Modifiers::SHIFT);
@@ -6815,6 +6824,7 @@ fn account_status_like_desktop() {
     assert!(sim.find("Account Disconnected").is_ok() && sim.find("Token expired").is_ok());
     assert!(sim.find("Reconnect").is_err(), "a demo account cannot log in again");
     let _ = sim.click("Remove Account").expect("the Remove Account button of the account page");
+    assert!(ink(app.view_settings(), SETTINGS_SIZE, ON_ERROR) > 20, "`AccountDeleteButton` is `--color-on-error-container`");
     for m in sim.into_messages() {
         let _ = app.update(m);
     }
@@ -7025,6 +7035,8 @@ fn label_settings_like_desktop() {
             assert!(sim.find(item).is_ok(), "{item}");
         }
     }
+    // `.LabelSettings-module__dangerRow`: `--color-text-danger` on `--semantic-colors-bg-fill-primary`.
+    assert!(ink(app.view_window(w), LABEL_SETTINGS_SIZE, app.pal.text_danger) > 20, "Delete Label");
     run(&mut app, "All Messages");
     assert!(app.label_settings[0].menu, "the pill opens the Show in Inbox menu");
     run(&mut app, "Only DMs");
