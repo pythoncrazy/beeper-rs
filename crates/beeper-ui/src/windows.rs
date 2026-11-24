@@ -396,6 +396,11 @@ pub(crate) fn badge_sync(_unread: u32, _visible: bool) -> Task<UiMessage> {
     Task::none()
 }
 
+/// Desktop's `v3`: a sheet's size at the zoom `zoom`, in whole screen pixels.
+fn zoomed(size: Size, zoom: f32) -> Size {
+    Size::new((size.width * zoom).round(), (size.height * zoom).round())
+}
+
 /// Moves window `id` of `size` over the middle of window `parent` of size `around`, like Desktop's `center: "parent"`,
 /// with its left and top edges on the screen.
 fn center_over(id: window::Id, parent: window::Id, around: Size, size: Size) -> Task<UiMessage> {
@@ -664,6 +669,24 @@ impl BeeperGuiApp {
             None => (self.login_window.expect("the main or the sign-in window is open"), login::SIZE),
         };
         (id, open.then(move |_| center_over(id, parent, around, size)))
+    }
+
+    /// One of Desktop's sheets that `v3` sizes (New Label, Label Settings, Edit Label, Chats and How It Works): it
+    /// opens at its size times the zoom, so its page keeps its layout at any zoom.
+    pub(crate) fn open_sheet(&mut self, size: Size) -> (window::Id, Task<UiMessage>) {
+        self.open_child(zoomed(size, self.zoom))
+    }
+
+    /// The open sheets that follow the zoom (`followsZoom`), with their sizes at 100%.
+    pub(crate) fn zoomed_sheets(&self) -> Vec<(window::Id, Size)> {
+        let draft = self.label_window.as_ref().map(|d| (d.id, if d.label.is_some() { LABEL_SHEET_SIZE } else { LABEL_SETTINGS_SIZE }));
+        let settings = self.label_settings.iter().map(|w| (w.id, LABEL_SETTINGS_SIZE));
+        draft.into_iter().chain(settings).chain(self.how_window.map(|id| (id, behavior::HOW_SIZE))).collect()
+    }
+
+    /// Desktop's `followZoom`: after a change of the zoom, each sheet takes its size at the new zoom around its center.
+    pub(crate) fn follow_zoom(&self) -> Task<UiMessage> {
+        Task::batch(self.zoomed_sheets().into_iter().map(|(id, size)| self.resize_around(id, zoomed(size, self.zoom))))
     }
 
     pub(crate) fn window_settings(size: Size) -> window::Settings {

@@ -75,7 +75,7 @@ impl BeeperGuiApp {
                 if let Some(id) = self.how_window {
                     return self.raise(id);
                 }
-                let (id, open) = self.open_child(behavior::HOW_SIZE);
+                let (id, open) = self.open_sheet(behavior::HOW_SIZE);
                 self.how_window = Some(id);
                 return open;
             }
