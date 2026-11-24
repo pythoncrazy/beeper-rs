@@ -436,6 +436,8 @@ pub enum UiMessage {
     RoomJoined(Result<String, String>),
     /// The network became available or unavailable.
     Online(bool),
+    /// The computer woke from sleep.
+    Resumed,
     PillHover(bool),
     Login(LoginMsg),
     Verify(verify::VerifyMsg),
@@ -4620,6 +4622,18 @@ impl BeeperGuiApp {
                     return Task::future(beeper_core::matrix::reset_network_connections(self.store.clone())).discard();
                 }
             }
+            // Desktop's `powermonitor-on-resume`: the connections of before the sleep reset, and the reminders and the
+            // scheduled messages that came due during it go out, as the timers of the app do not count the sleep.
+            UiMessage::Resumed => {
+                let checks = [UiMessage::Reminders(reminders::Msg::Check), UiMessage::Scheduled(scheduled::Msg::Check)];
+                let checks = Task::batch(checks.map(Task::done));
+                return match self.store.read().matrix.is_some() {
+                    true => {
+                        Task::batch([checks, Task::future(beeper_core::matrix::reset_network_connections(self.store.clone())).discard()])
+                    }
+                    false => checks,
+                };
+            }
             UiMessage::PillHover(on) => self.pill_hover = on,
             UiMessage::Login(m) => {
                 let screen = self.login.screen;
@@ -5143,9 +5157,10 @@ impl BeeperGuiApp {
             Subscription::run_with(keys, tray::events).map(|a0| UiMessage::Window(windows::Msg::Tray(a0)))
         });
         let online = cfg!(target_os = "linux").then(|| Subscription::run(portal::online).map(UiMessage::Online));
+        let resumed = cfg!(target_os = "linux").then(|| Subscription::run(portal::resumed).map(|()| UiMessage::Resumed));
         let notes = (!self.notifications.is_empty() || self.verify.note.is_some())
             .then(|| Subscription::run(notify::events).map(UiMessage::Notify));
-        tray.into_iter().chain(online).chain(notes)
+        tray.into_iter().chain(online).chain(resumed).chain(notes)
     }
 
     pub fn view(&self, id: window::Id) -> El<'_> {
