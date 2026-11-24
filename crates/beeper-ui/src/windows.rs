@@ -292,6 +292,9 @@ impl BeeperGuiApp {
 /// Desktop's default size of the main window (`Wg` and `jg`).
 pub(crate) const MAIN_SIZE: Size = Size::new(1200.0, 800.0);
 
+/// Desktop's `minWidth` and `minHeight` of its windows (`ji`).
+pub(crate) const MIN_SIZE: Size = Size::new(330.0, 400.0);
+
 /// Desktop's `windowStateKeeper` key of the chat windows (`w2` of a window ID that starts with `thread-`).
 pub(crate) const POP_OUT: &str = "pop-out-thread";
 
@@ -624,7 +627,22 @@ impl BeeperGuiApp {
 
     /// A window of a fixed `size` over the middle of the main window, like Desktop's `center: "parent"`.
     pub(crate) fn open_child(&mut self, size: Size) -> (window::Id, Task<UiMessage>) {
-        let (id, open) = self.open_window(window::Settings { resizable: false, min_size: None, ..Self::window_settings(size) });
+        self.open_centered(size, false)
+    }
+
+    /// A resizable window of `size` over the middle of the main window, like Desktop's windows whose features leave
+    /// out `resizable`.
+    pub(crate) fn open_resizable_child(&mut self, size: Size) -> (window::Id, Task<UiMessage>) {
+        self.open_centered(size, true)
+    }
+
+    /// A window over the middle of the main window, at least Desktop's minimum size: Electron gives the windows that
+    /// Desktop's renderer opens its `minWidth` and `minHeight` too, so the 303 px wide Edit Labels window is 330 px
+    /// wide, and a fixed size grows to it.
+    fn open_centered(&mut self, size: Size, resizable: bool) -> (window::Id, Task<UiMessage>) {
+        let size = size.max(MIN_SIZE);
+        let min_size = resizable.then_some(MIN_SIZE);
+        let (id, open) = self.open_window(window::Settings { resizable, min_size, ..Self::window_settings(size) });
         // The main window, or the sign-in window of the onboarding.
         let (parent, around) = match self.main_window {
             Some(main) => (main, self.pane.size * self.zoom),
@@ -636,7 +654,7 @@ impl BeeperGuiApp {
     pub(crate) fn window_settings(size: Size) -> window::Settings {
         window::Settings {
             size,
-            min_size: Some(Size::new(330.0, 400.0)),
+            min_size: Some(MIN_SIZE),
             exit_on_close_request: false,
             icon: Some({
                 let img = ::image::load_from_memory(include_bytes!("../assets/icon.png")).expect("the app icon is a PNG");
