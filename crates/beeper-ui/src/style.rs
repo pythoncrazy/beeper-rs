@@ -1176,6 +1176,19 @@ pub fn cubic_bezier(x: f32, [x1, y1, x2, y2]: [f32; 4]) -> f32 {
 mod tests {
     use super::*;
 
+    /// cosmic-text keeps the glyphs of each shaped word: a text measures the same from the kept words as when it was
+    /// first shaped, and again after the trims dropped them.
+    #[test]
+    fn kept_words_shape_like_new_ones() {
+        let width =
+            |s: &str| shape(s, 14.0, Weight::Normal, None, |b| b.layout_runs().flat_map(|r| r.glyphs.iter()).map(|g| g.w).sum::<f32>());
+        let (hello, both) = (width("Hello"), width("Hello there"));
+        assert!(hello > 0.0 && both > hello);
+        assert_eq!((width("Hello"), width("Hello there")), (hello, both), "the kept words");
+        (0..7).for_each(|_| trim_shaped_words());
+        assert_eq!((width("Hello"), width("Hello there")), (hello, both), "shaped again after the trims");
+    }
+
     /// The lines that the widgets lay out, which [`surely_fits`] may skip only when they are one.
     fn shaped_lines(s: &str, max: f32, size: f32) -> usize {
         shape(s, size, Weight::Normal, Some(max), |b| b.layout_runs().count())
