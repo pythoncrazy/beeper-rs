@@ -168,18 +168,20 @@ impl BeeperGuiApp {
                 .padding([10, 12])
                 .style(input_style(CLEAR, p.strong, p.on_secondary, p.accent, 0.0));
             let clear = (!self.info_query.is_empty()).then(|| {
-                button(ic(icon::CLOSE, 20.0).color(p.muted)).bare(p.muted).on_press(UiMessage::Info(info::Msg::Query(String::new())))
+                button(tinted(&crate::voice::ICONS[4], 20.0, p.muted))
+                    .bare(p.muted)
+                    .on_press(UiMessage::Info(info::Msg::Query(String::new())))
             });
-            // `BrandInput-module__icon` is `--color-on-surface-variant`.
-            let bar = row![ic(icon::SEARCH, 20.0).color(p.muted), input].push(clear).align_y(Center).padding([0, 8]);
+            // `BrandInput-module__icon` is `--color-on-surface-variant`, and its icons Desktop's 20 px `search` and `close`.
+            let bar = row![tinted(&crate::MEDIA_ICONS[5], 20.0, p.muted), input].push(clear).align_y(Center).padding([0, 8]);
             container(bar).padding(Padding::ZERO.top(8.0))
         });
         let toggle_label = if self.info_all { tr("Show less") } else { tr("Show all") };
         let toggle = expandable.then(|| {
-            let chevron: El = match self.info_all {
-                true => tinted(&MAT_EXPAND_LESS, 20.0, p.strong),
-                false => ic(icon::EXPAND_MORE, 20.0).color(p.strong).into(),
-            };
+            // Desktop's `chevron-down` system icon, upside down for "Show less".
+            let turn = iced::Rotation::Floating(iced::Radians(if self.info_all { std::f32::consts::PI } else { 0.0 }));
+            let (fg, chevron) = (p.strong, svg(CHEVRON_DOWN.clone()).width(20).height(20).rotation(turn));
+            let chevron = chevron.style(move |_, _| svg::Style { color: Some(fg) });
             let face = row![semi(toggle_label, 13.0), chevron].align_y(Center);
             button(container(face).center_x(Fill)).bare(p.strong).padding(2).on_press(UiMessage::Info(info::Msg::All))
         });

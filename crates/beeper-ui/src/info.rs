@@ -338,7 +338,8 @@ impl BeeperGuiApp {
         let flag = |f: ChatFlag| UiMessage::ChatList(chat_list::Msg::ToggleFlag(cid.into(), f));
         let pane_btn = |glyph: char, pressed: bool, label: &'static str, msg: Option<UiMessage>| -> El<'_> {
             let (bg, fg) = if pressed { (p.accent, Color::WHITE) } else { (CLEAR, p.strong) };
-            let btn = button(container(ic(glyph, 16.0)).center(28))
+            // Desktop's `thread-info-pane-button`: a 16 px `PlatformIcon`.
+            let btn = button(container(platform(ic(glyph, 16.0))).center(28))
                 .padding(0)
                 .style(btn_style([bg, if pressed { bg } else { p.chip }, bg], [fg; 3], 8.0))
                 .on_press_maybe(msg);
@@ -519,7 +520,8 @@ impl BeeperGuiApp {
                 text_color: if matches!(s, button::Status::Disabled) { fg.scale_alpha(0.2) } else { fg },
                 ..Default::default()
             };
-            let btn = button(container(ic(glyph, 20.0)).center_x(Fill)).padding(6).width(Fill).style(style);
+            // Desktop's `BrandIconButton` of a platform icon: a 20 px `PlatformIcon`.
+            let btn = button(container(platform(ic(glyph, 20.0))).center_x(Fill)).padding(6).width(Fill).style(style);
             let tip = self.tip_caps(btn.on_press_maybe(msg).into(), label, keys, tooltip::Position::Top);
             container(tip).center_x(Fill).into()
         };
@@ -562,7 +564,7 @@ impl BeeperGuiApp {
                 Some(at) => reminders::snoozed_label(at, st.settings.pref("timeFormat") == 1),
                 None => trx("Snooze", "chat info toolbar button").into(),
             };
-            let icon = tinted(&MOON_STARS, 20.0, if until.is_some() { p.accent } else { p.strong });
+            let icon = material("moon_stars", 20.0, if until.is_some() { p.accent } else { p.strong });
             let open = UiMessage::ChatList(chat_list::Msg::OpenMenu(format!("{SNOOZE_MENU}{cid}")));
             let btn = button(container(icon).center_x(Fill)).padding(6).width(Fill).style(btn_style([CLEAR; 3], [p.strong; 3], 0.0));
             container(self.tip(btn.on_press(open).into(), label, vec![], tooltip::Position::Top)).center_x(Fill).into()
@@ -580,14 +582,15 @@ impl BeeperGuiApp {
                 (!mine.is_empty()).then(|| section_btn(p, trx("Edit", "labels section button"), p.main_text).on_press_maybe(open.clone()));
             let head = row![txt(tr("Labels"), 11.0).color(p.strong), Space::new().width(Fill)].push(edit).align_y(iced::Bottom).padding(8);
             let body: El = match mine.is_empty() {
-                true => {
-                    button(container(row![ic(icon::PLUS, 16.0), txt(tr("Add to a Label"), 13.0)].spacing(4).align_y(Center)).center_x(Fill))
-                        .padding(8)
-                        .width(Fill)
-                        .style(btn_style([p.chip; 3], [p.strong; 3], 26.0))
-                        .on_press_maybe(open)
-                        .into()
-                }
+                true => button(
+                    container(row![tinted(&ADD_OUTLINE, 16.0, p.strong), txt(tr("Add to a Label"), 13.0)].spacing(4).align_y(Center))
+                        .center_x(Fill),
+                )
+                .padding(8)
+                .width(Fill)
+                .style(btn_style([p.chip; 3], [p.strong; 3], 26.0))
+                .on_press_maybe(open)
+                .into(),
                 false => grouped_rows(
                     p,
                     mine.iter()
@@ -873,7 +876,7 @@ impl BeeperGuiApp {
             }
             None if st.bookmarked.contains_key(target) => {
                 let title = semi(tr("Message unavailable"), 11.0).color(p.strong);
-                let remove = button(ic(icon::CLOSE, 16.0).color(p.muted))
+                let remove = button(tinted(&CLOSE_SMALL, 16.0, p.muted))
                     .bare(p.muted)
                     .padding(4)
                     .on_press_maybe(restored.then(|| UiMessage::Info(info::Msg::RemoveBookmark(target.into()))));
@@ -920,6 +923,33 @@ fn sound_label(sound: Option<&str>) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Chat Info's icons at 1200x800 are Desktop's `PlatformIcon`s at `scale(1.2)`: Pin and Close of its head are 16
+    /// px boxes (`keep` 9.6 by 16, `close` 10.55), Archive, Remind Me, Search and More of its toolbar 20 px ones
+    /// (19.2, 19.2, 16.45, 11.3 by 6.55), and "Add to a Label" has the 16 px `add-outline` system icon (13.3).
+    #[test]
+    fn chat_info_icons_like_desktop() {
+        let mut app = crate::fuzz::demo_app("chat-info-icons");
+        let main = app.main_window.expect("a main window");
+        let _ = app.update(UiMessage::Window(crate::windows::Msg::Resized(main, Size::new(1200.0, 800.0))));
+        let family = app.visible_chats(&app.store.read()).iter().find(|c| c.title == "Family").map(|c| c.id.clone()).expect("Family");
+        let _ = app.update(UiMessage::SelectChat(family));
+        let _ = app.update(UiMessage::ToggleRightPanel);
+        let mut sim = iced_test::Simulator::with_size(Default::default(), Size::new(1200.0, 800.0), app.view_main());
+        let add = sim.find("Add to a Label").expect("Add to a Label").bounds();
+        let shot = crate::message::tests::pixels(&mut sim);
+        let ink = |w| crate::focus::tests::ink(&shot, 1200.0, w).0;
+        let size = |got: [f32; 4], w: f32, h: f32| (got[2] - w).abs() <= 0.5 && (got[3] - h).abs() <= 0.5;
+        let windows = [[930.0, 14.0, 24.0, 24.0], [1162.0, 14.0, 24.0, 24.0], [924.0, 753.0, 28.0, 28.0]];
+        let more = [[993.0, 753.0, 28.0, 28.0], [1062.0, 753.0, 28.0, 28.0], [1131.0, 753.0, 28.0, 28.0]];
+        let want = [(9.6, 16.0), (10.55, 10.55), (19.2, 19.2), (19.2, 19.2), (16.45, 16.45), (11.3, 6.55)];
+        for (w, (ww, wh)) in windows.into_iter().chain(more).zip(want) {
+            let got = ink(w);
+            assert!(size(got, ww, wh), "{got:?} in {w:?}, Desktop's {ww} by {wh}");
+        }
+        let plus = ink([add.x - 23.5, add.y - 3.0, 18.0, 22.0]);
+        assert!(size(plus, 13.3, 13.3), "the add-outline icon: {plus:?}");
+    }
     use crate::fuzz::demo_app;
     use iced_test::simulator::Simulator;
 
