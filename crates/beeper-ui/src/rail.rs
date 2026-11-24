@@ -829,7 +829,9 @@ impl BeeperGuiApp {
         let p = &self.pal;
         let st = self.store.read();
         let edit = UiMessage::Spaces;
-        let search = self.sheet_search(d.id, "spaces-search", tr("Search Spaces"), &d.search, move |q| edit(SpacesEdit::Search(q)));
+        // `.searchRow svg`: Desktop's `SearchIcon` in `--color-on-surface-variant`.
+        let glass = tinted(&SEARCH_ICON, 16.0, p.muted);
+        let search = self.sheet_search(d.id, "spaces-search", glass, tr("Search Spaces"), &d.search, move |q| edit(SpacesEdit::Search(q)));
         // Desktop's controls of the sheet: plain `<button>`s whose focus does not show, and the `dnd-kit` handles,
         // which show Chromium's ring, and whose Enter and Space pick the space up for the arrows (see `sortable`).
         let window = Some(d.id);
