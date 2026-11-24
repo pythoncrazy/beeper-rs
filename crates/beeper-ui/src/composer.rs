@@ -1033,10 +1033,13 @@ impl BeeperGuiApp {
         let p = &self.pal;
         (self.trial_over_chat.as_deref() == Some(chat_id)).then(|| {
             let upgrade = UiMessage::Settings(crate::settings::Msg::Open(SettingsTab::BeeperPlus));
-            let cta = button(semi(tr("Upgrade to Plus to keep it"), 11.0).color(p.accent)).bare(p.accent).on_press(upgrade);
+            // `FreebieNudge-module__headline` is 11 px and its `xs` link 10 px, 4 px apart; the close button's -4 px margin
+            // puts it right after the link.
+            let cta = button(semi(tr("Upgrade to Plus to keep it"), 10.0).color(p.accent)).bare(p.accent).on_press(upgrade);
             let close = button(tinted(&crate::ROW_ACTIONS[6], 8.0, p.sub)).padding(4).style(btn_style([CLEAR; 3], [p.sub; 3], 0.0));
-            let line = row![txt(tr("Your incognito trial is over"), 12.0).color(p.sub), cta, close.on_press(UiMessage::DismissTrialOver)];
-            container(line.spacing(4).align_y(Center)).center_x(Fill).padding(pad(6.0, 8.0, 0.0, 8.0)).into()
+            let line = row![txt(tr("Your incognito trial is over"), 11.0).color(p.sub), cta].spacing(4).align_y(Center);
+            let line = row![line, close.on_press(UiMessage::DismissTrialOver)].align_y(Center);
+            container(line).center_x(Fill).padding(pad(6.0, 8.0, 0.0, 8.0)).into()
         })
     }
 
