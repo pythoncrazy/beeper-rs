@@ -6276,8 +6276,9 @@ impl BeeperGuiApp {
         let icon = tinted(&ROW_ACTIONS[glyph], size * (0.3 + 0.7 * t), p.strong.scale_alpha(t));
         let btn = button(container(icon).center(size)).bare(p.strong).padding(6);
         let tip = self.tip_caps(btn.on_press(msg).into(), label, keys, tooltip::Position::Right);
-        let top = 22f32.min(51.0 - 12.0 - size);
-        container(tip.delay(std::time::Duration::from_secs(1))).align_right(Fill).padding(Padding::ZERO.top(top).right(4.0)).into()
+        // `.hoverActions` sits 6 px over `.actions` whatever its size, and runs out of the bottom of a compact row.
+        let at = Padding::ZERO.top(22.0).right(4.0);
+        crate::lift::spill(container(tip.delay(std::time::Duration::from_secs(1))).align_right(Fill).padding(at)).into()
     }
 
     /// Desktop's Picture in Picture window (`Gyt`): frameless and on top, 16 px from the top left corner, while the

@@ -10309,6 +10309,36 @@ fn requests_dot_like_desktop() {
     assert_eq!(new(&app), 1, "a request created after the view is new");
 }
 
+/// Desktop's `.hoverActions` sit 6 px over `.actions` whatever their size, also in the compact list where the 32 px
+/// button runs out of the bottom of the row: the icon of a 26 px Archive and of a 32 px Mark Read starts 28 px under
+/// the top of the row.
+#[test]
+fn row_hover_actions_sit_like_desktop() {
+    use iced_test::selector::Candidate;
+    let mut app = demo_app("row-actions");
+    let _ = app.update(UiMessage::ChatList(chat_list::Msg::Hover("!wa_family:beeper.com".into(), true)));
+    for (compact, action) in [(false, 0), (true, 0), (false, 1), (true, 1)] {
+        let _ = app.update(UiMessage::Settings(settings::Msg::SetPref("compactChatList", u8::from(compact))));
+        let _ = app.update(UiMessage::Settings(settings::Msg::SetPref("chatActionButton", action)));
+        let mut sim = simulator(app.view_sidebar());
+        let size = if action == 0 { 14.0 } else { 20.0 };
+        let find = |sim: &mut Simulator<'_, UiMessage>, w: f32, h: f32, within: Rectangle| {
+            let hit = move |c: Candidate<'_>| match c {
+                Candidate::Container { bounds, .. }
+                    if (w == 0.0 || bounds.width == w) && bounds.height == h && within.contains(bounds.position()) =>
+                {
+                    Some(bounds)
+                }
+                _ => None,
+            };
+            sim.find(hit).expect("the hover action")
+        };
+        let layer = find(&mut sim, 0.0, 22.0 + 12.0 + size, Rectangle::with_size(Size::INFINITE));
+        let icon = find(&mut sim, size, size, layer);
+        assert_eq!((icon.y - layer.y, layer.x + layer.width - icon.x - icon.width), (28.0, 10.0), "compact {compact}, action {action}");
+    }
+}
+
 /// Desktop's press on a trigger dismisses its tooltip: the "Filter" tooltip does not cover the filter menu.
 #[test]
 fn no_tooltip_over_an_open_menu_like_desktop() {
