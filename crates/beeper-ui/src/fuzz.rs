@@ -4922,6 +4922,22 @@ fn the_header_shows_typing_in_a_dm_like_desktop() {
     }
 }
 
+/// Desktop's `.thread-header-info`: 6 px above and below the 16 px name line, in a 1 px outline that CSS draws
+/// outside the box, so the pill shows 30 px tall.
+#[test]
+fn the_header_pill_like_desktop() {
+    let mut app = demo_app("header-pill");
+    let _ = app.update(UiMessage::SelectChat("!tg_rust:beeper.com".into()));
+    (app.dark, app.pal) = (true, crate::style::palette(true, None, 0));
+    let name = simulator(app.view_main()).find("Beeper Rust Core Team").expect("the name").bounds();
+    let shot = crate::message::tests::pixels(&mut simulator(app.view_main()));
+    // A column through the name, clear of the rounded ends and the avatar, at the scale of 2 of the shot.
+    let x = (2.0 * (name.x + 20.0)) as u32;
+    let around = (2.0 * (name.y - 20.0)) as u32..(2.0 * (name.y + 36.0)) as u32;
+    let card = app.pal.card.into_rgba8();
+    assert_eq!(around.filter(|&y| shot.get_pixel(x, y).0 != card).count(), 2 * 30);
+}
+
 #[test]
 fn deleted_and_encrypted_messages_look_like_desktop() {
     let note = "!note_self:beeper.com";
