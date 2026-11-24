@@ -279,8 +279,10 @@ impl BeeperGuiApp {
 
     /// The width that a toast takes at most: Desktop's `toasts-list` is `sidebarWidth - accountSwitcherWidth` wide,
     /// at least 300 px, inside 8 px sides.
+    /// The room of a toast in Desktop's `toasts-list`: at least 300 px wide, less its 8 px paddings and the 12 px of its
+    /// `scrollbar-gutter: stable`.
     fn toast_width(&self) -> f32 {
-        self.sidebar_width.max(300.0) - 16.0
+        self.sidebar_width.max(300.0) - 16.0 - 12.0
     }
 
     /// Desktop's `Toast`: the newest toast, or the toast at an index of `older_toasts`.
@@ -324,13 +326,18 @@ impl BeeperGuiApp {
         let pad = if t.icon.is_some() { 14.0 } else { 16.0 };
         let icon_w = if t.icon.is_some() { 26.0 } else { 0.0 };
         let right_w = t.right.as_ref().map_or(0.0, |(label, _)| text_width(label, 13.0, Weight::Semibold) + 8.0);
-        let body = column![text].push(below).spacing(16).max_width(self.toast_width() - pad - icon_w - right_w - 24.0);
+        // A text that wraps fills the room, like Desktop's flex item, so the toast is as wide as the list lets it be.
+        let room = self.toast_width() - pad - icon_w - right_w - 24.0;
+        let weight = if t.strong { Weight::Semibold } else { Weight::Normal };
+        let width = if text_width(&t.text, 13.0, weight) > room { Length::Fixed(room) } else { Length::Shrink };
+        let body = column![text].push(below).spacing(16).max_width(room).width(width);
         let right = t.right.as_ref().map(|b| btn(b, p.accent));
         let dismiss = match &t.dismiss {
             Some(m) => m.clone(),
             None => older.map_or(UiMessage::Toast(toasts::Msg::DismissBanner), |a0| UiMessage::Toast(toasts::Msg::DismissOlder(a0))),
         };
-        let close = icon_btn(p, icon::CLOSE, 14.0, 16.0, if t.error { fg } else { p.sub }, dismiss);
+        // Desktop's `.Toasts-module__close` takes the toast's color.
+        let close = icon_btn(p, icon::CLOSE, 14.0, 16.0, fg, dismiss);
         let pad = if glyph.is_some() { Padding::new(6.0).right(8.0) } else { Padding::new(8.0) };
         let lead = row![].push(glyph).push(body).spacing(6);
         let card = row![lead].push(right).push(close).spacing(8);

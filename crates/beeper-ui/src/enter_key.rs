@@ -142,10 +142,14 @@ mod tests {
         assert!(!shows(&app), "a device with the recovery key has no reminder");
         app.store.write().beeper_state.secrets.recovery_code.clear();
         assert!(shows(&app), "a device verified without the recovery key shows the reminder");
-        // Desktop's `toasts-list` is 300 px wide here, 8 px in from the space bar, so the text takes two lines.
+        // Desktop's `toasts-list` is 300 px wide here, 8 px in from the space bar, and keeps 12 px for its scroll bar:
+        // the toast is 272 px wide, its text from 108 takes two lines of at most 158.58 px in a room of 162.7, and Verify
+        // comes 8 px after the room.
         let text = simulator(app.view_main()).find(TEXT).expect("the reminder").bounds();
-        assert!(text.x > 76.0 && text.x + text.width <= 76.0 + 284.0, "the reminder fits the toast list: {text:?}");
+        assert!((text.x - 108.0).abs() < 0.5 && (text.width - 158.58).abs() < 0.5, "the text is Desktop's: {text:?}");
         assert!(text.height > 30.0, "the reminder wraps: {text:?}");
+        let verify = simulator(app.view_main()).find("Verify").expect("the button").bounds();
+        assert!((verify.x - 278.7).abs() < 0.5, "Verify sits where Desktop puts it: {verify:?}");
         let mut sim = simulator(app.view_main());
         let _ = sim.click("Verify");
         let msgs: Vec<UiMessage> = sim.into_messages().collect();
