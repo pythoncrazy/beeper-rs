@@ -4047,6 +4047,17 @@ impl BeeperGuiApp {
         self.single_msg().map(|id| st.message(id).clone())
     }
 
+    /// Desktop's `downloadSelectedMessageAttachments`: the attachments of every selected message but view-once media,
+    /// in the order of the timeline.
+    fn download_selected(&self, st: &BeeperStore) -> Option<UiMessage> {
+        let msgs = self.timeline(st).0.into_iter().filter(|m| self.pane().selected_msgs.contains(&m.id));
+        let files: Vec<UiMessage> = msgs
+            .filter(|m| !m.attachments.is_empty() && !m.view_once())
+            .map(|m| UiMessage::Message(message::Msg::Download(m.id.clone(), None)))
+            .collect();
+        (!files.is_empty()).then_some(UiMessage::Commands(files))
+    }
+
     /// The messages of the open chat in timeline order, and which of them Desktop lets you select.
     fn timeline<'a>(&self, st: &'a BeeperStore) -> (Vec<&'a Message>, Vec<bool>) {
         let msgs = self.pane_msgs(st);

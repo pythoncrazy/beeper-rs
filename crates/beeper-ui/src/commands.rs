@@ -462,14 +462,8 @@ impl BeeperGuiApp {
             }
             v.push(cmd(e, trx("Copy", "message command"), Some(UiMessage::Message(message::Msg::CopySelected(false)))));
             v.push(cmd(e, tr("Copy with timestamps"), Some(UiMessage::Message(message::Msg::CopySelected(true)))));
-            let files: Vec<UiMessage> = picked
-                .iter()
-                .filter(|m| !m.attachments.is_empty() && m.is_deleted != Some(true))
-                .map(|m| UiMessage::Message(message::Msg::Download(m.id.clone(), None)))
-                .collect();
-            if !files.is_empty() {
-                let download = cmd(e, tr("Download attachments"), Some(UiMessage::Commands(files)));
-                v.push(download.hotkey("Download Attachments"));
+            if let Some(files) = self.download_selected(st) {
+                v.push(cmd(e, tr("Download attachments"), Some(files)).hotkey("Download Attachments"));
             }
             let links: Vec<(String, String)> =
                 picked.iter().flat_map(|m| m.links.iter().map(|l| (l.url.clone(), l.title.clone()))).collect();
