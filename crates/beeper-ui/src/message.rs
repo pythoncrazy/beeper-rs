@@ -4523,6 +4523,10 @@ pub(crate) mod tests {
     /// `MessageReadIcon` paths, whose covered areas set them apart from look-alike strokes.
     #[test]
     fn message_icons_like_desktop() {
+        // The widths are Desktop's with its solid scroll bars; macOS has overlay bars and no gutter.
+        if !crate::style::SOLID_BARS {
+            return;
+        }
         let shot = |app: &BeeperGuiApp, at: &str| {
             let mut sim = iced_test::Simulator::with_size(Default::default(), Size::new(1200.0, 800.0), app.view_main());
             let b = sim.find(at).map(|f| f.bounds()).unwrap_or_else(|_| panic!("{at}"));
@@ -6226,6 +6230,10 @@ pub(crate) mod tests {
     /// its own at the right, and the bubble is 50 px high.
     #[test]
     fn bubble_times_sit_where_desktop_puts_them() {
+        // The widths are Desktop's with its solid scroll bars; macOS has overlay bars and no gutter.
+        if !crate::style::SOLID_BARS {
+            return;
+        }
         let mut app = crate::fuzz::demo_app("bubble-times");
         let (bubble, time) = sent_bubble(&mut app, "Sure thing!", 1000.0);
         let near = |a: f32, b: f32| (a - b).abs() <= 0.5;
