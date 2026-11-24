@@ -5502,6 +5502,22 @@ fn message_times_keep_their_px_size_like_desktop() {
     }
 }
 
+/// A chat row's title ends where Desktop's does: `.ThreadListItem-module__header` has a 0.25rem gap before the time,
+/// whose `padding-left` is 0.5em. In Desktop 4.3.308 a 160 px header with "October 14" leaves the title 92.89 px, and
+/// shows "Google Cal…" of this title.
+#[test]
+fn chat_titles_end_like_desktop() {
+    let app = demo_app("title-cut");
+    let main = app.main_window.expect("the main window");
+    {
+        let mut st = app.store.write();
+        let i = st.chats.iter().position(|c| c.title == "Family").expect("the demo family chat");
+        st.update_chat(i, |c| c.title = "Google Calendar (pinak@locamage.com)".into());
+    }
+    let mut sim = Simulator::with_size(Default::default(), app.pane.size, app.view(main));
+    assert!(sim.find("October 14").is_ok() && sim.find("Google Cal…").is_ok(), "the title is cut like Desktop's");
+}
+
 /// Desktop's letter spacing: the filter count (`.FilterButton-module__count`, 11 px with 0.25 px) "2" is 6.906 px
 /// wide in Desktop 4.3.308, where Inter alone makes it 6.656.
 #[test]

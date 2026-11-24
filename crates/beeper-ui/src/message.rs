@@ -52,7 +52,9 @@ fn tipped_links(spans: &[iced::widget::text::Span<'_, String>], html: bool) -> H
         .filter(|(link, _)| seen.insert(link.as_str()))
         .filter(|(link, text)| {
             let host = url_host(link);
-            host.is_some() && !link.starts_with("https://matrix.to/#/") && (!html || url_host(text) != host)
+            // The text has the marks of Chromium's line breaks (`chromium_breaks`).
+            let text = text.replace(['\u{2060}', '\u{200b}'], "");
+            host.is_some() && !link.starts_with("https://matrix.to/#/") && (!html || url_host(&text) != host)
         })
         .map(|(link, _)| link.clone())
         .collect()
@@ -2797,6 +2799,15 @@ impl BeeperGuiApp {
                 vec![(None, spans, text.to_string(), 0, 0, Vec::new(), false)]
             }
         };
+        // Chromium's line breaks in ASCII, like those of a URL, for the measures and the lines alike.
+        let blocks: Vec<Block> = blocks
+            .into_iter()
+            .map(|mut b| {
+                b.1.iter_mut().for_each(|s| s.text = crate::style::chromium_breaks(&s.text).into_owned().into());
+                b.2 = crate::style::chromium_breaks(&b.2).into_owned();
+                b
+            })
+            .collect();
         let max = 0.45 * self.pane().size.width - 2.0 * BUBBLE_PAD_X;
         // Desktop's `.message-text` clamps a message at 40 lines, and "Show more" opens it. The whole blocks that
         // fit show as they are, and the block that crosses the limit shows its first lines as plain text.
@@ -2827,7 +2838,7 @@ impl BeeperGuiApp {
         // A message with block HTML wraps as usual. A wrapped message without balance takes the whole width.
         // The layout lets trailing spaces hang past the width, so the room of the time is measured with digits.
         let zero = crate::style::text_width("0", 13.0, Weight::Normal);
-        let padded = format!("{text}\u{2060}{}", "0".repeat((room / zero).ceil() as usize));
+        let padded = format!("{}\u{2060}{}", crate::style::chromium_breaks(text), "0".repeat((room / zero).ceil() as usize));
         let blocks_html = m.html.as_deref().is_some_and(|h| BLOCK_TAGS.iter().any(|t| h.contains(&format!("<{t}"))));
         let width = match code_w > 0.0 || crate::style::wraps(&padded, max, 13.0) {
             _ if code_w > 0.0 => {
@@ -4715,6 +4726,27 @@ pub(crate) mod tests {
         assert!(bubble - ink <= 2 * (BUBBLE_PAD_X as u32 + 2), "the lines end at the padding: {bubble} {ink}");
     }
 
+    /// Desktop's bubble of a long URL in a window 1200 px wide: Chromium breaks it after its `-` and `?` and else at
+    /// the edge, into 7 lines that it does not balance, so the bubble is 540 px wide (measured in Desktop 4.3.308).
+    #[test]
+    fn long_url_bubbles_keep_chromiums_lines_like_desktop() {
+        let mut app = crate::fuzz::demo_app("url-bubble");
+        app.pane.size = Size::new(1200.0, 800.0);
+        let url = "https://www.example-domain.com/some/long_path/with-many-segments/and_underscores/2026/11/24/a-very-long-\
+                   article-title-that-keeps-going-and-going_with_more_words/index.html?utm_source=newsletter&utm_medium=email&\
+                   utm_campaign=winter_sale-2026&ref=abc_def-ghi&session_id=0123456789abcdef0123456789abcdef&extra_param=some-\
+                   more-text_here";
+        let mid = plain_received(&app, url);
+        let shot = pixels(&mut alone(&app, &mid));
+        let px = (0..shot.width()).flat_map(|x| (0..shot.height()).map(move |y| (x, y)));
+        let bubble: Vec<(u32, u32)> = px.filter(|&(x, y)| near(shot.get_pixel(x, y).0, app.pal.chip)).collect();
+        let span = |f: fn(&(u32, u32)) -> u32| {
+            (bubble.iter().map(f).max().expect("a bubble") + 1 - bubble.iter().map(f).min().expect("a bubble")) / 2
+        };
+        assert_eq!(span(|p| p.0), 540, "the bubble's width");
+        assert_eq!(span(|p| p.1), 7 * 16 + 2 * 8, "7 lines of 16 px in the 8 px padding");
+    }
+
     /// Desktop's quote of your own message in the light theme is a white box with the border of your bubbles and its
     /// text in the primary color, so it does not look like your message again. The dark theme and a chat bubble color
     /// mix 30% of the bubble color into the box, and a bubble color draws the text in the text color.
@@ -4956,7 +4988,7 @@ pub(crate) mod tests {
             xs.iter().max().zip(xs.iter().min()).map_or(0, |(a, b)| a - b + 1)
         };
         let at = |app: &mut BeeperGuiApp, ms: u64| {
-            app.started = std::time::Instant::now() - std::time::Duration::from_millis(ms);
+            let _clock = clock_at(app, ms);
             pixels(&mut alone(app, &mid))
         };
         let whole = at(&mut app, 0);
@@ -4999,7 +5031,7 @@ pub(crate) mod tests {
         app.media.insert(url.clone(), Some(Ok(frames)));
         let (red, blue, button) = (0xff0000, 0x0000ff, 0xefeff0);
         let at = |app: &mut BeeperGuiApp, ms: u64| {
-            app.started = std::time::Instant::now() - std::time::Duration::from_millis(ms);
+            let _clock = clock_at(app, ms);
             pixels(&mut alone(app, &mid))
         };
         let first = at(&mut app, 0);
@@ -5092,8 +5124,7 @@ pub(crate) mod tests {
                 app.media.insert(u, Some(frames));
             }
         }
-        // The frames of the demo, slowed to `SLOW` each, so that a slow draw of a debug build lands in the frame
-        // that it is meant to draw.
+        // The frames of the demo, slowed to `SLOW` each, so that the tests name a frame by its time.
         let slow =
             |f: &crate::Frames| -> crate::Frames { f.iter().map(|(h, d)| (h.clone(), if f.len() > 1 { SLOW } else { *d })).collect() };
         let avatars: Vec<(String, crate::Frames)> = (app.store.read().chat(ANIMATED_CHAT).participants.items.iter())
@@ -5121,20 +5152,19 @@ pub(crate) mod tests {
     /// The delay of each frame of the demo's animations in these tests.
     const SLOW: u128 = 2000;
 
-    /// The main window of `app` as the simulator draws it `ms` into the animations; a draw that takes so long that
-    /// it may have drawn the next frame draws again.
+    /// Stops the clock of the animations of `app` `ms` into their play, until the clock drops, so that a view draws
+    /// the frames of that time however long it takes.
+    fn clock_at(app: &mut BeeperGuiApp, ms: u64) -> crate::anim::Frozen {
+        let now = std::time::Instant::now();
+        app.started = now - std::time::Duration::from_millis(ms);
+        crate::anim::freeze(now)
+    }
+
+    /// The main window of `app` as the simulator draws it `ms` into the animations.
     fn main_at(app: &mut BeeperGuiApp, ms: u64) -> ::image::RgbaImage {
-        let end = u128::from(ms) / SLOW * SLOW + SLOW;
-        for _ in 0..5 {
-            app.started = std::time::Instant::now() - std::time::Duration::from_millis(ms);
-            let main = app.main_window.expect("the main window");
-            let mut sim = iced_test::Simulator::with_size(Default::default(), Size::new(1200.0, 800.0), app.view(main));
-            let shot = pixels(&mut sim);
-            if app.started.elapsed().as_millis() < end {
-                return shot;
-            }
-        }
-        panic!("five draws took more than {} ms each", end - u128::from(ms));
+        let _clock = clock_at(app, ms);
+        let main = app.main_window.expect("the main window");
+        pixels(&mut iced_test::Simulator::with_size(Default::default(), Size::new(1200.0, 800.0), app.view(main)))
     }
 
     /// The places of the pixels of `shot` in the color `c`.
@@ -5288,23 +5318,27 @@ pub(crate) mod tests {
 
     const TGS_STICKER: &str = "msg_x6s";
 
-    /// Waits until the workers drew the frames that `redraw` asks for `ms` into the animations, and gives true when
-    /// they are frame `due` or one of the next three, which a slow draw of a debug build may reach.
-    fn drawn_at(app: &mut BeeperGuiApp, a: &crate::lottie::Animation, (ms, due): (u64, Option<u64>), redraw: fn(&BeeperGuiApp)) -> bool {
-        app.started = std::time::Instant::now() - std::time::Duration::from_millis(ms);
+    /// Waits until the workers drew the frames that `redraw` asks for at the time of the clock, after the frames
+    /// that they were drawing, and gives whether they are frame `due`.
+    fn drawn(app: &BeeperGuiApp, a: &crate::lottie::Animation, due: Option<u64>, redraw: fn(&BeeperGuiApp)) -> bool {
+        let idle = || {
+            let t = std::time::Instant::now();
+            while !a.idle() {
+                assert!(t.elapsed().as_secs() < 60, "a worker draws the frame");
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+        };
+        idle();
         redraw(app);
-        let t = std::time::Instant::now();
-        while !a.idle() {
-            assert!(t.elapsed().as_secs() < 20, "a worker draws the frame");
-            std::thread::sleep(std::time::Duration::from_millis(2));
-        }
-        due.is_none_or(|due| a.shown().iter().all(|n| (due..=due + 3).contains(n)))
+        idle();
+        due.is_none_or(|due| a.shown().iter().all(|n| *n == due))
     }
 
     /// The sticker message alone `ms` into its animation, once its worker drew frame `due`.
     fn sticker_at(app: &mut BeeperGuiApp, a: &crate::lottie::Animation, ms: u64, due: u64) -> ::image::RgbaImage {
+        let _clock = clock_at(app, ms);
         let redraw = |app: &BeeperGuiApp| _ = alone_redraw(app, TGS_STICKER);
-        assert!((0..20).any(|_| drawn_at(app, a, (ms, Some(due)), redraw)), "the frame that is due draws");
+        assert!(drawn(app, a, Some(due), redraw), "frame {due} draws, not {:?}", a.shown());
         pixels(&mut alone(app, TGS_STICKER))
     }
 
@@ -5369,7 +5403,8 @@ pub(crate) mod tests {
         // The view asks for the frames that show, and draws them once the workers drew them.
         let settle = |app: &mut BeeperGuiApp, due: Option<u64>| {
             let redraw = |app: &BeeperGuiApp| _ = next_redraw(app);
-            assert!((0..20).any(|_| drawn_at(app, &a, (0, due), redraw)), "the frame that is due draws");
+            let _clock = clock_at(app, 0);
+            assert!(drawn(app, &a, due, redraw), "frame {due:?} draws, not {:?}", a.shown());
             let main = app.main_window.expect("the main window");
             pixels(&mut iced_test::Simulator::with_size(Default::default(), Size::new(1200.0, 800.0), app.view(main)))
         };
@@ -5422,7 +5457,7 @@ pub(crate) mod tests {
         app.media.insert(url.clone(), Some(Ok(frames.clone())));
         // The brightest red and blue of the message at `ms` into the animation.
         let at = |app: &mut BeeperGuiApp, ms: u64| {
-            app.started = std::time::Instant::now() - std::time::Duration::from_millis(ms);
+            let _clock = clock_at(app, ms);
             let shot = pixels(&mut alone(app, &mid));
             let most = |c: usize| shot.pixels().filter(|p| p[(c + 2) % 3] < 40 && p[3] > 0).map(|p| p[c]).max();
             (most(0).unwrap_or(0), most(2).unwrap_or(0))
