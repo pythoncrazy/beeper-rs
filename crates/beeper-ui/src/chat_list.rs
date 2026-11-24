@@ -1205,6 +1205,11 @@ impl BeeperGuiApp {
             _ => 7.0 * menu_pitch() + 22.0,
         } + if m.reason().is_some() { menu_pitch() } else { 0.0 }
             + if can_edit_group(c) { menu_pitch() } else { 0.0 }
+            + if m.picked.len() <= 1 && st.threaded(c) { menu_pitch() } else { 0.0 }
+            + match request_answers(c) {
+                (false, false) => 0.0,
+                (a, d) => f32::from(u8::from(a) + u8::from(d)) * menu_pitch() + MENU_RULE,
+            }
             + self.selection_rows(st);
         let top = top.min(room - h).max(0.0);
         let body = crate::menu_card(p, Column::with_children(items), SUB_MENU_W[usize::from(i)]);
