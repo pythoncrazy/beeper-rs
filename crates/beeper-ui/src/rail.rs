@@ -433,8 +433,7 @@ impl BeeperGuiApp {
         let glyph = |c: char, fg: Color| -> El<'static> { ic(c, 24.0).color(fg).into() };
         let g = |c: char| glyph(c, p.text);
         let ring_color = p.fg;
-        let ring =
-            svg(DASHED_RING.clone()).width(32).height(32).opacity(0.15_f32).style(move |_, _| svg::Style { color: Some(ring_color) });
+        let ring = svg(DASHED_RING.clone()).width(32).height(32).opacity(0.15_f32).style(tint(ring_color));
         let add_space = container(stack![ring, container(ic(icon::MAPS_UGC, 24.0).color(p.strong)).center(32)]).center(36);
         let account = |i: usize, acc: String| -> El<'_> {
             let on = self.list().selected_account_filter.as_ref() == Some(&acc);
@@ -479,7 +478,7 @@ impl BeeperGuiApp {
         let draft = self.label_window.as_ref().filter(|d| d.label.is_none());
         let draft_btn = |i: usize, d: &LabelDraft| -> El<'static> {
             let (l, fg) = (Label { name: d.name.clone(), color: d.color, icon: d.icon.clone(), ..Label::default() }, p.strong);
-            let ring = svg(DRAFT_RING.clone()).width(30).height(30).style(move |_, _| svg::Style { color: Some(fg) });
+            let ring = tinted(&DRAFT_RING, 30.0, fg);
             let logo = container(stack![ring, container(label_icon(&l, 28.0, fg)).center(30)]).into();
             let open = UiMessage::Labels(labels::Msg::OpenCreate(Vec::new()));
             let btn: El = mouse_area(rail_btn("rail-draft-button".into(), logo, false, open))

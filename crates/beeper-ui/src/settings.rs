@@ -1042,7 +1042,7 @@ impl BeeperGuiApp {
                 Some("computer") => (&DEVICE_ICONS[1], 18, 11),
                 _ => (&DEVICE_ICONS[2], 9, 14),
             };
-            let glyph = svg(glyph.clone()).width(w).height(h).style(|_, _| svg::Style { color: Some(Color::WHITE) });
+            let glyph = svg(glyph.clone()).width(w).height(h).style(tint(Color::WHITE));
             let tile = container(glyph).center(28).style(fill_box(p.accent, 4.0));
             let text = column![semi(d.name.clone(), 12.0).color(p.strong)]
                 .push(d.model.clone().map(|m| txt(m, 11.0).color(p.sub)))
@@ -1125,14 +1125,11 @@ impl BeeperGuiApp {
                 // Desktop's account row: the account user's photo (`userImage`), the network, and the user.
                 let account = |logo: &str, owner: &str, photo: Option<&str>, name: String, cloud: bool, sub: Option<String>| -> El<'_> {
                     // `AccountListItem-module__line1`, 17 px lines with a 1 px bottom padding, and its `CloudIcon`.
-                    let title =
-                        row![self.face(photo, owner, 14.0, 0.0), semi(name, 14.0).color(p.text)]
-                            .push(cloud.then(|| {
-                                svg(CLOUD_ICON.clone()).width(14).height(10).style(move |_, _| svg::Style { color: Some(p.muted) })
-                            }))
-                            .spacing(4)
-                            .align_y(Center)
-                            .padding(Padding::ZERO.bottom(1.0));
+                    let title = row![self.face(photo, owner, 14.0, 0.0), semi(name, 14.0).color(p.text)]
+                        .push(cloud.then(|| svg(CLOUD_ICON.clone()).width(14).height(10).style(tint(p.muted))))
+                        .spacing(4)
+                        .align_y(Center)
+                        .padding(Padding::ZERO.bottom(1.0));
                     let error = status_text(st, logo).map(|s| {
                         let circle = svg(ERROR_CIRCLE.clone()).width(14).height(14).into();
                         self.tip(circle, s, Vec::new(), tooltip::Position::Top)
@@ -1531,7 +1528,7 @@ impl BeeperGuiApp {
                 .width(12)
                 .height(12)
                 .rotation(iced::Radians(if open { std::f32::consts::PI } else { 0.0 }))
-                .style(move |_, _| svg::Style { color: Some(p.muted) });
+                .style(tint(p.muted));
             let stats = row![
                 crate::style::fixed(counts.join(" | "), 13.0, Weight::Normal).color(p.muted),
                 semi(human_size(bytes), 13.0).color(p.text).width(80).align_x(iced::alignment::Horizontal::Right)
@@ -1894,11 +1891,8 @@ impl BeeperGuiApp {
             -crate::cubic_bezier(t, [0.5, 0.0, 0.5, 1.0]) * std::f32::consts::TAU
         });
         let color = p.text;
-        let icon = svg(crate::MAT_SYNC.clone())
-            .width(20)
-            .height(20)
-            .rotation(iced::Rotation::Solid(iced::Radians(turn)))
-            .style(move |_, _| svg::Style { color: Some(color) });
+        let icon =
+            svg(crate::MAT_SYNC.clone()).width(20).height(20).rotation(iced::Rotation::Solid(iced::Radians(turn))).style(tint(color));
         let refresh = button(icon).bare(p.text).padding(0).on_press(UiMessage::Accounts(accounts::Msg::FetchServers(id.clone())));
         // `.subview-prefs h4` beside the refresh button, in `RemoteSubView-module__header`.
         let head = row![container(txt(tr("Servers"), 13.0).color(p.muted)).padding([0, 13]).width(Fill), refresh].align_y(Center);

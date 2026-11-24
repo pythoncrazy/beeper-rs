@@ -1225,8 +1225,7 @@ impl BeeperGuiApp {
             Screen::Reset => self.view_onboarding_reset(),
             Screen::Username => self.view_login_username(),
         };
-        let ink = p.text;
-        let chevron = svg(ICONS[1].clone()).width(18).height(18).style(move |_, _| svg::Style { color: Some(ink) });
+        let chevron = tinted(&ICONS[1], 18.0, p.text);
         let chevron = button(container(chevron).center(28)).bare(p.text).on_press(LoginMsg::Menu.into());
         let controls = container(chevron).align_right(Fill).height(36).padding(Padding::ZERO.top(2).right(2));
         let onboarding = l.screen == Screen::Accounts;
@@ -1288,7 +1287,7 @@ impl BeeperGuiApp {
         let p = &self.pal;
         let google = svg(GOOGLE.clone()).width(18).height(18);
         let google_label = trxf("Continue with %s", "button label", &[&"Google"]);
-        let mail = svg(ICONS[0].clone()).width(18).height(18).style(|_, _| svg::Style { color: Some(Color::WHITE) });
+        let mail = tinted(&ICONS[0], 18.0, Color::WHITE);
         column![
             container(welcome_scene()).height(Fill),
             Space::new().height(24),
@@ -1296,13 +1295,7 @@ impl BeeperGuiApp {
                 vec![
                     container(self.view_login_terms()).padding(Padding::ZERO.bottom(8)).into(),
                     brand_button(p, label(google_label, Some(google.into())), Brand::Muted, self.login_act(Stop::Google), false),
-                    brand_button(
-                        p,
-                        label(tr("Continue with Email"), Some(mail.into())),
-                        Brand::Primary,
-                        self.login_act(Stop::Email),
-                        false
-                    ),
+                    brand_button(p, label(tr("Continue with Email"), Some(mail)), Brand::Primary, self.login_act(Stop::Email), false),
                 ],
                 24.0
             ),
@@ -1489,7 +1482,7 @@ impl BeeperGuiApp {
     fn username_icons(&self) -> Vec<El<'_>> {
         let (l, p) = (&self.login, &self.pal);
         let icon = |i: usize, size: f32, color: Color, msg: Option<UiMessage>| -> El<'_> {
-            let glyph = svg(ICONS[i].clone()).width(size).height(size).style(move |_, _| svg::Style { color: Some(color) });
+            let glyph = tinted(&ICONS[i], size, color);
             match msg {
                 Some(m) => button(container(glyph).center(20)).bare(color).on_press(m).into(),
                 None => container(glyph).center(20).into(),

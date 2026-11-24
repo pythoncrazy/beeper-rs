@@ -648,7 +648,7 @@ impl BeeperGuiApp {
                 }
             });
         let faint = mix(c.input, c.fg, 0.7);
-        let icon = |h: &svg::Handle| svg(h.clone()).width(14).height(14).style(move |_, _| svg::Style { color: Some(faint) });
+        let icon = |h: &svg::Handle| tinted(h, 14.0, faint);
         let loupe = container(icon(&SEARCH_ICONS[0])).center_y(Fill).padding(Padding::ZERO.left(9.8));
         let clear = (!pk.query.is_empty()).then(|| {
             let x = button(icon(&SEARCH_ICONS[1])).padding(0).style(|_, _| button::Style::default());

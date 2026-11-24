@@ -17,7 +17,7 @@ pub(crate) use crate::{
     accounts, badge, blocking, brand_key, checkbox, commands, composer_with, deletable, delete_dialog, distance, downloads_dir, ease_out,
     feedback_btn, fmt_phone, forward, has_flag, hotkey_caps, hotkey_text, icon_btn, inbox_label, integrations, loads, locate, member_name,
     members, membership, menu_item, menu_pitch, menu_rule, merged, network_name, new_chat, outline_input, pending, pill_btn, pill_style,
-    plan_pill, rail, reconnect, record, reminders, round_avatar, scheduled, sound, spell, stored, threads, tinted, toggle, video,
+    plan_pill, rail, reconnect, record, reminders, round_avatar, scheduled, sound, spell, stored, threads, tint, tinted, toggle, video,
     view_once, vlist, voice, zoom, BeeperGuiApp, Confirm, El, Frames, InboxTab, Pane, PendingMedia, PillLook, SettingsTab, Toast,
     UiMessage, ACCOUNT_SUB_W, AVATAR_SLOTS, BUBBLE_PAD_X, CHEVRON_DOWN, COMPOSER_ICONS, ERROR_CIRCLE, INBOX_OPTIONS, ISSUES_URL, MENU_RULE,
     MESSAGE_MENU_W, ORANGE,
