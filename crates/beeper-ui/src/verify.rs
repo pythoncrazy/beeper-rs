@@ -3,6 +3,7 @@
 use crate::i18n::{tr, trn_named, trx};
 use crate::login::{art, brand_gradient, Screen, H3};
 use crate::prelude::*;
+use crate::wins::Win;
 use iced::widget::column;
 use iced::{border, window};
 
@@ -11,8 +12,6 @@ const SIZE: Size = Size::new(330.0, 480.0);
 
 #[derive(Default)]
 pub struct Verify {
-    /// Desktop's `VERIFICATION` modal window.
-    pub window: Option<window::Id>,
     /// The ID and the state of the verification that the UI saw last.
     seen: Option<(String, &'static str)>,
     /// Desktop's OS notification of an incoming request: the notification ID and the verification ID.
@@ -123,16 +122,16 @@ impl BeeperGuiApp {
     }
 
     fn open_verify(&mut self) -> Task<UiMessage> {
-        if self.verify.window.is_some() || self.main_window.is_none() {
+        if self.children.find(|w| matches!(w, Win::Verify)).is_some() || self.main_window.is_none() {
             return Task::none();
         }
         let (id, open) = self.open_child(SIZE, false);
-        self.verify.window = Some(id);
+        self.children.push(id, Win::Verify);
         open.chain(window::set_level(id, window::Level::AlwaysOnTop))
     }
 
     fn close_verify(&mut self) -> Task<UiMessage> {
-        self.verify.window.take().map_or_else(Task::none, window::close)
+        self.children.take(|w| matches!(w, Win::Verify)).map_or_else(Task::none, window::close)
     }
 
     /// Desktop's `sendVerificationNotification`: the OS notification of the request with Accept and Decline.
@@ -834,7 +833,7 @@ mod tests {
         let _ = app.verification_changed();
         assert_eq!(app.status_banner, "Verification request from Pixel", "an unchanged state shows nothing new");
 
-        app.verify.window = Some(window::Id::unique());
+        app.children.push(window::Id::unique(), Win::Verify);
         assert!(simulator(app.view_verify()).find("Loading...").is_ok(), "the modal waits for the emojis");
         let emojis = ["🐶", "🐱", "🦁", "🐎", "🦄", "🐷", "🐘"]
             .map(|e| VerificationSasEmoji { emoji: e.into(), description: "Dog".into() })
@@ -860,7 +859,7 @@ mod tests {
         set(&app, &|v| v.state = "done");
         let _ = app.verification_changed();
         assert_eq!(app.status_banner, "Verification successful");
-        assert!(app.verify.window.is_none(), "the end closes the modal");
+        assert!(app.children.find(|w| matches!(w, Win::Verify)).is_none(), "the end closes the modal");
 
         set(&app, &|v| (v.id, v.state) = ("other".into(), "requested"));
         let _ = app.verification_changed();
@@ -879,7 +878,7 @@ mod tests {
         let _ = app.update(VerifyMsg::Noted("flow".into(), Ok(7)).into());
         assert_eq!(app.verify.note, Some((7, "flow".into())));
         let _ = app.update(UiMessage::Notify(crate::notify::Msg::Event(7, Some("verificationAccept".into()))));
-        assert!(app.verify.note.is_none() && app.verify.window.is_some(), "Accept opens the modal");
+        assert!(app.verify.note.is_none() && app.children.find(|w| matches!(w, Win::Verify)).is_some(), "Accept opens the modal");
         assert_ne!(app.status_banner, "Verification request from Pixel", "Accept removes the toast");
 
         app.verify.note = Some((8, "flow".into()));
@@ -898,7 +897,7 @@ mod tests {
         v.qr = Some(VerificationQr { data: b"MATRIX\x02\x02".to_vec() });
         app.store.write().verification = Some(v);
         let _ = app.verification_changed();
-        app.verify.window = Some(window::Id::unique());
+        app.children.push(window::Id::unique(), Win::Verify);
         let mut sim = simulator(app.view_verify());
         for text in ["QR Verification", "Scan the QR code with your device to verify your session."] {
             assert!(sim.find(text).is_ok(), "the modal shows {text}");
@@ -911,7 +910,7 @@ mod tests {
         app.store.write().verification.as_mut().expect("a verification").state = "qr_scanned";
         let _ = app.verification_changed();
         assert_eq!(app.status_banner, "Authentication confirmed, restoring the cryptographic state");
-        assert!(app.verify.window.is_none(), "a scan closes the modal");
+        assert!(app.children.find(|w| matches!(w, Win::Verify)).is_none(), "a scan closes the modal");
     }
 
     #[test]

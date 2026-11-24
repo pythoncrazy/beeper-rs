@@ -3,6 +3,7 @@
 use crate::i18n::{tr, trx};
 use crate::login::field;
 use crate::prelude::*;
+use crate::wins::Win;
 use iced::widget::{column, operation};
 use iced::window;
 
@@ -12,7 +13,6 @@ const CODE_INPUT: &str = "reauth-code";
 
 #[derive(Default)]
 pub struct Reauth {
-    pub window: Option<window::Id>,
     /// The sign-in request of the Beeper cloud, which emailed the code.
     request: Option<String>,
     code: String,
@@ -46,11 +46,12 @@ async fn cloud<T: Send + 'static>(cloud: Arc<Cloud>, f: impl FnOnce(&Cloud) -> T
 impl BeeperGuiApp {
     /// Opens Desktop's `ReauthRequiredModal`, and asks the Beeper cloud to email a sign-in code. The code runs `retry`.
     pub(crate) fn open_reauth(&mut self, retry: UiMessage) -> Task<UiMessage> {
-        if let Some(id) = self.reauth.window {
+        if let Some(id) = self.children.find(|w| matches!(w, Win::Reauth)) {
             return self.raise(id);
         }
         let (id, open) = self.open_child(SIZE, false);
-        self.reauth = Reauth { window: Some(id), retry: Some(retry), ..Reauth::default() };
+        self.children.push(id, Win::Reauth);
+        self.reauth = Reauth { retry: Some(retry), ..Reauth::default() };
         let open = open.chain(operation::focus(CODE_INPUT));
         // Like Desktop, an account without an email gets no code.
         let Some(email) = self.store.read().whoami.email.clone() else { return open };
@@ -91,7 +92,7 @@ impl BeeperGuiApp {
             // Desktop's `updateAuthToken`, then the step that needed the auth again.
             ReauthMsg::Done(Ok(jwt)) => {
                 self.store.write().ui_auth_token = Some(jwt);
-                let close = self.reauth.window.take().map_or_else(Task::none, window::close);
+                let close = self.children.take(|w| matches!(w, Win::Reauth)).map_or_else(Task::none, window::close);
                 let retry = self.reauth.retry.take().expect("the modal has a step to run again");
                 return Task::batch([close, self.update(retry)]);
             }
@@ -100,9 +101,9 @@ impl BeeperGuiApp {
     }
 
     /// The keys of the modal: Esc closes it, and Enter submits the code.
-    pub(crate) fn reauth_key(&mut self, key: Key) -> Task<UiMessage> {
+    pub(crate) fn reauth_key(&mut self, id: window::Id, key: &Key) -> Task<UiMessage> {
         match key {
-            Key::Named(Named::Escape) => self.reauth.window.map_or_else(Task::none, window::close),
+            Key::Named(Named::Escape) => window::close(id),
             Key::Named(Named::Enter) => self.update_reauth(ReauthMsg::Submit),
             _ => Task::none(),
         }
@@ -138,7 +139,7 @@ mod tests {
         let mut app = crate::fuzz::demo_app("reauth");
         app.login.screen = Screen::NewKey;
         let _ = app.update(LoginMsg::MadeKey(Err(REAUTH.into())).into());
-        assert!(app.reauth.window.is_some(), "the modal opens");
+        assert!(app.children.find(|w| matches!(w, Win::Reauth)).is_some(), "the modal opens");
         assert_eq!(app.login.error.as_deref(), Some(REAUTH), "the error stays when the modal closes");
         let shows = |app: &BeeperGuiApp, texts: &[&str]| {
             let mut sim = simulator(app.view_reauth());
@@ -156,7 +157,7 @@ mod tests {
         let _ = app.update(ReauthMsg::Done(Err("Invalid code. Please try again.".into())).into());
         shows(&app, &["Invalid code. Please try again."]);
         let _ = app.update(ReauthMsg::Done(Ok("new.jwt".into())).into());
-        assert!(app.reauth.window.is_none(), "the modal closes");
+        assert!(app.children.find(|w| matches!(w, Win::Reauth)).is_none(), "the modal closes");
         assert_eq!(app.store.read().ui_auth_token.as_deref(), Some("new.jwt"), "Desktop's updateAuthToken");
         assert!(app.login.busy && app.login.error.is_none(), "the key is made again");
     }

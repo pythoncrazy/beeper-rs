@@ -104,7 +104,7 @@ impl BeeperGuiApp {
             || self.label_settings.iter().any(|w| w.id == id)
             || self.label_window.as_ref().is_some_and(|d| d.id == id)
             || self.spaces_window.as_ref().is_some_and(|d| d.id == id)
-            || Some(id) == self.blocked_window
+            || matches!(self.children.at(id), Some(Win::Blocked))
             || self.poll_windows.iter().any(|w| w.id == id);
         if let Some(task) = sheet.then(|| self.focus_key(id, &key, mods, true)).flatten() {
             return task;
@@ -119,7 +119,10 @@ impl BeeperGuiApp {
     /// A key in a child window, which closes on Escape or confirms on Ctrl+Enter, or in a chat window or the main
     /// window, which take Desktop's keys (`key_pressed`).
     fn child_window_key(&mut self, id: window::Id, key: Key, mods: Modifiers) -> Task<UiMessage> {
-        if self.label_settings.iter().any(|w| w.id == id) || Some(id) == self.how_window {
+        if let Some(task) = self.child_key(id, &key, mods) {
+            return task;
+        }
+        if self.label_settings.iter().any(|w| w.id == id) {
             return match key {
                 Key::Named(Named::Escape) => self.close_window(id),
                 Key::Named(Named::Enter) if mods.command() => self.close_window(id),
@@ -136,31 +139,14 @@ impl BeeperGuiApp {
             || self.spaces_window.as_ref().is_some_and(|d| d.id == id)
             || self.merge_window.as_ref().is_some_and(|d| d.id == id)
             || self.group_window.as_ref().is_some_and(|d| d.id == id)
-            || Some(id) == self.blocked_window
             || self.nickname_windows.iter().any(|d| d.id == id)
             || self.add_accounts.iter().any(|a| a.id == id)
         {
             return if key == Key::Named(Named::Escape) { self.close_window(id) } else { Task::none() };
         }
-        // Desktop's `onEscapePressed` closes the Add an Account window, after the menu of a network.
-        if self.networks.window == Some(id) {
-            if key == Key::Named(Named::Escape) && self.networks.menu.take().is_none() {
-                return self.close_window(id);
-            }
-            return Task::none();
-        }
-        if self.reauth.window == Some(id) {
-            return self.reauth_key(key);
-        }
-        if self.modal_at(id).is_some() {
-            return self.modal_key(id, &key);
-        }
         // `DCt.onEscapePressed` closes the sheet of a blocked person.
         if key == Key::Named(Named::Escape) && self.chat_windows.iter().any(|w| w.0 == id && w.1.blocked_sheet) {
             return self.close_window(id);
-        }
-        if self.enter_key.window == Some(id) {
-            return self.enter_key_key(key);
         }
         if self.label_window.as_ref().is_some_and(|d| d.id == id) {
             return match key {

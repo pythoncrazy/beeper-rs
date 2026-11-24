@@ -4503,7 +4503,10 @@ pub(crate) mod tests {
         let press = |m: &UiMessage| matches!(m, UiMessage::Message(Msg::PressButton(mid, id)) if mid == "$tip" && id == "tips");
         assert!(msgs.iter().any(press), "a press of the button");
         msgs.into_iter().for_each(|m| _ = app.update(m));
-        assert!(app.networks.window.is_some(), "the deep link of the tip opens the Add an Account window");
+        assert!(
+            app.children.find(|w| matches!(w, crate::wins::Win::Networks)).is_some(),
+            "the deep link of the tip opens the Add an Account window"
+        );
         let email = || UiMessage::Message(Msg::PressButton("$tip".into(), "email".into()));
         let _ = app.update(email());
         let _ = app.update(email());

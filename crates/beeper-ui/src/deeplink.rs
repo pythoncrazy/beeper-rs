@@ -344,6 +344,7 @@ impl BeeperGuiApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::wins::Win;
 
     #[test]
     fn links_parse_like_desktop() {
@@ -423,6 +424,6 @@ mod tests {
         assert_eq!(open(&mut app, "beeper://subscriptions/openSubscriptionInfo"), "Invalid deep link", "as Desktop goes on");
         assert_eq!(app.active_settings_tab, SettingsTab::BeeperPlus, "the subscription info");
         let _ = open(&mut app, "beeper://tips/add-account");
-        assert!(app.networks.window.is_some(), "the link opens the Add an Account window");
+        assert!(app.children.find(|w| matches!(w, Win::Networks)).is_some(), "the link opens the Add an Account window");
     }
 }

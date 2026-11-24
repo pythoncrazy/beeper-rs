@@ -4,7 +4,7 @@
 use super::*;
 use crate::windows::MIN_SIZE;
 
-/// The windows of [`BeeperGuiApp::modals`].
+/// The windows of [`Win::Modal`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Modal {
     /// `SHOW_RECOVERY_KEY`, from the Profile menu and the backup banner.
@@ -55,7 +55,7 @@ impl Modal {
     }
 
     /// Whether Escape closes the window: `onEscapePressed` of a class, and the modals of Desktop's `handleEscape`.
-    fn escape_closes(self) -> bool {
+    pub(crate) fn escape_closes(self) -> bool {
         matches!(self, Modal::RecoveryKey | Modal::ChangeEmail)
     }
 }
@@ -71,12 +71,13 @@ fn max_size(width: f32) -> Size {
 impl BeeperGuiApp {
     /// The open window of `m`.
     pub(crate) fn modal_window(&self, m: Modal) -> Option<window::Id> {
-        self.modals.iter().find(|w| w.1 == m).map(|w| w.0)
+        self.children.find(|w| matches!(w, Win::Modal(o) if *o == m))
     }
 
-    /// What window `id` is, when it is one of [`Modal`].
-    pub(crate) fn modal_at(&self, id: window::Id) -> Option<Modal> {
-        self.modals.iter().find(|w| w.0 == id).map(|w| w.1)
+    /// The open windows of [`Modal`].
+    #[cfg(test)]
+    pub(crate) fn modals(&self) -> Vec<Modal> {
+        self.children.iter().filter_map(|w| if let Win::Modal(m) = w.1 { Some(m) } else { None }).collect()
     }
 
     /// Opens the window of `m`, or raises it when it is open. Desktop's `gm` centers a modal window over the window
@@ -95,7 +96,7 @@ impl BeeperGuiApp {
         };
         let parent = from.and_then(|id| self.screen_size(id).map(|size| (id, size)));
         let (id, open) = self.open_over(settings, parent);
-        self.modals.push((id, m));
+        self.children.push(id, Win::Modal(m));
         open
     }
 
@@ -104,10 +105,8 @@ impl BeeperGuiApp {
         self.modal_window(m).map_or_else(Task::none, |id| self.close_window(id))
     }
 
-    /// Forgets window `id` of `m`, which closed, and what it showed.
-    pub(crate) fn modal_closed(&mut self, id: window::Id) {
-        let Some(m) = self.modal_at(id) else { return };
-        self.modals.retain(|w| w.0 != id);
+    /// Forgets what the window of `m`, which closed, showed.
+    pub(crate) fn modal_closed(&mut self, m: Modal) {
         match m {
             Modal::RecoveryKey => self.profile.recovery_key = None,
             Modal::ChangeEmail => self.profile.change_email = None,
@@ -148,15 +147,6 @@ impl BeeperGuiApp {
         container(page).width(Fill).height(Fill).style(fill_box(p.elevated, 0.0)).into()
     }
 
-    /// A key in a window of [`Modal`], where Escape closes some.
-    pub(crate) fn modal_key(&mut self, id: window::Id, key: &Key) -> Task<UiMessage> {
-        let escape = *key == Key::Named(keyboard::key::Named::Escape);
-        match escape && self.modal_at(id).is_some_and(Modal::escape_closes) {
-            true => self.close_window(id),
-            false => Task::none(),
-        }
-    }
-
     /// A press on the background of frameless window `id`, which Desktop's `-webkit-app-region: drag` moves.
     pub(crate) fn drag_area<'a>(&self, id: Option<window::Id>, content: impl Into<El<'a>>) -> El<'a> {
         match id {
@@ -191,6 +181,6 @@ mod tests {
         let _ = app.update(UiMessage::WindowKey(id, Key::Named(keyboard::key::Named::Escape), keyboard::Modifiers::empty()));
         assert_eq!(app.modal_window(Modal::Legal), Some(id), "Escape keeps it, like Desktop's `handleEscape`");
         let _ = app.update(UiMessage::OpenModal(Modal::Legal, app.settings_window));
-        assert_eq!(app.modals.len(), 1, "it opens once");
+        assert_eq!(app.modals().len(), 1, "it opens once");
     }
 }

@@ -70,7 +70,7 @@ impl BeeperGuiApp {
                 let clipboard = matches!(screen, login::Screen::RecoveryKey | login::Screen::Code);
                 let key = (focused && clipboard && self.login_window.is_some())
                     .then(|| iced::clipboard::read().map(|t| LoginMsg::KeyOnFocus(t).into()));
-                let modal = (focused && self.enter_key.window.is_some())
+                let modal = (focused && self.children.find(|w| matches!(w, Win::EnterKey)).is_some())
                     .then(|| iced::clipboard::read().map(|t| enter_key::KeyMsg::OnFocus(t).into()));
                 return Task::batch([self.close_notifications(), minimized].into_iter().chain(key).chain(modal));
             }
@@ -248,19 +248,8 @@ impl BeeperGuiApp {
                 self.spaces_window = self.spaces_window.take().filter(|d| d.id != id);
                 self.merge_window = self.merge_window.take().filter(|d| d.id != id);
                 self.group_window = self.group_window.take().filter(|d| d.id != id);
-                self.blocked_window = self.blocked_window.filter(|w| *w != id);
-                if self.networks.window.take_if(|w| *w == id).is_some() {
-                    self.networks.menu = None;
-                }
-                self.how_window = self.how_window.filter(|w| *w != id);
                 self.nickname_windows.retain(|d| d.id != id);
-                self.verify.window = self.verify.window.filter(|w| *w != id);
-                // Desktop's `ReauthRequiredModal` closed without a code ends the logout of a device.
-                if self.reauth.window.take_if(|w| *w == id).is_some() {
-                    self.devices_busy = false;
-                }
-                self.enter_key.window = self.enter_key.window.filter(|w| *w != id);
-                self.modal_closed(id);
+                self.child_closed(id);
                 if Some(id) == self.settings_window {
                     self.settings_window = None;
                     self.time_edit = Default::default();
@@ -693,7 +682,8 @@ impl BeeperGuiApp {
     pub(crate) fn zoomed_sheets(&self) -> Vec<(window::Id, Size)> {
         let draft = self.label_window.as_ref().map(|d| (d.id, if d.label.is_some() { LABEL_SHEET_SIZE } else { LABEL_SETTINGS_SIZE }));
         let settings = self.label_settings.iter().map(|w| (w.id, LABEL_SETTINGS_SIZE));
-        draft.into_iter().chain(settings).chain(self.how_window.map(|id| (id, behavior::HOW_SIZE))).collect()
+        let how = self.children.find(|w| matches!(w, Win::How)).map(|id| (id, behavior::HOW_SIZE));
+        draft.into_iter().chain(settings).chain(how).collect()
     }
 
     /// Desktop's `followZoom`: after a change of the zoom, each sheet takes its size at the new zoom around its center.
@@ -788,8 +778,10 @@ impl BeeperGuiApp {
         let lists = lists.chain(self.labels_windows.iter().map(|w| w.0)).chain(self.vote_windows.iter().map(|w| w.0));
         let group = self.group_window.as_ref().map(|d| d.id);
         let lists = lists.chain(self.poll_windows.iter().map(|w| w.id)).chain(self.add_accounts.iter().map(|a| a.id));
-        let lists = lists.chain(self.nickname_windows.iter().map(|d| d.id)).chain(self.modals.iter().map(|w| w.0));
-        singles.chain([group, self.blocked_window, self.how_window, self.networks.window]).flatten().chain(lists).collect()
+        let lists = lists.chain(self.nickname_windows.iter().map(|d| d.id));
+        // The verification, sign-in code and Recovery Key modals do not hide with the app.
+        let children = self.children.iter().filter(|w| !matches!(w.1, Win::Verify | Win::Reauth | Win::EnterKey)).map(|w| w.0);
+        singles.chain([group]).flatten().chain(lists).chain(children).collect()
     }
 
     /// Desktop's `hideToTray` (`Du`), which hides the sub-windows and then the main window, and `showWindow`, which

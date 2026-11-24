@@ -3799,7 +3799,7 @@ fn devices_offer_the_app_like_desktop() {
     assert_eq!(sim.into_messages().count(), 0, "the buttons are disabled while the logout runs");
     let refused = Err(beeper_core::matrix::REAUTH.into());
     let _ = app.update(UiMessage::Settings(settings::Msg::DeviceLoggedOut("Beeper Desktop".into(), refused)));
-    let modal = app.reauth.window.expect("a refused JWT asks for a sign-in code");
+    let modal = app.children.find(|w| matches!(w, Win::Reauth)).expect("a refused JWT asks for a sign-in code");
     let _ = app.update(UiMessage::Window(windows::Msg::Closed(modal)));
     assert!(!app.devices_busy, "a closed modal ends the logout");
     let _ = app.update(UiMessage::Settings(settings::Msg::LogoutDevice("Beeper Desktop".into())));
@@ -3902,7 +3902,7 @@ fn approve_connection_like_desktop() {
     let (id, _) = ask(&mut app, None);
     let _ = app.update(UiMessage::Integrations(integrations::Msg::Request(id, Some(Outcome::Timeout))));
     assert!(simulator(app.view_modal(Modal::TokenRequest)).find("The request has timed out.").is_ok());
-    assert_eq!(app.modals.len(), 1, "later requests take over the open window");
+    assert_eq!(app.modals().len(), 1, "later requests take over the open window");
     let _ = app.update(UiMessage::Integrations(integrations::Msg::Close));
     let _ = app.update(UiMessage::Window(windows::Msg::Closed(window)));
     assert!(app.token_ask.is_none());
@@ -5829,7 +5829,7 @@ fn profile_page_like_desktop() {
     let window = |app: &BeeperGuiApp, text: &str| simulator(app.view_modal(Modal::ChangeEmail)).find(text).is_ok();
     assert!(window(&app, "Confirm New Email") && window(&app, "new@example.com"), "the new email is filled in");
     let _ = app.update(UiMessage::Profile(Msg::Save));
-    assert_eq!(app.modals.len(), 1, "a second Save raises the open window");
+    assert_eq!(app.modals().len(), 1, "a second Save raises the open window");
     let _ = app.update(UiMessage::Profile(Msg::EmailField(0, "wrong@example.com".into())));
     let _ = app.update(UiMessage::Profile(Msg::EmailField(2, "new@example.com".into())));
     let _ = app.update(UiMessage::Profile(Msg::SaveEmail));
@@ -5841,7 +5841,7 @@ fn profile_page_like_desktop() {
     let _ = app.update(UiMessage::Profile(Msg::EmailSaved(Err("Email is taken".into()))));
     assert!(window(&app, "Email is taken"));
     let _ = app.update(UiMessage::Window(windows::Msg::Closed(email)));
-    assert!(app.profile.change_email.is_none() && app.modals.is_empty(), "the window forgets its fields as it closes");
+    assert!(app.profile.change_email.is_none() && app.modals().is_empty(), "the window forgets its fields as it closes");
     let hits = search_settings(&app.store.read(), "recovery code");
     assert_eq!(hits.first(), Some(&SettingsHit::Section(SettingsTab::Profile, true)));
 }
@@ -8056,7 +8056,7 @@ fn blocked_users_like_desktop() {
     let picked: Vec<UiMessage> = { clicks(app.view_settings(), "Blocked users") };
     assert!(matches!(&picked[..], [UiMessage::Blocking(blocking::Msg::OpenList)]));
     let _ = app.update(UiMessage::Blocking(blocking::Msg::OpenList));
-    assert!(app.blocked_window.is_some());
+    assert!(app.children.find(|w| matches!(w, Win::Blocked)).is_some());
     assert!(simulator(app.view_blocked_users()).find("No Blocked Users").is_ok());
     let (id, title) = {
         let mut st = app.store.write();

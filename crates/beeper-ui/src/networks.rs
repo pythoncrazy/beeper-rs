@@ -17,7 +17,6 @@ const MENU_W: f32 = 220.0;
 /// The Add an Account window and its search, and the open accounts menu of a network.
 #[derive(Default)]
 pub struct Networks {
-    pub window: Option<window::Id>,
     pub query: String,
     /// Desktop's `L0e` state: the network of the open menu, and where it opens.
     pub menu: Option<(&'static str, Point)>,
@@ -116,7 +115,7 @@ impl BeeperGuiApp {
         self.networks.menu = None;
         match msg {
             Msg::Open => {
-                if let Some(id) = self.networks.window {
+                if let Some(id) = self.children.find(|w| matches!(w, Win::Networks)) {
                     return self.raise(id);
                 }
                 let (id, open) = self.open_window(window::Settings {
@@ -125,7 +124,8 @@ impl BeeperGuiApp {
                     position: window::Position::Centered,
                     ..Self::window_settings(SIZE)
                 });
-                (self.networks.window, self.networks.query) = (Some(id), String::new());
+                self.children.push(id, Win::Networks);
+                self.networks.query = String::new();
                 return open.discard();
             }
             Msg::Query(q) => self.networks.query = q,
@@ -142,11 +142,11 @@ impl BeeperGuiApp {
                 if upgradable {
                     return self.update(UiMessage::Settings(settings::Msg::Open(SettingsTab::BeeperPlus)));
                 }
-                let close = self.networks.window.map_or_else(Task::none, window::close);
+                let close = self.children.find(|w| matches!(w, Win::Networks)).map_or_else(Task::none, window::close);
                 return if connect.is_some() { Task::batch([close, self.open_add_account(network, None)]) } else { Task::none() };
             }
             Msg::Account(id) => {
-                let close = self.networks.window.map_or_else(Task::none, window::close);
+                let close = self.children.find(|w| matches!(w, Win::Networks)).map_or_else(Task::none, window::close);
                 return Task::batch([close, self.accounts(accounts::Msg::OpenSettings(id))]);
             }
         }
@@ -395,7 +395,7 @@ mod tests {
     fn tiles_connect_or_open_the_accounts_menu_like_desktop() {
         let mut app = planned("network-menu");
         let _ = app.update(UiMessage::Networks(Msg::Open));
-        assert!(app.networks.window.is_some(), "Add an Account opens its own window");
+        assert!(app.children.find(|w| matches!(w, Win::Networks)).is_some(), "Add an Account opens its own window");
         let press = |app: &BeeperGuiApp, label: &str| {
             let mut sim = simulator(app.view_add_accounts());
             let _ = sim.click(label).expect("a network");
@@ -419,7 +419,7 @@ mod tests {
         assert_eq!(app.account_page.as_deref(), Some("signal"), "the account's settings");
         assert!(app.networks.menu.is_none());
         let _ = app.update(UiMessage::Networks(Msg::Menu(Some("signal"))));
-        let id = app.networks.window.expect("the window");
+        let id = app.children.find(|w| matches!(w, Win::Networks)).expect("the window");
         let _ = app.update(UiMessage::WindowKey(id, Key::Named(Named::Escape), Modifiers::empty()));
         assert!(app.networks.menu.is_none(), "Escape closes the menu first");
     }

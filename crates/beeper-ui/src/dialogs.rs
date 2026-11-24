@@ -8,6 +8,7 @@ use crate::labels;
 use crate::labels::label_fill;
 use crate::prelude::*;
 use crate::settings;
+use crate::wins::Win;
 use crate::{
     chat_search_subtitle, checkbox_plus, grouped_rows, label_icon, label_tile, login, portal, spread, ASK_BLOCK, ASK_BLOCK_OFFLINE,
     ASK_DELETE_CHAT, ASK_DELETE_LABEL, ASK_DISMISS_REMINDERS, ASK_LEAVE_CHAT, ASK_MAKE_ADMIN, ASK_REMOVE_MEMBER, ASK_ROOM_ENCRYPTION,
@@ -1369,12 +1370,7 @@ impl BeeperGuiApp {
 
     /// Desktop's `kCt`: the Blocked users window, once.
     pub(crate) fn open_blocked_users(&mut self) -> Task<UiMessage> {
-        if let Some(id) = self.blocked_window {
-            return self.raise(id);
-        }
-        let (id, open) = self.open_child(BLOCKED_SIZE, false);
-        self.blocked_window = Some(id);
-        open
+        self.open_once(|w| matches!(w, Win::Blocked), |app| app.open_child(BLOCKED_SIZE, false), |_| Win::Blocked)
     }
 
     /// Desktop's `DCt`: a blocked person of the Blocked users window opens a 346 by 548 sheet over the list, once for
@@ -1386,7 +1382,7 @@ impl BeeperGuiApp {
         self.store.write().load_chat(&id);
         let size = Size::new(346.0, 548.0);
         let settings = window::Settings { resizable: false, min_size: None, ..Self::window_settings(size) };
-        let list = self.blocked_window.map(|w| (w, BLOCKED_SIZE));
+        let list = self.children.find(|w| matches!(w, Win::Blocked)).map(|w| (w, BLOCKED_SIZE));
         let (w, open) = self.open_over(settings, list);
         let pane = Pane { selected_chat_id: Some(id), info: true, blocked_sheet: true, size, ..Pane::default() };
         self.chat_windows.push((w, pane));
@@ -1409,7 +1405,7 @@ impl BeeperGuiApp {
     }
 
     /// Desktop's `ICt`: the blocked people by name, or "No Blocked Users", and Done.
-    pub(crate) fn view_blocked_users(&self) -> El<'_> {
+    pub(crate) fn view_blocked_users(&self, id: window::Id) -> El<'_> {
         let p = &self.pal;
         let st = self.store.read();
         let chats = blocked_chats(&st);
@@ -1438,7 +1434,7 @@ impl BeeperGuiApp {
                     let open = UiMessage::Blocking(blocking::Msg::OpenUser(c.id.clone()));
                     let row = button(container(line).center_y(24)).bare(p.strong).padding(8).width(Fill).on_press(open.clone());
                     // Desktop's rows are plain `<button>`s, whose focus does not show.
-                    let row = self.target(self.blocked_window, format!("blocked-{}", c.id), row, Keys::press(open), Look::Hidden);
+                    let row = self.target(Some(id), format!("blocked-{}", c.id), row, Keys::press(open), Look::Hidden);
                     let rule = container(Space::new()).width(Fill).height(1).style(fill_box(p.prefs_border, 0.0));
                     column![].push((i > 0).then_some(rule)).push(row).into()
                 });
@@ -1449,7 +1445,7 @@ impl BeeperGuiApp {
         let body = column![title, list].spacing(10).padding(Padding::new(12.0).bottom(0.0)).height(Fill);
         let close = UiMessage::Blocking(blocking::Msg::CloseList);
         let done = done_btn(p).on_press(close.clone());
-        let done = self.target(self.blocked_window, "done", done, Keys::press(close), Look::button(p, 999.0));
+        let done = self.target(Some(id), "done", done, Keys::press(close), Look::button(p, 999.0));
         let footer = container(done).align_right(Fill).padding(Padding::new(12.0).top(10.0));
         container(column![body, footer]).width(Fill).height(Fill).style(fill_box(p.elevated, 0.0)).into()
     }

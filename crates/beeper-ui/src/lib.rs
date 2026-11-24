@@ -121,6 +121,7 @@ mod vlist;
 mod voice;
 mod wants;
 pub mod windows;
+mod wins;
 pub mod zoom;
 
 use crate::composer::{composer_with, load_draft, save_draft, Typo};
@@ -157,6 +158,7 @@ use units::human_size;
 use user_card::UserHover;
 use vcard::VCard;
 use windows::{badge_sync, grown, read_window_state, write_window_state, MAIN_SIZE};
+use wins::Win;
 
 use crate::style::{brand_gray, ensure_fonts_loaded, initials, pick_menu_style, pick_style, AVATAR_GRADIENTS, SOLID_BARS};
 use beeper_core::cloud::KlipyGif;
@@ -3205,14 +3207,10 @@ pub struct BeeperGuiApp {
     /// Desktop's merged chat editor (`D3`).
     pub merge_window: Option<merge_editor::MergeDraft>,
     pub group_window: Option<GroupDraft>,
-    /// Desktop's Blocked users window.
-    blocked_window: Option<window::Id>,
-    /// Desktop's How It Works window of the Chat Info behavior menu.
-    how_window: Option<window::Id>,
     /// Desktop's Account Nickname windows, one for each account.
     pub nickname_windows: Vec<nickname::NicknameDraft>,
-    /// Desktop's windows that open once each, like its modal windows.
-    pub(crate) modals: Vec<(window::Id, modals::Modal)>,
+    /// The child windows and what they show (see [`wins`]).
+    pub(crate) children: wins::Children,
     pub add_accounts: Vec<add_account::AddAccount>,
     /// The browser of the cookie logins. The tests find none, so that they never start one.
     pub find_browser: fn() -> Option<std::path::PathBuf>,
@@ -3367,7 +3365,7 @@ impl BeeperGuiApp {
         }, default: chat_windows, space_windows, carousel_windows, drawing, drawing_thread, open_threads, thread_area,
             thread_drag, unread_view, unread_menu, hidden, unmapped, opened, unmapped_focus, activation_token,
             system_dark, zoom_drag, maximize_when_placed, seen_requests, dwell, pip, pip_wanted, pip_manual, pip_menu,
-            hotkey_query, hotkey_rec, profile, modals, hotkeys_modal, dropping, drop_send, dropped, hotkeys_scrolled, chat_sub,
+            hotkey_query, hotkey_rec, profile, children, hotkeys_modal, dropping, drop_send, dropped, hotkeys_scrolled, chat_sub,
             reminded, search_room, search_filters, search_select, native_select, cursor, image_clipboard, pressing, forward,
             media_window, in_media, emoji_gen, emoji_hovered, focused, idle, notified, retried, slow_sends, notifications,
             gif_query, gifs, gif_loading, gif_error, gif_next, gif_sel, gif_view, command_palette_query,
@@ -3383,8 +3381,8 @@ impl BeeperGuiApp {
             pill_hover, sticky_banner, mobile_apps_toast, rail_float, sidebar_slide, dragging, rail_hover,
             header_hover, menu_bar, alt_alone, pin_hover, pin_drag, pin_slides, key_sort, user_hover, rail_drag,
             rail_press, main_window, key_targets, swapped, settings_window, login_window, theme_windows,
-            labels_windows, label_settings, delete_in, poll_windows, label_window, group_window, blocked_window,
-            how_window, nickname_windows, add_accounts, info_desc, info_more, info_all, info_bookmarks, hydrating,
+            labels_windows, label_settings, delete_in, poll_windows, label_window, group_window,
+            nickname_windows, add_accounts, info_desc, info_more, info_all, info_bookmarks, hydrating,
             restoring_bookmarks, info_media, info_zoom, info_query, spaces_window, merge_window, vote_windows, shot,
             verify, reauth, enter_key, wants, vcards, pdfs, quotes, dismissed_errors, trial_over_chat, servers_loading, server_target, installed_packs, packs_off, pack_removing, resolving_media, needs_download,
             fetching, video, view_once, minimized, state_changes, last_click, cycling, timers);
@@ -3657,6 +3655,7 @@ impl BeeperGuiApp {
 
     pub fn title(&self, id: window::Id) -> String {
         match () {
+            _ if let Some(w) = self.children.at(id) => return self.child_title(w),
             _ if Some(id) == self.settings_window => tr("Settings"),
             // Desktop's `Gyt` title, which it does not translate.
             _ if self.pip.as_ref().is_some_and(|p| p.0 == id) => "Picture in Picture",
@@ -3675,18 +3674,10 @@ impl BeeperGuiApp {
                 Some(_) => "Edit merged chat",
                 None => "Merge Chats",
             },
-            _ if Some(id) == self.blocked_window => tr("Blocked users"),
-            // Desktop's `AddAccountsBrowserWindow` title, which it does not translate.
-            _ if Some(id) == self.networks.window => "Add an Account",
-            _ if Some(id) == self.how_window => tr("How It Works"),
             _ if self.nickname_windows.iter().any(|d| d.id == id) => tr("Account Nickname"),
             _ if let Some(d) = self.group_window.as_ref().filter(|d| d.id == id) => {
                 return tr(if d.personal { "Edit Chat for Me" } else { "Edit Group" }).into();
             }
-            _ if Some(id) == self.verify.window => "Beeper",
-            _ if Some(id) == self.reauth.window => tr("Authentication Required"),
-            _ if Some(id) == self.enter_key.window => self.enter_key_title(),
-            _ if let Some(m) = self.modal_at(id) => m.title(),
             _ if let Some(title) = self.add_account_title(id) => return title,
             _ if let Some((_, _, mid)) = self.vote_windows.iter().find(|w| w.0 == id) => {
                 let st = self.store.read();
@@ -5316,18 +5307,10 @@ impl BeeperGuiApp {
             self.view_pip()
         } else if Some(id) == self.login_window {
             self.view_login()
-        } else if Some(id) == self.verify.window {
-            self.view_verify()
-        } else if Some(id) == self.reauth.window {
-            self.view_reauth()
-        } else if Some(id) == self.enter_key.window {
-            self.view_enter_key()
-        } else if let Some(m) = self.modal_at(id) {
-            self.view_modal(m)
+        } else if let Some(w) = self.children.at(id) {
+            self.view_child(id, w)
         } else if let Some(a) = self.add_accounts.iter().find(|a| a.id == id) {
             self.view_add_account(a)
-        } else if Some(id) == self.networks.window {
-            self.view_add_accounts()
         } else if let Some((_, chat)) = self.theme_windows.iter().find(|w| w.0 == id) {
             self.view_chat_theme(chat)
         } else if let Some((_, chat)) = self.labels_windows.iter().find(|w| w.0 == id) {
@@ -5346,10 +5329,6 @@ impl BeeperGuiApp {
             self.view_edit_group(d)
         } else if let Some(d) = self.nickname_windows.iter().find(|d| d.id == id) {
             self.view_nickname(d)
-        } else if Some(id) == self.blocked_window {
-            self.view_blocked_users()
-        } else if Some(id) == self.how_window {
-            self.view_how_it_works()
         } else if let Some((_, chat, mid)) = self.vote_windows.iter().find(|w| w.0 == id) {
             self.view_poll_votes(chat, mid)
         } else if self.chat_windows.iter().any(|w| w.0 == id && w.1.selected_chat_id.is_none())

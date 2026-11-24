@@ -2,6 +2,7 @@
 use crate::i18n::{tr, trx};
 use crate::prelude::*;
 use crate::verify::{clipboard_key, edit_recovery_key, format_recovery_key, key_input};
+use crate::wins::Win;
 use iced::widget::column;
 use iced::window;
 
@@ -10,7 +11,6 @@ const SIZE: Size = Size::new(500.0, 450.0);
 
 #[derive(Default)]
 pub struct EnterKey {
-    pub window: Option<window::Id>,
     input: text_editor::Content,
     pub busy: bool,
     error: Option<String>,
@@ -40,11 +40,12 @@ impl BeeperGuiApp {
     pub(crate) fn update_enter_key(&mut self, msg: KeyMsg) -> Task<UiMessage> {
         let k = &mut self.enter_key;
         match msg {
-            KeyMsg::Open if let Some(w) = k.window => return self.raise(w),
             KeyMsg::Open => {
-                let (id, open) = self.open_child(SIZE, false);
-                self.enter_key = EnterKey { window: Some(id), ..EnterKey::default() };
-                return open;
+                let open = |app: &mut Self| {
+                    app.enter_key = EnterKey::default();
+                    app.open_child(SIZE, false)
+                };
+                return self.open_once(|w| matches!(w, Win::EnterKey), open, |_| Win::EnterKey);
             }
             KeyMsg::Edit(action) => {
                 edit_recovery_key(&mut k.input, action);
@@ -68,18 +69,10 @@ impl BeeperGuiApp {
                 k.tried.push(key.clone());
                 return Task::perform(beeper_core::matrix::recover(self.store.clone(), key), |r| KeyMsg::Done(r).into());
             }
-            KeyMsg::Done(Ok(())) => return k.window.take().map_or_else(Task::none, window::close),
+            KeyMsg::Done(Ok(())) => return self.children.take(|w| matches!(w, Win::EnterKey)).map_or_else(Task::none, window::close),
             KeyMsg::Done(Err(e)) => (k.busy, k.error) = (false, Some(tr("Error: %(message)s").replace("%(message)s", &e))),
         }
         Task::none()
-    }
-
-    /// The keys of the modal: Esc closes it.
-    pub(crate) fn enter_key_key(&mut self, key: Key) -> Task<UiMessage> {
-        match key {
-            Key::Named(Named::Escape) => self.enter_key.window.map_or_else(Task::none, window::close),
-            _ => Task::none(),
-        }
     }
 
     /// The title of the modal and its window: "Verifying..." while the key is checked.
@@ -115,7 +108,7 @@ mod tests {
     fn the_modal_verifies_with_the_recovery_key_like_desktop() {
         let mut app = crate::fuzz::demo_app("enter-key");
         let _ = app.update(KeyMsg::Open.into());
-        assert!(app.enter_key.window.is_some(), "the modal opens");
+        assert!(app.children.find(|w| matches!(w, Win::EnterKey)).is_some(), "the modal opens");
         {
             let mut sim = simulator(app.view_enter_key());
             assert!(sim.find("Paste from Clipboard").is_ok() && sim.find("Next").is_ok());
@@ -131,7 +124,7 @@ mod tests {
         let _ = app.update(KeyMsg::OnFocus(Some(key.into())).into());
         assert!(!app.enter_key.busy, "a key that failed is not submitted again");
         let _ = app.update(KeyMsg::Done(Ok(())).into());
-        assert!(app.enter_key.window.is_none(), "a verified device closes the modal");
+        assert!(app.children.find(|w| matches!(w, Win::EnterKey)).is_none(), "a verified device closes the modal");
     }
 
     #[test]
@@ -156,7 +149,10 @@ mod tests {
         for m in msgs {
             let _ = app.update(m);
         }
-        assert!(app.enter_key.window.is_some() && shows(&app), "Verify opens the modal and keeps the reminder");
+        assert!(
+            app.children.find(|w| matches!(w, Win::EnterKey)).is_some() && shows(&app),
+            "Verify opens the modal and keeps the reminder"
+        );
         let _ = app.update(UiMessage::DismissRecoveryReminder);
         assert!(!shows(&app), "the close hides the reminder for 7 days");
         app.store.write().settings.recovery_reminder_dismissed_at -= 8 * 86_400_000;

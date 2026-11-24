@@ -72,14 +72,11 @@ impl BeeperGuiApp {
             Msg::Zoom => self.info_zoom ^= true,
             Msg::HowItWorks(true) => {
                 self.list.chat_menu = None;
-                if let Some(id) = self.how_window {
-                    return self.raise(id);
-                }
-                let (id, open) = self.open_sheet(behavior::HOW_SIZE);
-                self.how_window = Some(id);
-                return open;
+                return self.open_once(|w| matches!(w, Win::How), |app| app.open_sheet(behavior::HOW_SIZE), |_| Win::How);
             }
-            Msg::HowItWorks(false) => return self.close_window(self.how_window.expect("How It Works is open")),
+            Msg::HowItWorks(false) => {
+                return self.close_window(self.children.find(|w| matches!(w, Win::How)).expect("How It Works is open"))
+            }
             Msg::Note(action) => {
                 let edit = action.is_edit();
                 self.info_note.perform(action);
@@ -1144,7 +1141,7 @@ mod tests {
         };
         assert!(matches!(&msgs[..], [UiMessage::Commands(c)] if matches!(&c[1], UiMessage::Info(Msg::HowItWorks(true)))));
         let _ = app.update(UiMessage::Info(Msg::HowItWorks(true)));
-        assert!(app.how_window.is_some() && app.list.chat_menu.is_none());
+        assert!(app.children.find(|w| matches!(w, Win::How)).is_some() && app.list.chat_menu.is_none());
         let msgs: Vec<UiMessage> = {
             let mut sim = tall(app.view_how_it_works());
             assert!(sim.find("You Come First").is_ok() && sim.find("Chats Without a Label").is_ok());
