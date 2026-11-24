@@ -901,6 +901,38 @@ pub(crate) mod tests {
         assert_eq!(cell(&app), None);
     }
 
+    /// Desktop's `IconColorGrid` marks the picked color with `--color-backing-shade` behind its dot, with no accent
+    /// ring, and leaves the others bare.
+    #[test]
+    fn the_label_grid_marks_the_pick_like_desktop() {
+        use crate::dialogs::LabelStep;
+        let mut app = demo_app("grid-pick");
+        let _ = app.update(UiMessage::Labels(labels::Msg::OpenCreate(Vec::new())));
+        let d = app.label_window.as_mut().expect("the New Label window");
+        (d.step, d.color) = (LabelStep::Details, Some(0));
+        let (id, size) = (d.id, LABEL_SETTINGS_SIZE);
+        let shot = shot(app.view(id), size, "grid-pick");
+        let k = shot.width() / size.width as u32;
+        let px = |x: u32, y: u32| Color::from_rgb8(shot.get_pixel(x, y)[0], shot.get_pixel(x, y)[1], shot.get_pixel(x, y)[2]);
+        let near = |a: Color, b: Color| [a.r - b.r, a.g - b.g, a.b - b.b].iter().map(|d| d.abs()).sum::<f32>() < 0.04;
+        // The middle of the 24 px gradient dot of a label color: the lowest row of its middle color, as the label tile
+        // above also shows the picked one.
+        let center = |(top, bottom): (u32, u32)| {
+            let mid = crate::style::mix(crate::style::hex(top), crate::style::hex(bottom), 0.5);
+            let hits: Vec<(u32, u32)> = shot.enumerate_pixels().filter(|(x, y, _)| near(px(*x, *y), mid)).map(|(x, y, _)| (x, y)).collect();
+            let low = hits.iter().map(|h| h.1).max().expect("the dot");
+            let dot: Vec<&(u32, u32)> = hits.iter().filter(|h| h.1 + 12 * k > low).collect();
+            (dot.iter().map(|h| h.0).sum::<u32>() / dot.len() as u32, low)
+        };
+        let p = app.pal;
+        for (c, picked) in [(0, true), (1, false)] {
+            let (x, y) = center(crate::LABEL_COLORS[c]);
+            let (inside, gap) = (px(x, y + 14 * k), px(x, y + 19 * k));
+            let want = if picked { crate::style::mix(gap, p.hover, p.hover.a) } else { gap };
+            assert!(near(inside, Color { a: 1.0, ..want }), "color {c}: {inside:?} is not {want:?} over {gap:?}");
+        }
+    }
+
     /// Desktop's New Poll and Edit Spaces sheets: Tab goes through their fields, buttons, switch rows and drag
     /// handles in their order, and the Poll Creator's Send shows a 2 px `--color-primary` ring 2 px outside it.
     #[test]

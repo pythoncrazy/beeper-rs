@@ -381,7 +381,7 @@ impl BeeperGuiApp {
                 (format!("{}/{}", voice::clock(pos), voice::clock(c.secs())), wave.into(), Some(play.into()))
             }
             None => {
-                let dot = container(Space::new()).width(6).height(6).style(fill_box(hex(0xdc362e), 3.0));
+                let dot = container(Space::new()).width(6).height(6).style(fill_box(ON_ERROR, 3.0));
                 (voice::clock(secs), Element::new(Live(&r.0, wave)), Some(dot.into()))
             }
         };
@@ -416,8 +416,8 @@ impl BeeperGuiApp {
         let cancel = self.tip(cancel.into(), crate::tr("Cancel Talk to Type"), vec![], tooltip::Position::Top);
         let dot = container(Space::new()).width(8).height(8).style(fill_box(YELLOW, 4.0));
         let line = match t.typing {
-            true => row![dot, txt(crate::tr("Typing your message..."), 13.0).color(p.sub)],
-            false => row![dot, txt(crate::tr("Talk then press space"), 13.0).color(p.sub)]
+            true => row![dot, txt(crate::tr("Typing your message..."), 13.0).color(p.subtle)],
+            false => row![dot, txt(crate::tr("Talk then press space"), 13.0).color(p.subtle)]
                 .push(container(Element::new(Live(&t.take.0, p.on_secondary))).padding(Padding::ZERO.left(8.0))),
         };
         let wrapper = container(line.spacing(8).align_y(Center))
@@ -459,6 +459,10 @@ mod tests {
         assert!(has(&app, notice));
         let _ = app.update(UiMessage::Voice(voice::Msg::Allow(true)));
         assert!(app.talk.is_some() && has(&app, "Talk then press space"));
+        // `.TalkToType-module__wrapper` is `--color-text-neutrals-subtle`.
+        let shot = crate::focus::tests::shot(app.view_talk(app.talk.as_ref().unwrap()), Size::new(400.0, 36.0), "talk");
+        let subtle = app.pal.subtle.into_rgba8();
+        assert!(shot.pixels().filter(|px| (0..3).all(|i| px[i].abs_diff(subtle[i]) < 3)).count() > 20, "the text");
         let _ = app.update(UiMessage::Record(Msg::Key(Named::Space)));
         assert!(has(&app, "Typing your message..."));
         let _ = app.update(UiMessage::Record(Msg::Typed(Ok("hello there".into()))));
