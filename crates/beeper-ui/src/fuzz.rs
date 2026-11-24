@@ -8913,6 +8913,18 @@ fn errors_toast_like_desktop() {
     assert!(app.shown_toast().is_none_or(|t| !t.error), "a later toast is not an error");
 }
 
+/// A saved sidebar width or state that does not parse, like one saved by hand with a newline, starts the app with what
+/// reads and the default for the rest.
+#[test]
+fn a_saved_sidebar_state_that_does_not_parse_starts_the_app() {
+    let store = beeper_core::testing::demo_store("sidebar-saved");
+    let dir = store.read().config.data_dir.clone();
+    std::fs::write(dir.join("sidebar-width"), "300\n").unwrap();
+    std::fs::write(dir.join("sidebar-hidden"), "maybe").unwrap();
+    let app = BeeperGuiApp::boot(store).0;
+    assert_eq!((app.sidebar_width, app.sidebar_hidden), (300.0, false));
+}
+
 #[test]
 fn double_clicks_like_desktop() {
     let mut app = demo_app("sidebar-reset");
