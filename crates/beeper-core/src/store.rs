@@ -1681,6 +1681,11 @@ impl BeeperStore {
             },
             |a| (a.bridge_id.clone(), a.login_id.clone()),
         );
+        self.bridge_login(bridge_id, login_id)
+    }
+
+    /// The login `login_id` of the bridge `bridge_id`, as the signed-in session, for the bridge provisioning API.
+    pub fn bridge_login(&self, bridge_id: String, login_id: String) -> crate::matrix::Provision {
         let s = &self.beeper_state;
         crate::matrix::Provision {
             homeserver: s.homeserver.clone(),
@@ -2391,7 +2396,7 @@ impl BeeperStore {
                 |c: &&Chat| c.flags & CHAT_INACTIVE_UNION == 0 && c.merge.as_ref().is_some_and(|m| m.chat_ids.contains(&chat.id));
             chat.merged_into_chat_id = self.chats.iter().find(in_union).map(|c| c.id.clone());
             let idx = self.push_chat(chat, true);
-            let c = self.chats[idx].clone();
+            let c = &self.chats[idx];
             self.emit_ws("chat.upserted", &c.id, None, Some(c.clone()), None);
             return self.sync_parent(idx);
         };
@@ -2541,7 +2546,7 @@ impl BeeperStore {
         }
         let Some(idx) = found else {
             let idx = self.push_message(msg, true);
-            let m = self.messages[idx].clone();
+            let m = &self.messages[idx];
             return self.emit_ws("message.upserted", &m.chat_id, Some(&m.id), None, Some(m.clone()));
         };
         if msg.text.as_deref() == Some(crate::matrix::UTD_TEXT) && self.messages[idx].text.as_deref() != Some(crate::matrix::UTD_TEXT) {
