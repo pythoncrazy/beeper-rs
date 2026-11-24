@@ -6463,6 +6463,25 @@ fn rail_spaces_show_no_hover_fill_like_desktop() {
     assert_eq!(edge(&mut sim), clear);
 }
 
+/// Desktop's space icons inherit the body's `--color-text-neutrals` #171717, and the Media and Add an account icons of
+/// the footer are `--color-on-surface` #202124 (the signed-in Desktop's computed fills).
+#[test]
+fn rail_icons_take_desktop_colors() {
+    let app = demo_app("rail-colors");
+    let size = Size::new(68.0, 800.0);
+    let mut sim = Simulator::with_size(Default::default(), size, app.view_rail());
+    let darkest = |sim: &mut Simulator<'_, UiMessage>, key: &'static str| {
+        let b = sim.find(iced::widget::Id::new(key)).expect("a space bar button").bounds();
+        let shot = crate::message::tests::pixels(sim);
+        let k = shot.width() as f32 / size.width;
+        let (x, y) = ((b.x * k) as u32, (b.y * k) as u32);
+        let px = (x..x + (b.width * k) as u32).flat_map(|i| (y..y + (b.height * k) as u32).map(move |j| (i, j)));
+        px.map(|(i, j)| shot.get_pixel(i, j).0).min_by_key(|c| c[..3].iter().map(|&v| u32::from(v)).sum::<u32>()).unwrap()
+    };
+    assert_eq!(darkest(&mut sim, "rail-archive-button")[..3], [0x17, 0x17, 0x17], "a space");
+    assert_eq!(darkest(&mut sim, "rail-media")[..3], [0x20, 0x21, 0x24], "a footer button");
+}
+
 /// Desktop's spaces scroll in `.filters-pane-list`, which ends 10 px above the footer (`.current-user`'s margin) and
 /// starts under the 14 px padding of `.account-switcher`: a space that does not fit is cut at those edges.
 #[test]
@@ -6485,6 +6504,32 @@ fn rail_spaces_scroll_between_the_top_padding_and_the_footer_like_desktop() {
     sim.point_at(at);
     let _ = sim.simulate([iced::Event::Mouse(mouse::Event::WheelScrolled { delta: ScrollDelta::Pixels { x: 0.0, y: -30.0 } })]);
     assert!(!inked(&mut sim).any(|y| y < 14), "nothing scrolls into the 14 px above the list");
+}
+
+/// The ink of the signed-in Desktop's chat list header icons at 1200x800: each Material icon fills its box at
+/// `scale(1.2)`, so the Filter, Search and New Chat paths cover (228.7, 21.8, 12.6, 8.4), (258.5, 18, 15.6, 15.6) and
+/// (291.9, 16.8, 16.3, 16.3).
+#[test]
+fn list_header_icons_cover_desktop_paths() {
+    let app = demo_app("header-icons");
+    let main = app.main_window.expect("the main window");
+    let size = Size::new(1200.0, 800.0);
+    let mut sim = Simulator::with_size(Default::default(), size, app.view(main));
+    let shot = crate::message::tests::pixels(&mut sim);
+    let k = shot.width() as f32 / size.width;
+    // The box of the pixels at least half as dark as the icon, which is #202124 on the #eaebf0 list.
+    let ink = |[x, y, w, h]: [f32; 4]| {
+        let half = |px: &::image::Rgba<u8>| px.0[0] < 0x85;
+        let (x0, y0, x1, y1) = (((x - 3.0) * k) as u32, ((y - 3.0) * k) as u32, ((x + w + 3.0) * k) as u32, ((y + h + 3.0) * k) as u32);
+        let cols: Vec<u32> = (x0..x1).filter(|&i| (y0..y1).any(|j| half(shot.get_pixel(i, j)))).collect();
+        let rows: Vec<u32> = (y0..y1).filter(|&j| (x0..x1).any(|i| half(shot.get_pixel(i, j)))).collect();
+        let (l, t) = (cols[0] as f32 / k, rows[0] as f32 / k);
+        [l, t, (cols[cols.len() - 1] + 1) as f32 / k - l, (rows[rows.len() - 1] + 1) as f32 / k - t]
+    };
+    for want in [[228.7, 21.8, 12.6, 8.4], [258.5, 18.0, 15.6, 15.6], [291.9, 16.8, 16.3, 16.3]] {
+        let got = ink(want);
+        assert!((0..4).all(|i| (got[i] - want[i]).abs() <= 0.5), "{got:?} for Desktop's {want:?}");
+    }
 }
 
 /// Desktop's `.btn-ghost:active svg`: the pressed Search and New Chat icons of the chat list header turn
@@ -6671,6 +6716,34 @@ fn archive_and_low_priority_toasts_undo_like_desktop() {
     assert!(app.shown_undo().is_none());
 }
 
+/// The signed-in Desktop's two-line toast with an icon: 48 px tall under the window's 8 px, its text 8 px under the top
+/// beside the 20 px icon of a 2rem box with a -8 px margin (16 px of the row), and the icon in the middle of the text.
+#[test]
+fn icon_toast_keeps_desktop_padding() {
+    let mut app = demo_app("toast-padding");
+    let main = app.main_window.expect("the main window");
+    let _ = app.update(UiMessage::Window(windows::Msg::Resized(main, Size::new(1200.0, 800.0))));
+    {
+        let mut st = app.store.write();
+        st.features.flags["features"]["*"]["personal-room-overrides"] = true.into();
+        st.beeper_state.verified = true;
+        st.beeper_state.secrets.recovery_code.clear();
+        st.settings.recovery_reminder_dismissed_at = 0;
+    }
+    let size = Size::new(1200.0, 800.0);
+    let mut sim = Simulator::with_size(Default::default(), size, app.view_main());
+    let text = sim.find("Check if you still have access to a recovery key.").expect("the reminder toast").bounds();
+    assert_eq!((text.x, text.y, text.height), (108.0, 752.0, 32.0), "two lines 8 px under the toast's top at 744");
+    // The lock's ink: Desktop's path is 10.2 by 14.6 px at (86.9, 760.7).
+    let shot = crate::message::tests::pixels(&mut sim);
+    let k = shot.width() as f32 / size.width;
+    let dark = |x: u32, y: u32| shot.get_pixel(x, y).0[0] < 0x80;
+    let rows: Vec<u32> =
+        (((750.0 * k) as u32)..((790.0 * k) as u32)).filter(|&y| ((82.0 * k) as u32..(102.0 * k) as u32).any(|x| dark(x, y))).collect();
+    let (top, bottom) = (rows[0] as f32 / k, (rows[rows.len() - 1] + 1) as f32 / k);
+    assert!((top - 760.7).abs() <= 0.5 && (bottom - 775.3).abs() <= 0.5, "the lock's ink rows: {top}..{bottom}");
+}
+
 #[test]
 fn toasts_stack_like_desktop() {
     let mut app = demo_app("toast-stack");
@@ -6758,6 +6831,53 @@ fn create_label_shows_a_draft_space_like_desktop() {
     app.store.write().settings.spaces_order = order.into();
     let ids = rail(&mut app, "Friends");
     assert!(ids[0] == LABEL_DRAFT && !ids.iter().any(|s| s == LABEL_NUDGE), "the draft takes the slot of the nudge");
+}
+
+/// The signed-in Desktop's Settings window at 800x740 on Accounts: the pane ends in `.right`'s 8 px frame gap, the 44 px
+/// rows of the sidebar carry 0.33 px rules (one device pixel at a scale of 2) with their titles in the middle, the
+/// account rows have 12 px second lines in a 15 px line, `--color-text-neutrals` titles and Feather's chevron, and
+/// Storage has Desktop's own icon.
+#[test]
+fn settings_window_like_signed_in_desktop() {
+    let mut app = demo_app("settings-real");
+    let _ = app.update(UiMessage::Settings(settings::Msg::Open(SettingsTab::Accounts)));
+    let size = Size::new(800.0, 740.0);
+    let mut sim = Simulator::with_size(Default::default(), size, app.view_settings());
+    let at = |sim: &mut Simulator<'_, UiMessage>, t: &'static str| sim.find(t).expect(t).bounds();
+    let left = at(&mut sim, "10 Free Accounts Remaining");
+    assert!((left.center_x() - (291.0 + 779.0) / 2.0).abs() < 0.5, "the pane's content is 291..779: {left:?}");
+    let general = at(&mut sim, "General");
+    assert!((general.center_y() - 196.1).abs() < 0.5, "General in the middle of 174.1..218.1: {general:?}");
+    let phone = at(&mut sim, "+1 415-555-0142");
+    assert_eq!(phone.height, 15.0, "the 12 px second line");
+    let shot = crate::message::tests::pixels(&mut sim);
+    let k = shot.width() as f32 / size.width;
+    let px = |x: f32, y: f32| shot.get_pixel((x * k) as u32, (y * k) as u32).0;
+    // The rule under General, over the last device pixel of its row.
+    let ruled = ((210.0 * k) as u32..(222.0 * k) as u32).filter(|&y| shot.get_pixel((150.0 * k) as u32, y).0[0] < 0xe0).count();
+    assert_eq!(ruled, 1, "one device pixel of rule");
+    // The ink of a box: the pixels at least half as dark as `fg` against `bg`.
+    let ink = |[x, y, w, h]: [f32; 4], bg: [u8; 3]| {
+        let far = |c: [u8; 4]| (0..3).map(|i| u32::from(c[i].abs_diff(bg[i]))).sum::<u32>() > 160;
+        let xs: Vec<f32> = (0..(w * k) as u32)
+            .map(|i| x + i as f32 / k)
+            .filter(|&cx| (0..(h * k) as u32).any(|j| far(px(cx, y + j as f32 / k))))
+            .collect();
+        let ys: Vec<f32> = (0..(h * k) as u32)
+            .map(|j| y + j as f32 / k)
+            .filter(|&cy| (0..(w * k) as u32).any(|i| far(px(x + i as f32 / k, cy))))
+            .collect();
+        [xs[0], ys[0], xs[xs.len() - 1] + 1.0 / k - xs[0], ys[ys.len() - 1] + 1.0 / k - ys[0]]
+    };
+    let near = |got: [f32; 4], want: [f32; 4]| (0..4).all(|i| (got[i] - want[i]).abs() <= 0.5);
+    // Feather's chevron of the first account: the 4x8 polyline at (750, 79) with its 1.33 px stroke.
+    let chevron = ink([744.0, 73.0, 16.0, 20.0], [0xff; 3]);
+    assert!(near(chevron, [749.5, 78.5, 5.0, 9.0]), "the chevron: {chevron:?}");
+    let storage = ink([18.0, 540.0, 16.0, 16.0], [0x32, 0x54, 0x6a]);
+    assert!(near(storage, [20.8, 541.9, 10.5, 13.1]), "the Storage icon: {storage:?}");
+    let title = ((372.0 * k) as u32..(420.0 * k) as u32).flat_map(|x| ((121.0 * k) as u32..(138.0 * k) as u32).map(move |y| (x, y)));
+    let darkest = title.map(|(x, y)| shot.get_pixel(x, y).0).min_by_key(|c| c[0]).unwrap();
+    assert_eq!(darkest[..3], [0x17, 0x17, 0x17], "the account's name");
 }
 
 #[test]
@@ -7221,6 +7341,18 @@ fn chat_rows_place_their_lines_like_desktop() {
     }
 }
 
+/// Desktop's compact chat row: the media chip (`ThreadPreviewTag-module__tag`) keeps its 1 px top margin in the
+/// preview's 16 px line even alone, so its label is 28 px under the row's top, 18 px under the title.
+#[test]
+fn compact_row_media_chip_like_desktop() {
+    let mut app = demo_app("row-chip");
+    let _ = app.update(UiMessage::Settings(settings::Msg::SetPref("compactChatList", 1)));
+    let mut sim = Simulator::with_size(Default::default(), Size::new(1200.0, 800.0), app.view_main());
+    let title = sim.find("Jordan Park").expect("a chat whose preview is only an image").bounds();
+    let label = sim.find("Image").expect("its media chip").bounds();
+    assert_eq!(label.y - title.y, 18.0, "the chip's label sits 18 px under the title");
+}
+
 /// Desktop's `.thread-participant-name`: the sender's 12 px avatar has a 2 px margin before the name.
 #[test]
 fn previews_start_the_name_2_px_after_the_sender_like_desktop() {
@@ -7254,6 +7386,25 @@ fn unread_threads_pill_sizes_like_desktop() {
     let pill = sim.find(iced::widget::Id::new("unread-threads")).expect("the pill").bounds();
     let label = sim.find("Unread threads").expect("the label").bounds();
     assert_eq!((pill.height, label.x - pill.x, label.y - pill.y), (30.0, 13.0, 7.0));
+}
+
+/// Desktop's receipt of your last message in a chat row is `--color-on-surface` at 0.8 in the preview's 0.7, #797a7e
+/// over the list: a translucent icon takes its alpha once, as a translucent text does.
+#[test]
+fn row_receipt_is_desktop_translucent_gray() {
+    let app = demo_app("row-receipt");
+    let chat = app.visible_chats(&app.store.read()).iter().find(|c| c.title == "Family").map(|c| c.id.clone()).expect("Family");
+    let _ = app.store.write().send_message(&chat, Some("receipt probe".into()), None, None).unwrap();
+    let size = Size::new(1200.0, 800.0);
+    let mut sim = Simulator::with_size(Default::default(), size, app.view_main());
+    let text = sim.find("receipt probe").expect("the preview").bounds();
+    let shot = crate::message::tests::pixels(&mut sim);
+    let k = shot.width() as f32 / size.width;
+    let (x0, y0) = (((text.x - 16.0) * k) as u32, ((text.y + 2.0) * k) as u32);
+    let px = (x0..x0 + (12.0 * k) as u32).flat_map(|x| (y0..y0 + (12.0 * k) as u32).map(move |y| (x, y)));
+    let ink = px.map(|(x, y)| shot.get_pixel(x, y).0).min_by_key(|c| c[..3].iter().map(|&v| u32::from(v)).sum::<u32>()).unwrap();
+    let want = [0x79, 0x7a, 0x7e];
+    assert!((0..3).all(|i| ink[i].abs_diff(want[i]) <= 3), "the receipt's ink: {ink:?}");
 }
 
 #[test]
@@ -11913,6 +12064,31 @@ fn demo_flows_make_no_requests() {
     assert_eq!(app.gif_error.as_deref(), Some(beeper_core::cloud::FAILED_TO_FETCH));
 
     assert_eq!(connections.load(std::sync::atomic::Ordering::SeqCst), 0, "the demo connected to {url}");
+}
+
+/// The signed-in Desktop's `FreebieNudge` over the composer: the 11 px headline (14 px line) and the 10 px link (12 px
+/// line) 4 px after it, then the 16 px close button right after the link, all centered on the chat.
+#[test]
+fn incognito_trial_over_nudge_geometry_like_desktop() {
+    let mut app = demo_app("trial-over-geometry");
+    let main = app.main_window.expect("the main window");
+    let _ = app.update(UiMessage::Window(windows::Msg::Resized(main, Size::new(1200.0, 800.0))));
+    {
+        let mut st = app.store.write();
+        st.features.usage =
+            serde_json::json!({ "incognito": { "started_at": "2020-01-01T00:00:00Z", "expires_at": "2020-01-04T00:00:00Z" } });
+        let i = st.chat_idx(NOTE_CHAT_ID);
+        st.update_chat(i, |c| (c.messages.read_receipts, c.is_read_only) = (true, false));
+    }
+    let _ = app.update(UiMessage::SelectChat(NOTE_CHAT_ID.into()));
+    let mut sim = Simulator::with_size(Default::default(), Size::new(1200.0, 800.0), app.view_main());
+    let head = sim.find("Your incognito trial is over").expect("the headline").bounds();
+    let link = sim.find("Upgrade to Plus to keep it").expect("the link").bounds();
+    assert_eq!((head.height, link.height), (14.0, 12.0), "the line heights of 11 and 10 px");
+    assert_eq!(link.x - head.x - head.width, 4.0, "the gap");
+    assert_eq!((head.y, link.y), (725.0, 726.0), "centered on the 16 px close button under the 6 px padding");
+    let mid = head.x + (head.width + 4.0 + link.width + 16.0) / 2.0;
+    assert!((mid - (320.0 + 1192.0) / 2.0).abs() < 0.5, "centered on the chat: {mid}");
 }
 
 /// Desktop's incognito nudge `expired`: once the trial ended, a chat with read receipts shows "Your incognito trial is

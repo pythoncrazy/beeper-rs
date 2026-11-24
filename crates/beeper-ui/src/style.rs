@@ -41,16 +41,12 @@ pub mod icon {
     pub const VIEW_SIDEBAR: char = '\u{f01d}';
     /// Lucide's `chevron-right`, which is the Feather `ChevronRight` of Desktop's submenu rows.
     pub const CHEVRON: char = '\u{e06f}';
-    pub const CLOUD: char = '\u{e088}';
-    pub const CIRCLE_PLUS: char = '\u{e081}';
     pub const LINK: char = '\u{e102}';
     pub const ARROW_UP_RIGHT: char = '\u{e04d}';
     pub const PLUS: char = '\u{e13d}';
     pub const AUDIO_LINES: char = '\u{e55a}';
     pub const AT_SIGN: char = '\u{e04e}';
     pub const PAINTBRUSH: char = '\u{e2e7}';
-    pub const PUZZLE: char = '\u{e29c}';
-    pub const DATABASE: char = '\u{e0ad}';
     pub const INFO: char = '\u{e0f9}';
     pub const PLAY: char = '\u{e13c}';
     pub const HISTORY: char = '\u{e1f5}';

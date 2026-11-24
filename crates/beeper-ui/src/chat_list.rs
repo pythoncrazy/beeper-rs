@@ -1250,9 +1250,10 @@ impl BeeperGuiApp {
     /// The header of the chat list: the space's title, then the Filter, Display Options, Search and New Chat buttons.
     fn view_list_header(&self, st: &BeeperStore) -> El<'_> {
         let p = &self.pal;
-        // `.btn-ghost:active svg`: a pressed Search or New Chat icon turns `--color-icon-translucent-strong`.
-        let head_btn = |key: &str, c: char, size: f32, [l, r]: [f32; 2], msg: UiMessage| {
-            let b = button(container(ic(c, size)).padding(Padding::ZERO.left(l).right(r).top(2.0)).center_y(26))
+        // `.btn-ghost:active svg`: a pressed Search or New Chat icon turns `--color-icon-translucent-strong`. Each is a
+        // Material icon of a `w` px wide box at `scale(1.2)` in the middle of the button's 6 px sides.
+        let head_btn = |key: &str, c: char, w: f32, size: f32, msg: UiMessage| {
+            let b = button(container(ic(c, size * 1.2)).center_x(w + 12.0).center_y(26))
                 .padding(0)
                 .style(btn_style([CLEAR; 3], [p.strong, p.strong, p.fg.scale_alpha(0.9)], 0.0))
                 .on_press(msg.clone());
@@ -1265,8 +1266,9 @@ impl BeeperGuiApp {
             below(self.header_target("list-options", btn, menu), tr("Display Options"), vec![])
         });
         let search = UiMessage::CommandBar(commands::Msg::TogglePalette);
-        let search = head_btn("list-search", icon::SEARCH, 23.0, [7.5, 10.0], search);
-        let new_chat = head_btn("list-new-chat", icon::EDIT_SQUARE, 20.0, [0.0, 3.0], UiMessage::NewChat(new_chat::Msg::Open));
+        // The 19x22 and 22x17 boxes of the signed-in Desktop's Search and New Chat icons.
+        let search = head_btn("list-search", icon::SEARCH, 19.0, 19.0, search);
+        let new_chat = head_btn("list-new-chat", icon::EDIT_SQUARE, 22.0, 17.0, UiMessage::NewChat(new_chat::Msg::Open));
         row![self.view_list_title(st)]
             .push(self.view_filter_button())
             .push(options)
@@ -1274,7 +1276,8 @@ impl BeeperGuiApp {
             .push(below(new_chat, tr("New Chat"), hotkey_caps(st.settings.hotkey_keys("Chat: Start New"))))
             .align_y(Center)
             .height(52)
-            .padding(Padding::ZERO.right(8.0))
+            // `.tab-bar`'s 2 px right margin and padding.
+            .padding(Padding::ZERO.right(4.0))
             .into()
     }
 
@@ -1338,7 +1341,8 @@ impl BeeperGuiApp {
                 .bare(fg)
                 .width(if active { 16 } else { 0 })
                 .on_press(UiMessage::ChatList(chat_list::Msg::ToggleFilterMenu));
-            let pill = row![trigger, container(ic(icon::FILTER_LIST, 16.8).color(fg)).center_x(27).center_y(20)];
+            // `.FilterButton-module__filterButton`'s 6 px sides around the 20x14 box of its icon at `scale(1.2)`.
+            let pill = row![trigger, container(ic(icon::FILTER_LIST, 14.0 * 1.2).color(fg)).center_x(32).center_y(20)];
             let ring = if active { p.accent } else { CLEAR };
             // `.tab-bar-btn button:hover` keeps it clear.
             let face = bordered_btn([CLEAR; 3], [fg; 3], ring, 1.0, 12.0);
@@ -1840,7 +1844,7 @@ impl BeeperGuiApp {
         let style = if italic { iced::font::Style::Italic } else { iced::font::Style::Normal };
         let font = crate::style::redact(iced::Font { style, ..fw(Weight::Normal) });
         let fg = p.fg.scale_alpha(0.63);
-        let receipt = m.filter(|_| receipt).map(|m| self.preview_receipt(st, c, m, fg));
+        let receipt = m.filter(|_| receipt).map(|m| self.preview_receipt(st, c, m));
         let face = sender.map(|u| self.face(crate::user_img(u).as_deref(), u.full_name.as_deref().unwrap_or_default(), 12.0, 0.5));
         let badge = (expired && l.previews).then(|| {
             let label = semi(tr("Reminder"), 11.0).color(Color::WHITE.scale_alpha(0.7));
@@ -1877,15 +1881,16 @@ impl BeeperGuiApp {
     }
 
     /// The receipt of a chat's last message when it is the user's: sending, sent, read, or failed.
-    fn preview_receipt<'a>(&self, st: &BeeperStore, c: &Chat, m: &Message, fg: Color) -> El<'a> {
+    fn preview_receipt<'a>(&self, st: &BeeperStore, c: &Chat, m: &Message) -> El<'a> {
         // Desktop's `ZGe`: a message that failed to send shows `ErroredIcon`, without a tooltip.
         if m.send_error.is_some() {
             // `.messageErroredIcon`: 16 by 11 with a 1 px margin, where the read icons are 12 px wide.
             let icon = container(tinted(&ERRORED, 11.0, ERROR)).center_x(16);
             return container(icon).padding(Padding::ZERO.right(1.0)).into();
         }
+        // `.ThreadListReadIcon-module__threadReadIcon` is `--color-on-surface` at 0.8 in the preview's 0.7.
         let glyph = if pending(st, m) { &PENDING } else { &SENT[usize::from(seen_by(st, m) > 0)] };
-        let icon = tinted(glyph, 12.0, fg);
+        let icon = tinted(glyph, 12.0, self.pal.strong.scale_alpha(0.56));
         match receipt_tip(st, c, m) {
             Some(tip) => self.tip(icon, tip, vec![], tooltip::Position::Top).into(),
             None => icon,
@@ -1906,10 +1911,9 @@ fn media_chip<'a>(p: &Palette, icon: usize, label: &'a str, expired: bool, fg: C
     }
     let glyph = tinted(tag_glyph(icon), 12.0, fg);
     let label = med(label, 10.0).color(fg);
-    container(row![glyph, container(label).padding([0, 2])].align_y(Center))
-        .padding([1, 2])
-        .style(fill_box(p.strong.scale_alpha(0.105), 4.0))
-        .into()
+    let chip = container(row![glyph, container(label).padding([0, 2])].align_y(Center));
+    // `.ThreadPreviewTag-module__tag`'s 1 px top margin keeps it 1 px under the top of its 16 px line.
+    container(chip.padding([1, 2]).style(fill_box(p.strong.scale_alpha(0.105), 4.0))).padding(Padding::ZERO.top(1.0).bottom(1.0)).into()
 }
 
 /// The text of a chat row's preview in `lines` lines of `width`, with the emoji font when it has emoji.
