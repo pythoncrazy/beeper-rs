@@ -4038,6 +4038,40 @@ fn online(app: &BeeperGuiApp) {
     st.sent.extend(seeded.into_iter().map(|id| (id.clone(), id)));
 }
 
+/// Desktop's `sendQueuedMessages`: a send that takes a minute says so in a toast that stays, with Show, until its push
+/// ends.
+#[test]
+fn slow_sends_say_so_like_desktop() {
+    let note = "!note_self:beeper.com";
+    let mut app = demo_app("slow-send");
+    let _ = app.update(UiMessage::SelectChat(note.into()));
+    online(&app);
+    let _ = app.update(UiMessage::Composer(composer::Msg::Changed("hi".into())));
+    let _ = app.update(UiMessage::Composer(composer::Msg::Submit));
+    let _ = app.update(UiMessage::Composer(composer::Msg::SendQueued(Some(note.into()))));
+    let id = app.store.read().outbox[0].2.message().expect("a send has a local echo").to_string();
+    let now = beeper_core::config::now_unix_millis();
+    app.store.write().sending.insert(id.clone(), now - 59_000);
+    let _ = app.update(UiMessage::AnimationTick);
+    assert!(app.shown_toast().is_none(), "a minute did not pass");
+    app.store.write().sending.insert(id.clone(), now - 60_000);
+    let _ = app.update(UiMessage::AnimationTick);
+    let toast = app.shown_toast().expect("a toast of the slow send");
+    assert_eq!(toast.text, "Sending message to Note to self (Beeper) is taking longer than expected");
+    assert!(matches!(&toast.buttons[..], [(label, UiMessage::SelectChat(c))] if *label == "Show" && c == note));
+    assert_eq!(app.sticky_banner.as_ref(), Some(&app.status_banner), "the toast stays");
+    let failed = {
+        let mut st = app.store.write();
+        let (row, _, _) = st.outbox.remove(0);
+        st.pushed(row, Some(&id), Some(("Message took too long to send".into(), true)));
+        st.loaded(&id).expect("the local echo").clone()
+    };
+    let _ = app.update(UiMessage::Upserted(Box::new(failed)));
+    let shown = app.shown_toast().expect("the error toast").text.clone();
+    assert!(shown.ends_with("\nMessage took too long to send"), "{shown}");
+    assert!(app.older_toasts.is_empty() && app.slow_sends.is_empty(), "the end of the push closes the slow toast");
+}
+
 #[test]
 fn failed_sends_show_retry_and_remove_like_desktop() {
     let note = "!note_self:beeper.com";
