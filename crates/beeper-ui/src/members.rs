@@ -7,8 +7,8 @@ use iced::widget::column;
 pub enum Msg {
     /// Desktop's member "Send Message": the direct chat with a member of a chat, as (chat, user).
     Message(String, String),
-    /// Opens a member confirmation, `ASK_MAKE_ADMIN` or `ASK_REMOVE_MEMBER`, for (chat, user).
-    Ask(u8, String, String),
+    /// Opens a member confirmation, Make Group Admin or Remove from Group.
+    Ask(Confirm),
     /// Desktop's Add Members button of Chat Info: the Add members submenu with the members query.
     OpenAdd(String),
     /// Desktop's `addParticipant`: invites the user to the chat.
@@ -57,9 +57,7 @@ impl BeeperGuiApp {
                 drop(st);
                 return self.open_dm(account, user, None, None);
             }
-            Msg::Ask(ask, cid, uid) => {
-                (self.list.chat_menu, self.confirm, self.delete_target) = (None, Some(ask), Some(format!("{cid} {uid}")));
-            }
+            Msg::Ask(ask) => (self.list.chat_menu, self.confirm) = (None, Some(ask)),
             Msg::SetAdmin(cid, uid, admin) => {
                 self.confirm = None;
                 self.store.write().set_admin(&cid, &uid, admin);

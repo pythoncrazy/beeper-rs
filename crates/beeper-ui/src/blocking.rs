@@ -57,7 +57,7 @@ impl BeeperGuiApp {
         self.list.chat_menu = None;
         self.show_command_palette = false;
         self.report_spam = false;
-        (self.confirm, self.delete_target) = (Some(if block { ASK_BLOCK } else { ASK_UNBLOCK }), Some(id));
+        self.confirm = Some(Confirm::Block(id, block));
     }
 
     /// Desktop's `setUserBlockedOrAlert` and `setUserBlocked`: a disconnected account asks to reconnect first. Then
@@ -66,7 +66,7 @@ impl BeeperGuiApp {
         let mut st = self.store.write();
         let c = st.chat(id);
         if st.bridge_accounts.iter().any(|b| b.account_id == c.account_id && b.state == "BAD_CREDENTIALS") {
-            (self.confirm, self.delete_target) = (Some(if block { ASK_BLOCK_OFFLINE } else { ASK_UNBLOCK_OFFLINE }), Some(id.into()));
+            self.confirm = Some(Confirm::BlockOffline(id.into(), block));
             return Task::none();
         }
         let (title, request) = (c.title.clone(), block && c.is_request == Some(true));

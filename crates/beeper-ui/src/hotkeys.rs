@@ -95,7 +95,7 @@ impl BeeperGuiApp {
         let flag = |f: ChatFlag| pointed.clone().map(|c| UiMessage::ChatList(chat_list::Msg::ToggleFlag(c, f)));
         let selected = self.single_msg().cloned().filter(|_| chat.is_some());
         let msg = match name {
-            "Chat: Archive All Read" => Some(UiMessage::Ask(Some(ASK_ARCHIVE_READ))),
+            "Chat: Archive All Read" => Some(UiMessage::Ask(Some(Confirm::ArchiveAll(true)))),
             "Chat: Start New" => Some(UiMessage::NewChat(new_chat::Msg::Open)),
             "Chat: Toggle Archive" => flag(ChatFlag::Archived),
             "Chat: Toggle Mark As Read" => pointed.map(|a0| UiMessage::ChatList(chat_list::Msg::ToggleRead(a0))),

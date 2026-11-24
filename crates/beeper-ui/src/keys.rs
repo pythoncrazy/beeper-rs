@@ -507,7 +507,7 @@ impl BeeperGuiApp {
             }
         } else if self.join_matrix_mode {
             self.join_matrix_mode = false;
-        } else if self.confirm == Some(ASK_ROOM_ENCRYPTION) {
+        } else if self.confirm == Some(Confirm::RoomEncryption) {
             self.confirm = None;
         } else if self.creating_chat.is_some() {
             self.leave_draft();

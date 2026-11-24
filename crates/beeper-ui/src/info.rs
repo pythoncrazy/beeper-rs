@@ -203,8 +203,8 @@ pub(crate) fn info_menu(st: &BeeperStore, key: &str, dm: impl Fn(&str) -> bool) 
             .map(|n| Some((trx("Call", "button label to start a phone call").to_string(), Some(UiMessage::OpenUrl(format!("tel:{n}"))))));
         let send = dm(&c.account_id)
             .then(|| Some((tr("Send Message").to_string(), Some(UiMessage::Members(members::Msg::Message(cid.into(), uid.into()))))));
-        let ask = |label: &'static str, ask, on: bool| {
-            Some((tr(label).to_string(), on.then(|| UiMessage::Members(members::Msg::Ask(ask, cid.into(), uid.into())))))
+        let ask = |label: &'static str, ask: fn(String, String) -> Confirm, on: bool| {
+            Some((tr(label).to_string(), on.then(|| UiMessage::Members(members::Msg::Ask(ask(cid.into(), uid.into()))))))
         };
         return [
             call,
@@ -214,8 +214,8 @@ pub(crate) fn info_menu(st: &BeeperStore, key: &str, dm: impl Fn(&str) -> bool) 
             copy("Copy Username", username),
             copy("Copy Name", u.full_name.clone()),
             Some(None),
-            Some(ask("Make Group Admin…", ASK_MAKE_ADMIN, u.is_admin != Some(true) && u.manage & MANAGE_ROLE != 0)),
-            Some(ask("Remove from Group…", ASK_REMOVE_MEMBER, u.manage & MANAGE_KICK != 0)),
+            Some(ask("Make Group Admin…", Confirm::MakeAdmin, u.is_admin != Some(true) && u.manage & MANAGE_ROLE != 0)),
+            Some(ask("Remove from Group…", Confirm::RemoveMember, u.manage & MANAGE_KICK != 0)),
         ]
         .into_iter()
         .flatten()

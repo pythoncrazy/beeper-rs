@@ -365,8 +365,6 @@ pub(crate) struct IntegrationsPage {
     pub(crate) target: usize,
     pub(crate) copied: Option<u8>,
     pub(crate) joining: bool,
-    /// The token of the open revoke confirmation.
-    pub(crate) revoke: Option<String>,
     pub(crate) add: Option<AddToken>,
 }
 
@@ -468,20 +466,6 @@ pub(crate) fn donut(parts: &[(storage::Kind, u64)]) -> svg::Handle {
         .collect();
     svg::Handle::from_memory(format!(r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200">{arcs}</svg>"#).into_bytes())
 }
-
-/// The dialogs over the Settings window.
-pub(crate) const SETTINGS_DIALOGS: [u8; 10] = [
-    ASK_LOGOUT,
-    ASK_LOGOUT_DEVICE,
-    ASK_CLEAR_STORAGE,
-    ASK_CLEAR_CACHE,
-    ASK_CLEAR_CHAT,
-    ASK_REVOKE_CONNECTION,
-    ASK_REMOTE_ACCESS,
-    ASK_REMOVE_ACCOUNT,
-    ASK_DISCONNECT_SERVER,
-    ASK_REMOVE_PACK,
-];
 
 /// Desktop's "Clear storage older than" choices, where 0 is any age.
 pub(crate) const STORAGE_DAYS: [i64; 4] = [0, 30, 90, 120];
@@ -887,7 +871,7 @@ impl BeeperGuiApp {
         // Desktop's `.prefs-right-pane`, in `.right`'s 8 px frame gap, has a `drop-shadow(0 0 10px #0000001f)`.
         let base = container(row![left, container(right).padding(8)]).width(Fill).height(Fill);
         drop(st);
-        let confirm = self.confirm.filter(|d| SETTINGS_DIALOGS.contains(d)).map(|d| self.view_confirm(d));
+        let confirm = self.confirm.as_ref().filter(|d| d.in_settings()).map(|d| self.view_confirm(d));
         // The menu of an account row of the Accounts settings, or of the actions of an account page.
         let menu = self.list().chat_menu.as_ref().and_then(|(cid, at)| {
             let (id, kind) = match cid.strip_prefix(ROW_MENU) {
@@ -1065,7 +1049,11 @@ impl BeeperGuiApp {
                 .push(d.last_seen_ms.map(|t| txt(trf("Last seen: %s", &[&ago(t)]), 11.0).color(p.sub)))
                 .width(Fill);
             // Desktop's `DeviceRow`: each device has "Logout", which is disabled while the list loads.
-            let ask = if d.current { UiMessage::Ask(Some(ASK_LOGOUT)) } else { UiMessage::Settings(Msg::AskLogoutDevice(d.id.clone())) };
+            let ask = if d.current {
+                UiMessage::Ask(Some(Confirm::Logout(None)))
+            } else {
+                UiMessage::Settings(Msg::AskLogoutDevice(d.id.clone()))
+            };
             let logout = button(semi(tr("Logout"), 12.0).color(p.strong))
                 .padding([4, 8])
                 .style(btn_style([p.hover, p.selected, p.selected], [p.strong; 3], 20.0))
@@ -1492,7 +1480,7 @@ impl BeeperGuiApp {
             self.storage_ages(0),
             self.storage_kinds(0, busy),
             warning(),
-            link(label(0), p.text_danger, 13.0, !busy && s.kinds[0] != 0, UiMessage::Ask(Some(ASK_CLEAR_STORAGE)))
+            link(label(0), p.text_danger, 13.0, !busy && s.kinds[0] != 0, UiMessage::Ask(Some(Confirm::Clear(0))))
         ]
         .spacing(12)
         .align_x(Center)
@@ -1511,7 +1499,7 @@ impl BeeperGuiApp {
             ]
             .spacing(2)
             .width(Fill),
-            link("Clear", p.accent, 14.0, !busy && cached, UiMessage::Ask(Some(ASK_CLEAR_CACHE)))
+            link("Clear", p.accent, 14.0, !busy && cached, UiMessage::Ask(Some(Confirm::Clear(1))))
         ]
         .align_y(Center)
         .padding([12, 16]);
@@ -1561,7 +1549,7 @@ impl BeeperGuiApp {
                 let panel =
                     column![body(tr("Clear storage older than").into(), p.muted), self.storage_ages(1), self.storage_kinds(1, busy)]
                         .push((s.kinds[1] & 1 << 4 != 0).then(warning))
-                        .push(link(label(2), p.text_danger, 13.0, !busy && s.kinds[1] != 0, UiMessage::Ask(Some(ASK_CLEAR_CHAT))))
+                        .push(link(label(2), p.text_danger, 13.0, !busy && s.kinds[1] != 0, UiMessage::Ask(Some(Confirm::Clear(2)))))
                         .spacing(12)
                         .align_x(Center)
                         .padding(Padding::new(16.0).top(12.0));
@@ -2652,7 +2640,7 @@ impl BeeperGuiApp {
                 });
                 return write.chain(reload);
             }
-            Msg::AskRemovePack(id) => (self.confirm, self.delete_target) = (Some(ASK_REMOVE_PACK), Some(id)),
+            Msg::AskRemovePack(id) => self.confirm = Some(Confirm::RemovePack(id)),
             Msg::RemovePack(id) => {
                 self.confirm = None;
                 let Some(pack) = self.installed_packs.iter().flatten().find(|p| p.id == id).cloned() else {
@@ -2680,7 +2668,7 @@ impl BeeperGuiApp {
                 }
             }
             Msg::DevicesLoaded(r) => (self.devices, self.devices_busy) = (Some(r), false),
-            Msg::AskLogoutDevice(id) => (self.confirm, self.delete_target) = (Some(ASK_LOGOUT_DEVICE), Some(id)),
+            Msg::AskLogoutDevice(id) => self.confirm = Some(Confirm::Logout(Some(id))),
             Msg::LogoutDevice(id) => return self.logout_device(id),
             Msg::DeviceLoggedOut(id, r) => return self.device_logged_out(id, r),
             Msg::MicsLoaded(r) => {
