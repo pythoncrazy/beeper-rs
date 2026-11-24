@@ -1500,7 +1500,8 @@ impl BeeperGuiApp {
         let loud = p.badge.map_or((p.accent, Color::WHITE), |from| (Color::WHITE, from));
         let (bg, fg) = if quiet { (p.card, p.strong) } else { loud };
         let dot = (!l.counts && unread).then(|| container(Space::new()).width(6).height(6).style(fill_box(bg, 3.0)));
-        let title_w = tile - if muted { 35.2 } else { 20.0 } - if dot.is_some() { 9.2 } else { 0.0 };
+        // The padding of the pin, then the bell and the dot with the heading's 0.2rem gaps.
+        let title_w = tile - if l.compact { 20.0 } else { 24.0 } - if muted { 15.2 } else { 0.0 } - if dot.is_some() { 9.2 } else { 0.0 };
         let title = ell(short_title(c), title_w, 12.0, Weight::Semibold);
         let label = row![]
             .push(dot)
@@ -1511,15 +1512,18 @@ impl BeeperGuiApp {
         let unread = match (st.typing.contains_key(&c.id), l.counts) {
             (true, _) => Some(self.typing_badge()),
             (false, true) => unread.then(|| count_badge(c, bg, fg, 14.0)),
-            (false, false) => (c.unread_mentions > 0).then(|| {
-                let at = ic(icon::AT_SIGN, 10.0).color(fg);
-                container(at).padding([0, 4]).center_y(14).style(fill_box(bg, 7.0)).into()
-            }),
+            (false, false) => {
+                (c.unread_mentions > 0).then(|| container(ic(icon::AT_SIGN, 10.0).color(fg)).center(16).style(fill_box(bg, 8.0)).into())
+            }
         };
+        // Desktop's 14 px indicators center on the line of the bubbles, 5 px below the avatar's top (2 px in the
+        // compact list), and its 16 px `mentionIndicator` 2 px lower.
+        let mention = !l.counts && !st.typing.contains_key(&c.id);
+        let lift = if l.compact { 5.0 } else { 2.0 } - if mention { 1.0 } else { 0.0 };
         let bubble = bubble_text(c, g.launched, g.now).filter(|_| l.previews && !on && !l.selecting);
         let unread = unread.filter(|_| bubble.is_none());
         let face = stack![container(self.chat_avatar(c, pin_av, 1.25)).center_x(pin_av + 4.0)]
-            .push((!l.selecting).then(|| container(unread).width(pin_av + 4.0).align_right(pin_av + 4.0)))
+            .push((!l.selecting).then(|| pin(container(unread).width(pin_av + 4.0).align_right(pin_av + 4.0)).y(-lift)))
             .push(l.selecting.then(|| pin(checkbox(p, self.selection.contains(&c.id))).x(pin_av - 11.0).y(-5.0)))
             .width(pin_av + 4.0)
             .height(pin_av);
