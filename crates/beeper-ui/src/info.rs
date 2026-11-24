@@ -283,13 +283,17 @@ impl BeeperGuiApp {
             .push(leave)
             .padding(Padding::new(8.0).top(0.0));
         let scroll = scrollable(body).direction(bar()).style(scroll_style(p.scroll)).height(Fill);
-        // Desktop's `thread-info--detached`: the card fills its window inside 8 px of the window color.
-        let detached = self.pane().info;
-        let card = container(column![pane_head, scroll, toolbar]).height(Fill).style(fill_box(p.card, 10.0));
-        match detached {
-            // `ThreadInfoBrowserWindow` is `--left-pane-bg`.
-            true => crate::ui_theme::window_bg(container(card.width(Fill)).padding(8), p.backdrop, p.window).into(),
-            false => container(card.width(self.info_width())).padding(Padding::new(8.0).left(0.0)).into(),
+        let card = |body| container(body).height(Fill).style(fill_box(p.card, 10.0));
+        match self.pane().info {
+            // Desktop's `thread-info--detached` fills its `--left-pane-bg` window inside 8 px: the rounded card is
+            // `thread-info-inner`, and the toolbar, its sibling, is a square strip under it.
+            true => {
+                let body = column![card(column![pane_head, scroll]).width(Fill), container(toolbar).style(fill_box(p.card, 0.0))];
+                crate::ui_theme::window_bg(container(body).padding(8), p.backdrop, p.window).into()
+            }
+            false => {
+                container(card(column![pane_head, scroll, toolbar]).width(self.info_width())).padding(Padding::new(8.0).left(0.0)).into()
+            }
         }
     }
 
@@ -1049,6 +1053,28 @@ mod tests {
         {
             let at = y(label) - y(above);
             assert!((at - below).abs() < 0.5, "{label}: {at} below {above}");
+        }
+    }
+
+    /// Desktop's 330 by 560 Chat Info window, measured: the rounded `thread-info-inner` card at (8, 8, 314, 494), and
+    /// the toolbar under it at (8, 502, 314, 50).
+    #[test]
+    fn detached_chat_info_puts_the_toolbar_under_the_card_like_desktop() {
+        let mut app = info_app("chat-info-detached", JORDAN);
+        app.pane.info = true;
+        let mut sim = Simulator::with_size(Default::default(), Size::new(330.0, 560.0), app.view_info());
+        let mut boxes = Vec::new();
+        let _ = sim.find(|c: iced_test::selector::Candidate<'_>| -> Option<()> {
+            if let iced_test::selector::Candidate::Container { bounds, .. } = c {
+                boxes.push(bounds);
+            }
+            None
+        });
+        for want in [
+            iced::Rectangle::new(Point::new(8.0, 8.0), Size::new(314.0, 494.0)),
+            iced::Rectangle::new(Point::new(8.0, 502.0), Size::new(314.0, 50.0)),
+        ] {
+            assert!(boxes.contains(&want), "{want:?} in {boxes:?}");
         }
     }
 
