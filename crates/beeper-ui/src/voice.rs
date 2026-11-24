@@ -577,7 +577,7 @@ impl BeeperGuiApp {
         let w = 10.0 + 16.0 + 22.0 + names.fold(0.0, f32::max);
         let h = (8.0 + MENU_RULE + (langs.len() as f32) * menu_pitch()).min((room - top).max(4.0 * menu_pitch()));
         let list = iced::widget::scrollable(Column::with_children(items).padding([4, 0])).height(h);
-        let menu = container(list).width(w).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0));
+        let menu = crate::menu_frame(p, list, w);
         Some((column![Space::new().height(top), menu].into(), w))
     }
 
@@ -776,10 +776,11 @@ impl BeeperGuiApp {
         }
         let free = st.features.free_uses("voice-transcription");
         let used_up = sent && !can && free.is_some_and(|(used, limit)| used >= limit);
-        let small = |s: String, c: Color| txt(s, 11.0).color(c);
+        // `.Transcribe-module__text`: 10 px on a 14 px line, and `--color-on-surface-variant` but for its buttons.
+        let small = |s: String, c: Color| txt(s, 10.0).line_height(lh(14.0)).color(c);
         let count = free.filter(|&(used, limit)| used > 0 && limit > used).map(|(used, limit)| {
             let n = (limit - used) as usize;
-            small(crate::trn("%d free transcription left", "%d free transcriptions left", n, &[&n]), p.sub)
+            small(crate::trn("%d free transcription left", "%d free transcriptions left", n, &[&n]), p.muted)
         });
         let ai = || tinted(&TRANSCRIBE_ICONS[0], 16.0, p.accent);
         let line: El<'a> = match state {
@@ -791,18 +792,18 @@ impl BeeperGuiApp {
                     Some(name) => crate::trf("Transcribing in %s…", &[&name]),
                     None => tr("Transcribing…").into(),
                 };
-                let sub = p.sub;
-                let spinner = spinner.style(move |_, _| svg::Style { color: Some(sub) });
-                row![spinner, small(label, p.sub)].spacing(2).align_y(Center).into()
+                let muted = p.muted;
+                let spinner = spinner.style(move |_, _| svg::Style { color: Some(muted) });
+                row![spinner, small(label, p.muted)].spacing(2).align_y(Center).into()
             }
             _ if !done && !can && !used_up => return None,
             Some((language, true)) => {
                 let again = Msg::Transcribe(m.id.clone(), done, Some(language.clone()));
-                let again = button(semi(tr("Try Again"), 11.0).color(p.accent))
+                let again = button(semi(tr("Try Again"), 10.0).line_height(lh(14.0)).color(p.accent))
                     .padding(0)
                     .style(|_, _| button::Style::default())
                     .on_press(UiMessage::Voice(again));
-                row![small(tr("Error transcribing audio").into(), p.sub), again].spacing(4).into()
+                row![small(tr("Error transcribing audio").into(), p.muted), again].spacing(4).into()
             }
             _ if done => row![ai()].push(count?).spacing(4).align_y(Center).into(),
             _ => {
@@ -932,6 +933,13 @@ mod tests {
         let failed = Err(Some("Failed to transcribe audio message".to_string()));
         let _ = app.update(UiMessage::Voice(Msg::Transcribed(id.clone(), "de".into(), failed)));
         assert!(has(&app, "Error transcribing audio") && app.status_banner == "Failed to transcribe audio message");
+        {
+            // `.Transcribe-module__error` is `--color-on-surface-variant`.
+            let st = app.store.read();
+            let row = app.view_transcribe(&st, st.message(&id)).expect("the error");
+            let (shot, muted) = (crate::focus::tests::shot(row, Size::new(400.0, 16.0), "transcribe"), app.pal.muted.into_rgba8());
+            assert!(shot.pixels().filter(|px| (0..3).all(|i| px[i].abs_diff(muted[i]) < 3)).count() > 20);
+        }
         let again = click(&mut app, "Try Again");
         assert!(matches!(&again[..], [UiMessage::Voice(Msg::Transcribe(m, false, Some(l)))] if *m == id && l == "de"));
         let _ = app.update(UiMessage::Voice(Msg::Transcribed(id.clone(), "de".into(), Ok("Hallo".into()))));

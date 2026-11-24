@@ -5,15 +5,27 @@ use crate::prelude::*;
 use iced::widget::column;
 
 impl BeeperGuiApp {
+    /// The rows of the `native` Message type and Time period selects of the search.
+    fn native_search_rows(&self, chip: usize) -> Vec<select::Row> {
+        let f = &self.search_filters;
+        let row = |on: bool, label: &str, m: SearchPick| {
+            select::Row::Option(label.into(), on, Box::new(UiMessage::CommandBar(commands::Msg::PickSearchFilter(m))))
+        };
+        match chip {
+            1 => vec![
+                row(f.sent == Some(true), tr("Sent"), SearchPick::Sent(true)),
+                row(f.sent == Some(false), tr("Received"), SearchPick::Sent(false)),
+                select::Row::Rule,
+                row(f.group == Some(true), trx("Group", "general search chat type filter"), SearchPick::Group(true)),
+                row(f.group == Some(false), tr("Direct message"), SearchPick::Group(false)),
+            ],
+            _ => PERIODS.iter().enumerate().map(|(i, l)| row(f.period == Some(i), tr(l), SearchPick::Period(i))).collect(),
+        }
+    }
+
     pub(crate) fn view_search_select(&self, chip: usize, at: iced::Rectangle) -> El<'_> {
         let p = &self.pal;
         let f = &self.search_filters;
-        let pick = |m: SearchPick| Some(UiMessage::CommandBar(commands::Msg::PickSearchFilter(m)));
-        let radio = |on: bool, label: &str, m: SearchPick| {
-            let lead = container(on.then(|| ic(icon::CHECK, 14.0))).center_x(14).padding(Padding::ZERO.right(6.0));
-            menu_item(p, Some(lead.into()), label.into(), "", pick(m))
-        };
-        let menu = |items: Vec<El<'static>>| -> El<'static> { crate::menu_card(p, Column::with_children(items), 233).into() };
         let brand = |options: Vec<(String, bool, SearchPick)>| -> El<'static> {
             let any = options.iter().any(|o| o.1);
             let widest = options.iter().map(|o| crate::style::text_width(&o.0, 11.0, Weight::Semibold));
@@ -57,18 +69,10 @@ impl BeeperGuiApp {
                         .collect(),
                 )
             }
-            1 => menu(vec![
-                radio(f.sent == Some(true), tr("Sent"), SearchPick::Sent(true)),
-                radio(f.sent == Some(false), tr("Received"), SearchPick::Sent(false)),
-                menu_rule(p),
-                radio(f.group == Some(true), trx("Group", "general search chat type filter"), SearchPick::Group(true)),
-                radio(f.group == Some(false), tr("Direct message"), SearchPick::Group(false)),
-            ]),
-            2 => menu(PERIODS.iter().enumerate().map(|(i, l)| radio(f.period == Some(i), tr(l), SearchPick::Period(i))).collect()),
             3 => brand(
                 MEDIA_KINDS.iter().enumerate().map(|(i, l)| (tr(l).to_string(), f.media.contains(&i), SearchPick::Media(i))).collect(),
             ),
-            _ => unreachable!("chip {chip} has no menu"),
+            _ => unreachable!("chip {chip} is a native select"),
         }
     }
 
@@ -281,10 +285,11 @@ impl BeeperGuiApp {
                 .spacing(4)
                 .align_y(Center);
             let chip = button(body).bare(fg).padding([4, 13]);
-            container(chip.on_press_maybe((!disabled).then_some(UiMessage::CommandBar(commands::Msg::OpenSearchSelect(i)))))
-                .id(format!("search-chip-{i}"))
-                .style(style)
-                .into()
+            let press = match i {
+                1 | 2 => select::press(&format!("search-chip-{i}"), self.native_search_rows(i)),
+                _ => UiMessage::CommandBar(commands::Msg::OpenSearchSelect(i)),
+            };
+            container(chip.on_press_maybe((!disabled).then_some(press))).id(format!("search-chip-{i}")).style(style).into()
         }))
         .spacing(12)
         .padding(Padding::new(6.0).left(13.0).right(13.0))

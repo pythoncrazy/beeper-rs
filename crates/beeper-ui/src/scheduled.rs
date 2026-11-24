@@ -161,12 +161,7 @@ impl BeeperGuiApp {
         ];
         let rows: Vec<El> = rows.into_iter().flatten().flatten().collect();
         let h = 8.0 + (rows.len() - usize::from(items)) as f32 * menu_pitch() + if items { MENU_RULE } else { 0.0 };
-        let menu = container(Column::with_children(rows).padding([4, 0])).width(MESSAGE_MENU_W).style(shadow_box(
-            p.menu,
-            p.menu_border,
-            6.0,
-            16.0,
-        ));
+        let menu = crate::menu_card(p, Column::with_children(rows), MESSAGE_MENU_W);
         (menu.into(), h)
     }
 
@@ -234,7 +229,7 @@ impl BeeperGuiApp {
     /// A scheduled message like Desktop's `is-scheduled` bubble: `bg`, with a dashed border in the text color.
     pub(crate) fn view_scheduled_bubble(&self, st: &BeeperStore, s: &Scheduled, bg: Color) -> El<'_> {
         let p = &self.pal;
-        let fg = if s.canceled { hex(0x808080) } else { p.accent };
+        let fg = if s.canceled { p.muted } else { p.accent };
         let line = |t: String| txt(t, 13.0).wrapping(iced::widget::text::Wrapping::WordOrGlyph);
         // A file part shows its file name over its caption.
         let file =

@@ -23,9 +23,7 @@ const CODE_INPUT: &str = "login-code";
 const USERNAME_INPUT: &str = "login-username";
 const PASSWORD_INPUT: &str = "login-password";
 const TERMS_URL: &str = "https://www.beeper.com/terms-onboarding";
-const PRIVACY_URL: &str = "https://www.beeper.com/privacy";
-/// Desktop's `--color-on-error-container`: the error toast.
-const ERROR_RED: Color = Color::from_rgb8(220, 54, 46);
+pub(crate) const PRIVACY_URL: &str = "https://www.beeper.com/privacy";
 /// Desktop's `Y0.UNKNOWN_ERROR` and `Y0.NO_EMAIL_SUPPORT` of `provisionLogin`.
 const UNKNOWN_ERROR: &str = "Something went wrong. Please try again or contact support.";
 const NO_EMAIL_LOGIN: &str = "The server does not support email-based login. Try logging in with a username instead.";
@@ -564,7 +562,7 @@ fn card_style(bg: Color) -> impl Fn(&Theme) -> container::Style {
 /// Desktop's onboarding error toast: 300x32 at the top of the window, with an info icon and a close button.
 /// Desktop's `showToast`: a neutral toast with centered text and no close button, which goes after 3 s.
 fn toast<'a>(p: &Palette, text: &'a str, error: bool) -> El<'a> {
-    let (bg, fg) = if error { (ERROR_RED, Color::WHITE) } else { (p.card, p.strong) };
+    let (bg, fg) = if error { (ON_ERROR, Color::WHITE) } else { (p.card, p.strong) };
     let text = txt(text, 13.0).line_height(iced::Pixels(rem(16.0))).color(fg).width(Fill);
     let line: El<'a> = match error {
         true => {
@@ -609,13 +607,40 @@ fn lit_gradient(p: &Palette, k: f32) -> Background {
 /// Desktop's `BrandButton` in `size: "small"`: a full-width pill around `content`, 8 px above and below it. Without
 /// a message it is disabled. While `loading` it is disabled and shows three bouncing dots over its hidden content.
 pub(crate) fn brand_button<'a>(p: &Palette, content: El<'a>, variant: Brand, msg: Option<UiMessage>, loading: bool) -> El<'a> {
+    brand_button_with(p, content, variant, msg, loading, BrandLook::SMALL)
+}
+
+/// The size and the fill of a `BrandButton`.
+#[derive(Clone, Copy)]
+pub(crate) struct BrandLook {
+    /// The space around the label, inside the 1 px border.
+    pub padding: Padding,
+    /// A fill over the variant's, like `--color-primary` over `--gradient-brand`.
+    pub fill: Option<Color>,
+    pub width: Length,
+    pub min_height: f32,
+}
+
+impl BrandLook {
+    /// `size: "small"`, 8 by 10 px, as wide as its place.
+    pub(crate) const SMALL: BrandLook =
+        BrandLook { padding: Padding { top: 9.0, right: 11.0, bottom: 9.0, left: 11.0 }, fill: None, width: Fill, min_height: 0.0 };
+    /// `size: "standard"`, 10 by 12 px.
+    pub(crate) const STANDARD: BrandLook =
+        BrandLook { padding: Padding { top: 11.0, right: 13.0, bottom: 11.0, left: 13.0 }, ..Self::SMALL };
+}
+
+/// [`brand_button`] with `look`.
+pub(crate) fn brand_button_with<'a>(
+    p: &Palette, content: El<'a>, variant: Brand, msg: Option<UiMessage>, loading: bool, look: BrandLook,
+) -> El<'a> {
     let msg = msg.filter(|_| !loading);
     let (bg, fg, edge) = match (msg.is_some(), variant) {
         (false, _) => (Some(p.chip), p.on_secondary, CLEAR),
         (true, Brand::Primary) => (None, Color::WHITE, CLEAR),
         (true, Brand::Secondary) => (Some(CLEAR), p.brand, p.brand),
         (true, Brand::Muted) => (Some(p.chip), p.strong, CLEAR),
-        (true, Brand::Danger) => (Some(p.danger), Color::WHITE, CLEAR),
+        (true, Brand::Danger) => (Some(DELETE_RED), Color::WHITE, CLEAR),
     };
     let dots = loading.then(|| {
         // `BrandButton-module__bounce`: each dot moves 33 % of its size up and down in 0.5 s, a third apart.
@@ -634,9 +659,17 @@ pub(crate) fn brand_button<'a>(p: &Palette, content: El<'a>, variant: Brand, msg
     let gradients = [lit_gradient(p, 1.0), lit_gradient(p, 1.05)];
     // `:not(:disabled):active { transform: scale(.98) }`.
     let pressable = msg.is_some();
-    let button = button(stack![container(content).center_x(Fill)].push(dots))
-        .width(Fill)
-        .padding([9, 11])
+    let bg = match (msg.is_some(), look.fill) {
+        (true, Some(fill)) => Some(fill),
+        _ => bg,
+    };
+    // `min-height`, which centers a shorter label.
+    let inner = look.min_height - look.padding.top - look.padding.bottom;
+    let content = container(content).center_x(look.width);
+    let content = if inner > 0.0 { content.center_y(inner) } else { content };
+    let button = button(stack![content].push(dots))
+        .width(look.width)
+        .padding(look.padding)
         .style(move |_: &Theme, s| {
             // `filter: brightness(1.05)` on hover.
             let k = if hover && s == button::Status::Hovered { 1.05 } else { 1.0 };
@@ -1351,13 +1384,13 @@ impl BeeperGuiApp {
         let error = l.error.is_some();
         let focused = l.stop() == Some(Stop::Field);
         let slots = row((0..6).map(|i| {
-            let ink = if error { ERROR_RED } else { p.strong };
+            let ink = if error { ON_ERROR } else { p.strong };
             let digit: Option<El<'_>> =
                 l.code.chars().nth(i).map(|c| semi(c.to_string(), 28.0).line_height(iced::Pixels(rem(36.0))).color(ink).into());
             let at = focused && i == l.slot;
             let caret = (at && i >= l.code.len()).then(|| container(Space::new()).width(1.5).height(28).style(fill_box(ink, 0.0)).into());
             let edge = match (error, at) {
-                (true, _) => ERROR_RED,
+                (true, _) => ON_ERROR,
                 (false, true) => p.accent,
                 (false, false) => CLEAR,
             };
