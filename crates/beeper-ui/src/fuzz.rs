@@ -2438,6 +2438,28 @@ fn galleries_select_and_have_a_menu_like_desktop() {
     assert!(app.pane.selected_msgs.is_empty(), "a menu without an action unselects the gallery");
 }
 
+/// Desktop's `downloadSelectedMessageAttachments`: the Download Attachments hotkey saves the attachments of every
+/// selected message, one after the other, but not view-once media.
+#[test]
+fn download_attachments_saves_every_selected_message_like_desktop() {
+    let note = "!note_self:beeper.com";
+    let mut app = demo_app("download-selected");
+    let _ = app.update(UiMessage::SelectChat(note.into()));
+    {
+        let mut st = app.store.write();
+        let base = st.messages[*st.timeline_indices(note).last().unwrap()].clone();
+        for (i, name) in ["a.png", "b.pdf", "c.png"].into_iter().enumerate() {
+            let a = Attachment { src_url: Some(format!("https://example.com/{name}")), file_name: Some(name.into()), ..Default::default() };
+            let (id, sort_key) = (format!("$file{i}"), format!("{:016}", 9_000_000 + i));
+            let view_limit = (name == "c.png").then(|| serde_json::json!(1));
+            st.upsert_message(Message { id, sort_key, attachments: vec![a], text: None, view_limit, ..base.clone() });
+        }
+    }
+    app.pane.selected_msgs = vec!["$file1".into(), "$file0".into(), "$file2".into()];
+    let _ = app.update(UiMessage::RunHotkey("Download Attachments"));
+    assert_eq!(app.status_banner, "Downloading b.pdf", "a.png, then b.pdf, and not the view-once c.png");
+}
+
 /// Desktop's `AttachmentFileRow`: the name in `body-sm` (16 px lines) and the details in `label-sm` (14 px lines).
 #[test]
 fn file_rows_like_desktop() {
