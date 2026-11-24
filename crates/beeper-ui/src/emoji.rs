@@ -3,7 +3,6 @@ use crate::message;
 use crate::prelude::*;
 use crate::settings;
 use iced::border;
-use iced::keyboard::key::Named;
 use iced::widget::{column, operation};
 
 const PER_LINE: usize = 9;

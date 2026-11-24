@@ -247,10 +247,7 @@ impl BeeperGuiApp {
     pub(crate) fn view_sticker_picker<'a>(&'a self, st: &BeeperStore) -> El<'a> {
         let p = &self.pal;
         let recent = &st.settings.recent_stickers;
-        let packs = match &self.pane().stickers {
-            Some(Ok(packs)) => &packs[..],
-            _ => &[],
-        };
+        let packs = if let Some(Ok(packs)) = &self.pane().stickers { &packs[..] } else { &[] };
         let failed = matches!(self.pane().stickers, Some(Err(_)));
         let tab = self.pane().sticker_tab.clone().or_else(|| match recent.is_empty() {
             false => Some(None),
@@ -293,7 +290,7 @@ impl BeeperGuiApp {
             }
         };
         let tab_btn = |icon: El<'a>, on: bool, msg: UiMessage| -> El<'a> {
-            let bg = if on { p.received } else { CLEAR };
+            let bg = if on { p.chip } else { CLEAR };
             button(container(icon).center(32))
                 .padding(2)
                 .style(btn_style([bg, p.hover, p.selected], [p.muted; 3], 18.0))

@@ -207,9 +207,7 @@ impl BeeperGuiApp {
                 self.new_chat_query.clear();
                 return operation::focus("new-chat-input");
             }
-            Msg::Account(account) => {
-                (self.new_chat_account, self.new_chat_accounts_open) = (account, false);
-            }
+            Msg::Account(account) => (self.new_chat_account, self.new_chat_accounts_open) = (account, false),
             Msg::ToggleAccounts => self.new_chat_accounts_open = !self.new_chat_accounts_open,
             Msg::ContactsLoaded(contacts) => {
                 if !contacts.is_empty() {

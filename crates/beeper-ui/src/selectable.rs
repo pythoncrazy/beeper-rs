@@ -188,10 +188,7 @@ impl<Link> State<Link> {
         let part = self.part(bounds);
         let key = (bounds.y.round() as i32, bounds.x.round() as i32);
         let piece = part.map(|(start, end)| selected_text(self.paragraph.buffer(), start, end)).filter(|t| !t.is_empty());
-        PIECES.with_borrow_mut(|pieces| match piece {
-            Some(piece) => pieces.insert(key, piece),
-            None => pieces.remove(&key),
-        });
+        PIECES.with_borrow_mut(|pieces| if let Some(piece) = piece { pieces.insert(key, piece) } else { pieces.remove(&key) });
         part
     }
 }
@@ -692,9 +689,7 @@ impl<Message> Widget<Message, Theme, Renderer> for AutoScroll<'_, Message> {
         let bounds = layout.bounds();
         let auto = tree.state.downcast_mut::<Auto>();
         match event {
-            Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
-                auto.pressed = cursor.land().is_over(bounds);
-            }
+            Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => auto.pressed = cursor.land().is_over(bounds),
             Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => *auto = Auto::default(),
             _ => {}
         }

@@ -596,14 +596,13 @@ impl BeeperGuiApp {
         };
         let toggle = UiMessage::Voice(Msg::Toggle(t.chat.clone(), t.mid.clone(), t.url.clone()));
         let play = icon_btn(usize::from(t.since.is_some()), 20.0, p.strong, Some(toggle));
-        let buttons: El<'a> = match w > 101.0 {
-            true => row![skip(2, false), play, skip(3, true)].align_y(Center).into(),
-            false => play,
-        };
+        let buttons: El<'a> = if w > 101.0 { row![skip(2, false), play, skip(3, true)].align_y(Center).into() } else { play };
         let total = format!(" / {}", clock(clip.secs()));
         let elapsed = (w > 135.0).then(|| clock(pos) + if w > 205.0 { &total } else { "" });
-        let time_w = 4.0 + elapsed.as_ref().map_or(0.0, |e| text_width(e, 11.0, Weight::Normal) + 8.0) + 10.0;
-        let elapsed = elapsed.map(|e| txt(e, 11.0).color(p.strong));
+        // `.GlobalAudioControls-module__time` has a 0.25 px letter spacing.
+        let face = spaced(Weight::Normal, 0.25 / rem(11.0));
+        let time_w = 4.0 + elapsed.as_ref().map_or(0.0, |e| text_width(e, 11.0, face) + 8.0) + 10.0;
+        let elapsed = elapsed.map(|e| crate::style::t(e, 11.0, face).color(p.strong));
         let close = icon_btn(4, 10.0, p.strong, Some(UiMessage::Voice(Msg::Close)));
         let time = row![].push(elapsed).push(close).spacing(8).align_y(Center).padding(Padding::ZERO.left(4));
         let chat = st.resolve_chat_idx(&t.chat).map(|i| &st.chats[i]).filter(|_| w > 163.0);
@@ -680,10 +679,7 @@ fn audio_ext(a: &Attachment) -> String {
 /// Desktop's `Mke.transcribe` after the download: MP3 for the formats that Whisper does not read, and the toast of
 /// the files that Whisper rejects (`Sre`).
 fn whisper_audio(bytes: Vec<u8>, ext: &str) -> Result<Vec<u8>, String> {
-    let (bytes, ext) = match TO_MP3.contains(&ext) {
-        true => (crate::run_ffmpeg(&bytes, &["-f", "mp3", "pipe:1"])?, ".mp3"),
-        false => (bytes, ext),
-    };
+    let (bytes, ext) = if TO_MP3.contains(&ext) { (crate::run_ffmpeg(&bytes, &["-f", "mp3", "pipe:1"])?, ".mp3") } else { (bytes, ext) };
     let rejected = |why: String| format!("{why} for OpenAI Whisper, and this audio can't be transcribed another way.");
     if !ext.is_empty() && !WHISPER_EXTS.contains(&ext) {
         return Err(rejected(format!("Unsupported file extension ({ext})")));

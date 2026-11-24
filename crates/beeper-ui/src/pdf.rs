@@ -73,13 +73,7 @@ fn fit((w, h): (f32, f32), area: Size) -> Size {
 impl BeeperGuiApp {
     /// The PDF at `url`. A view that shows a PDF that no task loads asks for it.
     fn pdf_at(&self, url: &str) -> Option<&Result<Doc, String>> {
-        match self.pdfs.get(url) {
-            Some(d) => d.as_ref(),
-            None => {
-                self.wants.ask(&self.wants.pdfs, url);
-                None
-            }
-        }
+        self.wants.get(&self.wants.pdfs, url, self.pdfs.get(url))
     }
 
     /// Starts the loads of the PDFs that the carousel asked for and the renders of the pages that it asked for, off

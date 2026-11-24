@@ -1,9 +1,9 @@
 //! Desktop's `beeper://` links (`deep-link-CFIhWY4D.js` `Ld`): from the launch arguments, and from a later launch.
 use crate::chat_list;
 use crate::composer;
+use crate::encode_uri_component;
 use crate::i18n::tr;
 use crate::prelude::*;
-use crate::{encode_uri_component, User};
 use beeper_core::codec::url_decode;
 
 pub const SCHEME: &str = "beeper://";
@@ -253,10 +253,7 @@ impl BeeperGuiApp {
             }
             "otp" => {
                 let code = part(1).unwrap_or_default().to_string();
-                return match self.login_window {
-                    Some(_) => self.update_login(LoginMsg::Code(code)),
-                    None => Task::none(),
-                };
+                return if self.login_window.is_some() { self.update_login(LoginMsg::Code(code)) } else { Task::none() };
             }
             "focus" => {
                 let id = query.get("windowID").map_or("main", String::as_str);

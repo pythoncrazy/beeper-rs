@@ -56,7 +56,7 @@ impl BeeperGuiApp {
                 if let Some(d) = self.nickname_windows.iter().find(|d| d.account == account) {
                     return self.raise(d.id);
                 }
-                let (id, open) = self.open_child(NICKNAME_SIZE);
+                let (id, open) = self.open_child(NICKNAME_SIZE, false);
                 let name = self.store.read().custom_name(&account).unwrap_or_default().to_string();
                 self.nickname_windows.push(NicknameDraft { id, account, name, saving: false, error: None });
                 return open.chain(operation::focus(NICKNAME_INPUT)).chain(operation::select_all(NICKNAME_INPUT));

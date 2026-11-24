@@ -2,7 +2,6 @@
 use crate::i18n::tr;
 use crate::portal;
 use crate::prelude::*;
-use crate::toasts::Toast;
 use beeper_core::models::{Bubble, ChatAppearance, Wallpaper};
 
 /// Desktop's `mde`: the id and the color of each bubble color.
@@ -304,7 +303,7 @@ impl BeeperGuiApp {
                 if let Some(&(id, _)) = self.theme_windows.iter().find(|w| w.1 == chat) {
                     return self.raise(id);
                 }
-                let (id, open) = self.open_child(Size::new(380.0, 620.0));
+                let (id, open) = self.open_child(Size::new(380.0, 620.0), false);
                 self.theme_windows.push((id, chat));
                 return open;
             }

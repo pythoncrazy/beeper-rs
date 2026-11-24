@@ -277,10 +277,7 @@ impl BeeperGuiApp {
             let disabled = room.is_some() && i == 0;
             let fg = if disabled { p.text.scale_alpha(0.3) } else { p.text };
             let label = f.label(i);
-            let style = match label {
-                Some(_) => bordered_box(CLEAR, p.text, 1.0, 20.0),
-                None => bordered_box(p.chip, CLEAR, 1.0, 20.0),
-            };
+            let style = if label.is_some() { bordered_box(CLEAR, p.text, 1.0, 20.0) } else { bordered_box(p.chip, CLEAR, 1.0, 20.0) };
             let body = row![semi(label.unwrap_or_else(|| tr(placeholder).into()), 13.0).color(fg), ic(icon::EXPAND_MORE, 14.0).color(fg)]
                 .spacing(4)
                 .align_y(Center);
@@ -347,7 +344,7 @@ impl BeeperGuiApp {
             Space::new().width(Fill),
             txt(list_ts(&m.timestamp, h24), 11.0).line_height(lh(7.0)).color(dim(p.text))
         ];
-        let (bg, fg) = if mine { (p.sent, p.sent_fg) } else { (p.received, p.strong) };
+        let (bg, fg) = if mine { (p.sent, p.sent_fg) } else { (p.chip, p.strong) };
         let (bg, fg) = (dim(bg), dim(fg));
         let body = clamped(m.text.as_deref().expect("text message"), 554.0, 3, 13.0, Weight::Normal);
         let lower = body.to_ascii_lowercase();
@@ -496,10 +493,7 @@ impl BeeperGuiApp {
         // keys reach the headings of the sections with an action (`qct`), also without "Show more".
         let sections = [("Recent chats", recent), ("Last archived", archived), ("Chats", chats), ("In Groups", in_groups)];
         for (label, chats) in sections.into_iter().filter(|s| !s.1.is_empty()) {
-            let (n, more) = match label {
-                "Last archived" => (1, false),
-                _ => self.palette_rows(label, chats.len()),
-            };
+            let (n, more) = if label == "Last archived" { (1, false) } else { self.palette_rows(label, chats.len()) };
             list.push(Hit::Heading(label, toggle(label, more), label != "Last archived"));
             list.extend(chats.into_iter().take(n).map(Hit::Chat));
         }
@@ -549,10 +543,7 @@ impl BeeperGuiApp {
             let hits = self.search_hits(&st, self.command_palette_query.trim());
             let (list, _) = self.search_list(&st, &hits);
             let Some(lit) = self.search_lit(&list) else { return Some(Task::none()) };
-            let to = match down {
-                true => (lit + 1..list.len()).find(|&i| list[i].reach()),
-                false => (0..lit).rev().find(|&i| list[i].reach()),
-            };
+            let to = if down { (lit + 1..list.len()).find(|&i| list[i].reach()) } else { (0..lit).rev().find(|&i| list[i].reach()) };
             (to.unwrap_or(lit), list.iter().position(|h| !matches!(h, Hit::Heading(..))).unwrap_or(0))
         };
         self.search_index = Some(to);

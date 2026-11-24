@@ -425,10 +425,7 @@ impl BeeperGuiApp {
             // the brand color, with a spinner while it downloads, when it is disabled but keeps its colors.
             if let Some(src) = self.needs_download(a) {
                 let fetching = self.fetching.contains(src);
-                let icon = match fetching {
-                    true => crate::verify::spinner(16.0, p.accent),
-                    false => tinted(&crate::MAT_DOWNLOAD, 20.0, p.accent),
-                };
+                let icon = if fetching { crate::verify::spinner(16.0, p.accent) } else { tinted(&crate::MAT_DOWNLOAD, 20.0, p.accent) };
                 let fetch = (!fetching).then(|| UiMessage::Loaded(loads::Msg::Fetch(src.clone())));
                 let download = button(container(icon).center(40)).padding(0).on_press_maybe(fetch);
                 let style = btn_style([p.link_card; 3], [p.accent; 3], 20.0);

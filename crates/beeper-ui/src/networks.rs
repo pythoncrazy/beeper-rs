@@ -68,10 +68,7 @@ impl Entry<'_> {
 /// The networks that you can add an account on here: Desktop's `addablePlatforms`, whose bridges the account's flags
 /// turn on, and iMessage on a Mac.
 pub(crate) fn addable(f: &Flags) -> impl Iterator<Item = &'static NetworkSpec> + '_ {
-    NETWORK_SPECS[1..].iter().filter(|n| match n.kind {
-        NetworkKind::IMessage => cfg!(target_os = "macos"),
-        _ => f.network_on(n),
-    })
+    NETWORK_SPECS[1..].iter().filter(|n| if matches!(n.kind, NetworkKind::IMessage) { cfg!(target_os = "macos") } else { f.network_on(n) })
 }
 
 /// Desktop's `addableNetworks`, in its order: a network connects when its bridge takes another account
@@ -146,10 +143,7 @@ impl BeeperGuiApp {
                     return self.update(UiMessage::Settings(settings::Msg::Open(SettingsTab::BeeperPlus)));
                 }
                 let close = self.networks.window.map_or_else(Task::none, window::close);
-                return match connect {
-                    Some(_) => Task::batch([close, self.open_add_account(network, None)]),
-                    None => Task::none(),
-                };
+                return if connect.is_some() { Task::batch([close, self.open_add_account(network, None)]) } else { Task::none() };
             }
             Msg::Account(id) => {
                 let close = self.networks.window.map_or_else(Task::none, window::close);
@@ -213,8 +207,8 @@ impl BeeperGuiApp {
             });
             let faces = Stack::with_children(faces).width(12.0 + (n - 1) as f32 * 8.0).height(12);
             let add = (!e.blocked()).then(|| ic(icon::PLUS, 10.0).color(p.fg));
-            let fill = Color { a: if self.dark { 0.1 } else { 0.06 }, ..p.fg };
             let chip = row![faces].push(add).spacing(2).align_y(Center);
+            let fill = p.fill_primary;
             button(chip).padding(2).style(btn_style([fill; 3], [p.fg; 3], 999.0)).on_press(UiMessage::Networks(Msg::Menu(Some(id))))
         });
         column![tooltip(tile, tip, tooltip::Position::Bottom)].push(chip).align_x(Center).into()

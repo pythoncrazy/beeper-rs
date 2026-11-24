@@ -2,7 +2,6 @@
 use crate::i18n::{tr, trx};
 use crate::prelude::*;
 use crate::verify::{clipboard_key, edit_recovery_key, format_recovery_key, key_input};
-use iced::keyboard::key::Named;
 use iced::widget::column;
 use iced::window;
 
@@ -43,7 +42,7 @@ impl BeeperGuiApp {
         match msg {
             KeyMsg::Open if let Some(w) = k.window => return self.raise(w),
             KeyMsg::Open => {
-                let (id, open) = self.open_child(SIZE);
+                let (id, open) = self.open_child(SIZE, false);
                 self.enter_key = EnterKey { window: Some(id), ..EnterKey::default() };
                 return open;
             }

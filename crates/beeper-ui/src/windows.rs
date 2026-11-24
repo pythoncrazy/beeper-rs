@@ -661,21 +661,11 @@ impl BeeperGuiApp {
         }))
     }
 
-    /// A window of a fixed `size` over the middle of the main window, like Desktop's `center: "parent"`.
-    pub(crate) fn open_child(&mut self, size: Size) -> (window::Id, Task<UiMessage>) {
-        self.open_centered(size, false)
-    }
-
-    /// A resizable window of `size` over the middle of the main window, like Desktop's windows whose features leave
-    /// out `resizable`.
-    pub(crate) fn open_resizable_child(&mut self, size: Size) -> (window::Id, Task<UiMessage>) {
-        self.open_centered(size, true)
-    }
-
-    /// A window over the middle of the main window, at least Desktop's minimum size: Electron gives the windows that
-    /// Desktop's renderer opens its `minWidth` and `minHeight` too, so the 303 px wide Edit Labels window is 330 px
-    /// wide, and a fixed size grows to it.
-    fn open_centered(&mut self, size: Size, resizable: bool) -> (window::Id, Task<UiMessage>) {
+    /// A window of `size` over the middle of the main window, like Desktop's `center: "parent"`, and `resizable` like
+    /// Desktop's windows whose features leave out `resizable`. It is at least Desktop's minimum size: Electron gives
+    /// the windows that Desktop's renderer opens its `minWidth` and `minHeight` too, so the 303 px wide Edit Labels
+    /// window is 330 px wide, and a fixed size grows to it.
+    pub(crate) fn open_child(&mut self, size: Size, resizable: bool) -> (window::Id, Task<UiMessage>) {
         let settings = window::Settings { resizable, min_size: resizable.then_some(MIN_SIZE), ..Self::window_settings(size) };
         self.open_over(settings, None)
     }
@@ -696,7 +686,7 @@ impl BeeperGuiApp {
     /// One of Desktop's sheets that `v3` sizes (New Label, Label Settings, Edit Label, Chats and How It Works): it
     /// opens at its size times the zoom, so its page keeps its layout at any zoom.
     pub(crate) fn open_sheet(&mut self, size: Size) -> (window::Id, Task<UiMessage>) {
-        self.open_child(zoomed(size, self.zoom))
+        self.open_child(zoomed(size, self.zoom), false)
     }
 
     /// The open sheets that follow the zoom (`followsZoom`), with their sizes at 100%.

@@ -7,7 +7,6 @@ use crate::prelude::*;
 use iced::advanced::overlay;
 use iced::advanced::widget::{self};
 use iced::border;
-use iced::keyboard::key::Named;
 
 /// The mask symbol (`Ka`) and the mask of a country without a format (`defaultMask`).
 const MASK_CHAR: char = '.';
