@@ -79,6 +79,7 @@ mod time;
 mod time_suggestions;
 mod timeline;
 pub mod toasts;
+mod toggle;
 #[cfg(target_os = "linux")]
 mod tray;
 #[cfg(not(target_os = "linux"))]
@@ -1337,10 +1338,8 @@ fn toggle<'a>(p: &Palette, on: bool, msg: Option<UiMessage>) -> El<'a> {
 }
 
 fn toggle_faded<'a>(p: &Palette, on: bool, msg: Option<UiMessage>, alpha: f32) -> El<'a> {
-    let fill = if on { p.toggle_on } else { p.toggle_off }.scale_alpha(alpha);
-    let knob = container(Space::new()).width(16).height(16).style(fill_box(fill, 8.0));
-    let track = container(knob).width(36).height(24).padding(4).align_y(Center).align_x(if on { Right } else { iced::Left });
-    button(track.style(bordered_box(CLEAR, p.toggle_off.scale_alpha(alpha), 2.0, 12.0))).bare(p.text).on_press_maybe(msg).into()
+    let colors = [p.toggle_off, p.toggle_on, p.toggle_off].map(|c| c.scale_alpha(alpha));
+    button(toggle::toggle(on, colors)).bare(p.text).on_press_maybe(msg).into()
 }
 
 fn select<'a, T: ToString + PartialEq + Clone + 'a>(
