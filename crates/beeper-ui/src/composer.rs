@@ -2018,18 +2018,20 @@ impl BeeperGuiApp {
                 self.pane.edit_menu = Some((self.cursor.get(), word));
             }
             Msg::MenuEdit(edit) => {
-                let (_, word) = self.pane.edit_menu.take().expect("the edit menu is open");
+                // The view that gave the message can be older than the message before it, which closed the menu:
+                // two letters of one frame both run Paste.
+                let Some((_, word)) = self.pane.edit_menu.take() else { return Task::none() };
                 let old = self.pane.composer.text();
                 let sel = format::selection(&self.pane.composer).map_or("", |r| &old[r]).to_owned();
                 let focus = operation::focus("composer-input");
                 return match edit {
                     MenuEdit::Replace(fix) => {
-                        let (r, _) = word.expect("a suggestion has a word");
+                        let Some((r, _)) = word.filter(|(r, _)| old.get(r.clone()).is_some()) else { return focus };
                         let text = format!("{}{fix}{}", &old[..r.start], &old[r.end..]);
                         self.pane.composer = format::content(&text, r.start + fix.len()..r.start + fix.len());
                         Task::batch([self.composer_changed(old), focus])
                     }
-                    MenuEdit::Learn => match spell::learn(&old[word.expect("Learn Spelling has a word").0]) {
+                    MenuEdit::Learn => match word.and_then(|(r, _)| old.get(r)).map_or(Ok(()), spell::learn) {
                         Ok(()) => focus,
                         Err(e) => {
                             self.status_banner = e.to_string();
@@ -2143,7 +2145,7 @@ impl BeeperGuiApp {
                 }
             }
             Msg::SaveLink => {
-                let (url, label) = self.pane.link_dialog.take().expect("the link dialog is open");
+                let Some((url, label)) = self.pane.link_dialog.take() else { return Task::none() };
                 let old = self.pane.composer.text();
                 let caret = format::offset(&old, self.pane.composer.cursor().position);
                 let r = format::selection(&self.pane.composer).unwrap_or(caret..caret);
@@ -2198,5 +2200,28 @@ mod tests {
         app.store.write().update_chat(note, |c| c.formatting &= !(1 << format::LINK));
         let plain = paste(&mut app, "see docs", 4..8, "https://example.com/a");
         assert_eq!(plain, "see https://example.com/a", "a chat without links");
+    }
+
+    /// iced sends all the events of a frame to one view, so the second "p" of a frame runs Paste of the edit menu
+    /// again after the first one closed it, and a second Enter saves the link dialog again: those do nothing.
+    #[test]
+    fn a_closed_menu_or_dialog_ignores_the_rest_of_the_frame() {
+        let mut app = crate::fuzz::demo_app("closed-edit-menu");
+        let _ = app.update(UiMessage::SelectChat(beeper_core::store::NOTE_CHAT_ID.into()));
+        let _ = app.update(UiMessage::Composer(Msg::EditMenu(None)));
+        let mut sim = iced_test::simulator(app.view_main());
+        let _ = sim.simulate(iced_test::simulator::typewrite("pp"));
+        let msgs: Vec<UiMessage> = sim.into_messages().collect();
+        let paste = |m: &UiMessage| matches!(m, UiMessage::Composer(Msg::MenuEdit(MenuEdit::Paste)));
+        assert!(msgs.len() == 2 && msgs.iter().all(paste), "both letters run Paste: {msgs:?}");
+        for m in msgs {
+            let _ = app.update(m);
+        }
+        assert!(app.pane.edit_menu.is_none());
+        app.pane.composer = format::content("", 0..0);
+        app.pane.link_dialog = Some(("https://example.com".into(), "site".into()));
+        let _ = app.update(UiMessage::Composer(Msg::SaveLink));
+        let _ = app.update(UiMessage::Composer(Msg::SaveLink));
+        assert_eq!(app.pane.composer.text(), "[site](https://example.com)", "one link");
     }
 }
