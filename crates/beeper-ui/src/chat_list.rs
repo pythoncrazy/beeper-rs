@@ -1840,7 +1840,7 @@ impl BeeperGuiApp {
         let style = if italic { iced::font::Style::Italic } else { iced::font::Style::Normal };
         let font = crate::style::redact(iced::Font { style, ..fw(Weight::Normal) });
         let fg = p.fg.scale_alpha(0.63);
-        let receipt = m.filter(|_| receipt).map(|m| self.preview_receipt(st, c, m, fg));
+        let receipt = m.filter(|_| receipt).map(|m| self.preview_receipt(st, c, m));
         let face = sender.map(|u| self.face(crate::user_img(u).as_deref(), u.full_name.as_deref().unwrap_or_default(), 12.0, 0.5));
         let badge = (expired && l.previews).then(|| {
             let label = semi(tr("Reminder"), 11.0).color(Color::WHITE.scale_alpha(0.7));
@@ -1877,15 +1877,16 @@ impl BeeperGuiApp {
     }
 
     /// The receipt of a chat's last message when it is the user's: sending, sent, read, or failed.
-    fn preview_receipt<'a>(&self, st: &BeeperStore, c: &Chat, m: &Message, fg: Color) -> El<'a> {
+    fn preview_receipt<'a>(&self, st: &BeeperStore, c: &Chat, m: &Message) -> El<'a> {
         // Desktop's `ZGe`: a message that failed to send shows `ErroredIcon`, without a tooltip.
         if m.send_error.is_some() {
             // `.messageErroredIcon`: 16 by 11 with a 1 px margin, where the read icons are 12 px wide.
             let icon = container(tinted(&ERRORED, 11.0, ERROR)).center_x(16);
             return container(icon).padding(Padding::ZERO.right(1.0)).into();
         }
+        // `.ThreadListReadIcon-module__threadReadIcon` is `--color-on-surface` at 0.8 in the preview's 0.7.
         let glyph = if pending(st, m) { &PENDING } else { &SENT[usize::from(seen_by(st, m) > 0)] };
-        let icon = tinted(glyph, 12.0, fg);
+        let icon = tinted(glyph, 12.0, self.pal.strong.scale_alpha(0.56));
         match receipt_tip(st, c, m) {
             Some(tip) => self.tip(icon, tip, vec![], tooltip::Position::Top).into(),
             None => icon,

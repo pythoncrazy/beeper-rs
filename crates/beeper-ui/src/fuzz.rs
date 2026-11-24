@@ -10347,6 +10347,25 @@ fn the_open_chat_card_keeps_its_round_corners_and_shadow_like_desktop() {
     assert!((5..=8).contains(&dark), "the shadow grows by 7 towards the card: {dark}");
 }
 
+/// Desktop's receipt of your last message in a chat row is `--color-on-surface` at 0.8 in the preview's 0.7, #797a7e
+/// over the list: a translucent icon takes its alpha once, as a translucent text does.
+#[test]
+fn row_receipt_is_desktop_translucent_gray() {
+    let mut app = demo_app("row-receipt");
+    let chat = app.visible_chats(&app.store.read()).iter().find(|c| c.title == "Family").map(|c| c.id.clone()).expect("Family");
+    let _ = app.store.write().send_message(&chat, Some("receipt probe".into()), None, None).unwrap();
+    let size = Size::new(1200.0, 800.0);
+    let mut sim = Simulator::with_size(Default::default(), size, app.view_main());
+    let text = sim.find("receipt probe").expect("the preview").bounds();
+    let shot = crate::message::tests::pixels(&mut sim);
+    let k = shot.width() as f32 / size.width;
+    let (x0, y0) = (((text.x - 16.0) * k) as u32, ((text.y + 2.0) * k) as u32);
+    let px = (x0..x0 + (12.0 * k) as u32).flat_map(|x| (y0..y0 + (12.0 * k) as u32).map(move |y| (x, y)));
+    let ink = px.map(|(x, y)| shot.get_pixel(x, y).0).min_by_key(|c| c[..3].iter().map(|&v| u32::from(v)).sum::<u32>()).unwrap();
+    let want = [0x79, 0x7a, 0x7e];
+    assert!((0..3).all(|i| ink[i].abs_diff(want[i]) <= 3), "the receipt's ink: {ink:?}");
+}
+
 /// The pixels of the sign-in window at points of its 330x620 layout.
 fn login_pixels(app: &BeeperGuiApp, points: &[(u32, u32)]) -> Vec<Color> {
     let mut sim = Simulator::with_size(Default::default(), Size::new(330.0, 620.0), app.view_login());
