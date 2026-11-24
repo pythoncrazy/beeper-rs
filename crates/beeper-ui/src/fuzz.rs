@@ -11929,6 +11929,68 @@ fn chat_submenus_open_beside_their_row_like_desktop() {
     assert_eq!(offsets(&mut app), plain, "a threaded chat");
 }
 
+/// Where the chat menu, the space bar's menus and their submenus open in a 1200 x 800 window, as Chromium's
+/// `MenuController` puts a native menu: below the cursor, else above it, moved inside the window, and a submenu
+/// beside the row that opens it, on the left of the menu when the window has no room on its right. Each place is the
+/// top-left corner of a row's text.
+#[test]
+fn menus_open_where_chromium_puts_them() {
+    let size = Size::new(1200.0, 800.0);
+    let mut app = demo_app("menu-places");
+    app.pane.size = size;
+    let (id, account, label) = {
+        let st = app.store.read();
+        let dm = |c: &&Chat| c.chat_type == "single" && c.id != NOTE_CHAT_ID && c.is_pinned != Some(true) && !st.threaded(c);
+        let id = st.chats.iter().find(dm).expect("a DM").id.clone();
+        let account = rail_accounts(&st).into_iter().find(|a| a != "hungryserv" && !a.starts_with("label:")).expect("an account");
+        let label = st.labels.iter().map(|l| l.name.clone()).min_by_key(|n| n.to_lowercase()).expect("a label");
+        (id, account, label)
+    };
+    let (rail, head) = (format!("account:{account}"), format!("head:{account}"));
+    let cases: [(&str, (f32, f32), Option<u8>, &str); 14] = [
+        (&id, (300.0, 40.0), None, "Archive"),
+        (&id, (300.0, 790.0), None, "Archive"),
+        (&id, (1150.0, 40.0), Some(2), "Archive"),
+        (&id, (1150.0, 40.0), Some(2), &label),
+        (&id, (300.0, 400.0), Some(1), "Custom…"),
+        (RAIL_MENU, (40.0, 790.0), None, "Edit Spaces…"),
+        (RAIL_MORE, (40.0, 790.0), None, "Edit Spaces…"),
+        (SIDEBAR_MENU, (300.0, 790.0), None, "Start New Chat"),
+        (&rail, (40.0, 40.0), Some(0), "Show in Inbox"),
+        (&rail, (40.0, 40.0), Some(0), "All Messages"),
+        (&rail, (40.0, 790.0), None, "Show in Inbox"),
+        (&head, (300.0, 40.0), Some(0), "Show in Inbox"),
+        (&head, (300.0, 40.0), Some(0), "All Messages"),
+        (&head, (1150.0, 40.0), Some(0), "All Messages"),
+    ];
+    let got = cases.map(|(cid, (x, y), sub, text)| {
+        app.list.chat_menu = Some((cid.into(), Point::new(x, y)));
+        app.chat_sub = sub;
+        let mut sim = Simulator::with_size(Default::default(), size, app.view_main());
+        let at = sim.find(text).unwrap_or_else(|_| panic!("{text} shows in {cid}")).bounds().position();
+        (at.x, at.y)
+    });
+    let want = [
+        (313.0, 48.0),
+        (313.0, 395.4),
+        (980.0, 48.0),
+        (823.0, 253.4),
+        (546.0, 737.60004),
+        (53.0, 711.4),
+        (53.0, 737.60004),
+        (313.0, 685.2),
+        (53.0, 48.0),
+        (308.0, 48.0),
+        (53.0, 558.4),
+        (313.0, 100.399994),
+        (568.0, 48.0),
+        (1075.0, 48.0),
+    ];
+    for (i, (got, want)) in got.iter().zip(want).enumerate() {
+        assert_eq!(*got, want, "{:?} at {:?} with the submenu {:?}: {}", cases[i].0, cases[i].1, cases[i].2, cases[i].3);
+    }
+}
+
 /// An image that covers its box, wider than the box, is cut at the box in the software renderer as in wgpu: the
 /// media of the info pane, the attachments of the composer and link previews are `ContentFit::Cover`.
 #[test]
