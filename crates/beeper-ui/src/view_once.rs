@@ -578,7 +578,8 @@ impl BeeperGuiApp {
         let limit: El<'_> = match v.time {
             Some(t) => {
                 let left = v.left().map_or(t, |l| l.as_millis() as u64);
-                semi(crate::units::seconds(left), 15.0).color(white).into()
+                // `.ViewLimitedMediaViewer-module__countdown` has tabular figures.
+                crate::style::t(crate::units::seconds(left), 15.0, tabular(Weight::Semibold)).color(white).into()
             }
             None => tinted(&GLYPHS[usize::from(v.replay)], 24.0, white),
         };

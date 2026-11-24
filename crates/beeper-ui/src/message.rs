@@ -450,6 +450,42 @@ fn action_button<'a>(p: &crate::style::Palette, b: &ActionButton, press: Option<
         .into()
 }
 
+impl BeeperGuiApp {
+    /// Desktop's `sidebarHidden` of the window that `view` draws: a chat window has no sidebar, a space window shows
+    /// its own, and the main window's can hide.
+    fn drawn_sidebar_hidden(&self) -> bool {
+        if self.drawing.get().is_some() {
+            !self.list().locked
+        } else {
+            self.sidebar_hidden
+        }
+    }
+
+    /// The room of a bubble in its row: the conversation less the row's 8 px sides and the scroll bar's gutter, and
+    /// less the sender's picture (`face`) in a group.
+    fn bubble_row(&self, face: bool) -> f32 {
+        self.conversation_width() - 16.0 - GUTTER - if face { FACE + FACE_GAP } else { 0.0 }
+    }
+
+    /// The widest bubble in a row, Desktop's `.message-children main`: 45vw, 85vw where the window hides its sidebar
+    /// (`.sidebar-hidden.bubble-mode`, as a chat window always does), the whole row in a thread pane beside a sidebar
+    /// (`.ThreadedRepliesView-module__view`), and never wider than the row.
+    pub(crate) fn bubble_max(&self, face: bool) -> f32 {
+        let (row, hidden) = (self.bubble_row(face), self.drawn_sidebar_hidden());
+        match self.drawing_thread.get() && !hidden {
+            true => row,
+            false => (if hidden { 0.85 } else { 0.45 } * self.pane().size.width).min(row),
+        }
+    }
+
+    /// The window width and the share of it for [`media_box`]: Desktop's media take `sidebarHidden ? 0.85 : 0.45` of
+    /// the window, and no more than the row (`.message-attachments img { max-width: 100% }`).
+    pub(crate) fn media_share(&self, face: bool) -> (f32, f32) {
+        let share = if self.drawn_sidebar_hidden() { 0.85 } else { 0.45 };
+        (self.pane().size.width.min(self.bubble_row(face) / share), share)
+    }
+}
+
 /// Desktop's `kf`: the box of an inline image or video, at most `share` of the window wide and 400 px high and never
 /// upscaled. A very tall one shows 160×400 and a very wide one an 80 px high strip, both cropped (`cover`), and one of
 /// unknown size is 400 px high. Gives the width, the height and whether it crops.
@@ -2209,7 +2245,7 @@ impl BeeperGuiApp {
                 return ((!chain.prev).then(|| quote_row(pill.into(), None)), false);
             };
             let q_mine = q.is_sender == Some(true);
-            let col = self.linked_message(chat, q, group, on_wall, bubble).filter(|_| !chain.prev);
+            let col = self.linked_message(chat, q, (group, group && !mine), on_wall, bubble).filter(|_| !chain.prev);
             let quote = col.map(|c| {
                 mouse_area(c)
                     .on_press(UiMessage::Message(Msg::ShowReplies(q.id.clone())))
@@ -2221,10 +2257,10 @@ impl BeeperGuiApp {
         let (segments, face) = chain.segments(linked.is_some(), shown, mine, group, last);
         // Desktop's `pM`: a link with a title, an image or a summary has a preview.
         for link in m.links.iter().filter(|l| !l.title.is_empty() || l.img.is_some() || l.summary.is_some()) {
-            parts = parts.push(self.view_link((&m.id, st.settings.on("autoplayGifs")), link, 0.45 * self.pane().size.width, dim));
+            parts = parts.push(self.view_link((&m.id, st.settings.on("autoplayGifs")), link, self.bubble_max(group && !mine), dim));
         }
         if ms.len() > 1 {
-            parts = parts.push(self.view_gallery(ms));
+            parts = parts.push(self.view_gallery(ms, group && !mine));
         }
         // Desktop's `ViewLimitedMediaAttachment` takes the place of view-once media.
         if m.view_once() {
@@ -2554,10 +2590,10 @@ impl BeeperGuiApp {
         let p = &self.pal;
         let is_video = a.attachment_type == "video";
         let size = a.size.as_ref().and_then(|s| Some((s.width? as f32, s.height? as f32)));
-        let share = if self.sidebar_hidden { 0.85 } else { 0.45 };
+        let (window, share) = self.media_share(st.chat(&m.chat_id).chat_type == "group" && m.is_sender != Some(true));
         let (w, h, cover) = match size.filter(|_| a.is_sticker == Some(true)) {
-            Some(size) => sticker_box(self.pane().size.width, size, share),
-            None => media_box(self.pane().size.width, size, share),
+            Some(size) => sticker_box(window, size, share),
+            None => media_box(window, size, share),
         };
         // Desktop plays a video with `isGif` inline like a GIF, without sound, again and again.
         let looped = is_video && a.is_gif == Some(true) && m.unresolved_media.is_none();
@@ -2829,7 +2865,8 @@ impl BeeperGuiApp {
                 b
             })
             .collect();
-        let max = 0.45 * self.pane().size.width - 2.0 * BUBBLE_PAD_X;
+        let cap = self.bubble_max(chat.chat_type == "group" && !mine);
+        let max = cap - 2.0 * BUBBLE_PAD_X;
         // Desktop's `.message-text` clamps a message at 40 lines, and "Show more" opens it. The whole blocks that
         // fit show as they are, and the block that crosses the limit shows its first lines as plain text.
         let clamp = clamp_blocks(blocks.iter().map(|b| b.2.as_str()), max);
@@ -2962,7 +2999,7 @@ impl BeeperGuiApp {
                 .push(more),
         )
         .padding([BUBBLE_PAD_Y, BUBBLE_PAD_X])
-        .max_width(0.45 * self.pane().size.width)
+        .max_width(cap)
         .style(fill_box(bg, 17.0))
         .into()
     }
@@ -3131,7 +3168,7 @@ impl BeeperGuiApp {
     /// attachments and its deletion, over a box of its text with the spaces collapsed and cut at 128 characters. A
     /// group names the sender above media, else at the top of the text. A deleted hidden message shows nothing.
     fn linked_message<'a>(
-        &'a self, chat: &Chat, q: &Message, group: bool, on_wall: Option<Color>, bubble: Option<chat_theme::Pair>,
+        &'a self, chat: &Chat, q: &Message, (group, face): (bool, bool), on_wall: Option<Color>, bubble: Option<chat_theme::Pair>,
     ) -> Option<Column<'a, UiMessage>> {
         let p = &self.pal;
         let deleted = q.is_deleted == Some(true);
@@ -3156,8 +3193,8 @@ impl BeeperGuiApp {
             false => (p.chip, p.card, p.text),
         };
         let name_fg = if q_mine { fg } else { p.strong };
-        let max = 0.45 * self.pane().size.width;
-        // Desktop's `isDeleted` box has a dashed border.
+        // `.linked-message-content { max-width: 40vw }`, in the bubble's row.
+        let max = (0.4 * self.pane().size.width).min(self.bubble_max(face));
         let boxed = move |c: El<'a>, dashed: bool| -> El<'a> {
             let b = container(c).padding(8).max_width(max);
             match dashed {
@@ -6120,9 +6157,35 @@ pub(crate) mod tests {
         let near = |a: f32, b: f32| (a - b).abs() <= 0.5;
         assert!(near(bubble.width, 22.0 + 66.484 + 6.0 + time.width), "{bubble:?} {time:?}");
         assert!(near(time.x - bubble.x, 11.0 + 66.484 + 6.0) && bubble.height == 34.0, "{bubble:?} {time:?}");
-        let (bubble, time) = sent_bubble(&mut app, "Sure thing, see you there", 224.2 / 0.45);
+        // A window without its sidebar whose row is 224.2 px wide, which caps the bubble before 85vw does.
+        app.sidebar_hidden = true;
+        let frame = app.pane.size.width - app.bubble_row(false);
+        let (bubble, time) = sent_bubble(&mut app, "Sure thing, see you there", 224.2 + frame);
         assert!(near(bubble.width, 224.2) && bubble.height == 50.0, "{bubble:?}");
         assert!(near(bubble.x + bubble.width - 11.0, time.x + time.width) && time.y - bubble.y == 26.0, "{bubble:?} {time:?}");
+    }
+
+    /// Desktop caps a bubble at 45vw (`.message-children main`), at 85vw when the window hides its sidebar
+    /// (`.sidebar-hidden.bubble-mode`), and at its row: in a 900 px window a long message is 405 px wide, 765 px with
+    /// the sidebar hidden, and with Chat Info beside the sidebar it fills its row (`.message-container`'s 8 px sides
+    /// in the conversation, less the scroll bar's gutter) instead of running under Chat Info.
+    #[test]
+    fn bubbles_take_desktops_share_of_the_window() {
+        let mut app = crate::fuzz::demo_app("bubble-caps");
+        app.pane.size = Size::new(900.0, 700.0);
+        let mid = plain_received(&app, &"word ".repeat(200));
+        let width = |app: &BeeperGuiApp| {
+            let shot = pixels(&mut alone(app, &mid));
+            let xs: Vec<u32> = shot.enumerate_pixels().filter(|(_, _, px)| near(px.0, app.pal.chip)).map(|(x, _, _)| x).collect();
+            (xs.iter().max().expect("a bubble") + 1 - xs.iter().min().expect("a bubble")) as f32 / 2.0
+        };
+        app.show_right_panel = false;
+        assert_eq!(width(&app), 405.0, "45vw");
+        app.sidebar_hidden = true;
+        assert_eq!(width(&app), 765.0, "85vw without the sidebar");
+        (app.sidebar_hidden, app.show_right_panel) = (false, true);
+        let row = app.conversation_width() - 16.0 - crate::style::GUTTER;
+        assert!(row < 405.0 && (width(&app) - row).abs() <= 0.5, "the row beside Chat Info: {} {row}", width(&app));
     }
 
     /// A link's `:after` arrow is 12 px of the link (8 px and its 2 px margins), so a bubble that ends with a link is

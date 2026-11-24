@@ -5518,6 +5518,21 @@ fn chat_titles_end_like_desktop() {
     assert!(sim.find("October 14").is_ok() && sim.find("Google Cal…").is_ok(), "the title is cut like Desktop's");
 }
 
+/// Desktop's unread counts have tabular figures (`.ThreadListItem-module__unreadCount`): "111" is 20.125 px wide in
+/// Desktop 4.3.308, and 14.438 px with Inter's own figures.
+#[test]
+fn unread_counts_have_tabular_figures_like_desktop() {
+    let app = demo_app("tabular-count");
+    let main = app.main_window.expect("the main window");
+    {
+        let mut st = app.store.write();
+        let i = st.chats.iter().position(|c| c.title == "Family").expect("the demo family chat");
+        st.update_chat(i, |c| c.unread_count = 111);
+    }
+    let count = Simulator::with_size(Default::default(), app.pane.size, app.view(main)).find("111").expect("the count").bounds().width;
+    assert!((count - 20.125).abs() < 0.05, "{count}");
+}
+
 /// Desktop's letter spacing: the filter count (`.FilterButton-module__count`, 11 px with 0.25 px) "2" is 6.906 px
 /// wide in Desktop 4.3.308, where Inter alone makes it 6.656.
 #[test]

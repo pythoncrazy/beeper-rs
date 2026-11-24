@@ -190,10 +190,16 @@ impl BeeperGuiApp {
         std::fs::write(path, fraction.to_string()).expect("write the thread pane fraction");
     }
 
+    /// The width of the thread pane: `thread_fraction` of the split's area.
+    pub(crate) fn thread_width(&self) -> f32 {
+        let area = self.thread_area.get();
+        (self.thread_fraction * (area - THREAD_GRIP)).min(area - THREAD_GRIP - MIN_PANE_W).max(MIN_PANE_W)
+    }
+
     /// The chat and Desktop's `ThreadedRepliesPane` at its right, which takes `thread_fraction` of the `area`.
     pub(crate) fn view_split(&self, area: f32, pad: Padding) -> El<'_> {
         self.thread_area.set(area);
-        let w = (self.thread_fraction * (area - THREAD_GRIP)).min(area - THREAD_GRIP - MIN_PANE_W).max(MIN_PANE_W);
+        let w = self.thread_width();
         let line = self.thread_drag.then(|| container(Space::new()).width(2).height(Fill).style(fill_box(self.pal.accent, 0.0)));
         let grip = mouse_area(container(row![Space::new().width(THREAD_GRIP - 2.0)].push(line)).width(THREAD_GRIP).height(Fill))
             .on_press(UiMessage::Thread(Msg::Drag(None)))
@@ -435,7 +441,8 @@ impl BeeperGuiApp {
 /// The unread count of a thread on an accent pill, with an "@" when a reply mentions the user.
 fn thread_badge<'a>(accent: Color, unread: usize, at: usize) -> Option<El<'a>> {
     let mark = (at > 0).then(|| semi("@", 10.0).color(Color::WHITE));
-    let count = semi(unread.to_string(), 10.0).color(Color::WHITE);
+    // `.ThreadRepliesButton-module__badge` has tabular figures.
+    let count = t(unread.to_string(), 10.0, tabular(Weight::Semibold)).color(Color::WHITE);
     let pill = row![].push(mark).push(count).spacing(2).align_y(Center);
     (unread > 0).then(|| container(pill).center_y(16).padding([0, 5]).style(fill_box(accent, 16.0)).into())
 }
