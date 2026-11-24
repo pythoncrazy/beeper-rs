@@ -422,13 +422,7 @@ pub(crate) fn media_grid(area: Size, tiles: &[usize], skeletons: usize) -> (usiz
 impl BeeperGuiApp {
     /// The media at `url`. A view that shows a URL that no task loads asks for it.
     pub(crate) fn media_at(&self, url: &str) -> Option<&Result<Frames, String>> {
-        match self.media.get(url) {
-            Some(m) => m.as_ref(),
-            None => {
-                self.wants.ask(&self.wants.media, url);
-                None
-            }
-        }
+        self.wants.get(&self.wants.media, url, self.media.get(url))
     }
 
     pub(crate) fn media_mut(&mut self) -> &mut MediaWindow {
@@ -599,13 +593,7 @@ impl BeeperGuiApp {
 
     /// The contact card of a `.vcf` attachment once it is read, which the view asks for.
     pub(crate) fn vcard_at(&self, url: &str) -> Option<&Result<crate::vcard::VCard, String>> {
-        match self.vcards.get(url) {
-            Some(c) => c.as_ref(),
-            None => {
-                self.wants.ask(&self.wants.vcards, url);
-                None
-            }
-        }
+        self.wants.get(&self.wants.vcards, url, self.vcards.get(url))
     }
 
     /// Desktop's `hasNextViewerItem`: the Media window viewer has a next item while more items can load.
