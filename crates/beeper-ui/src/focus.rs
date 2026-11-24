@@ -601,6 +601,34 @@ pub(crate) mod tests {
         shot
     }
 
+    /// The ink of the icon in the window `[x, y, w, h]` of `shot`, a snapshot of a view `width` px wide, like the path
+    /// rects of the real-DOM dumps: the background is the most common color of the window's edge, a pixel covers in
+    /// proportion to its distance from it, and a partly covered edge column or row moves the edge. Also the color of
+    /// the farthest pixel and the covered area in px².
+    pub(crate) fn ink(shot: &::image::RgbaImage, width: f32, [x, y, w, h]: [f32; 4]) -> ([f32; 4], [u8; 3], f32) {
+        let k = shot.width() as f32 / width;
+        let (x0, y0, x1, y1) = ((x * k) as u32, (y * k) as u32, ((x + w) * k).ceil() as u32, ((y + h) * k).ceil() as u32);
+        let px = |i: u32, j: u32| shot.get_pixel(i, j).0;
+        let mut edge: Vec<_> =
+            (x0..x1).flat_map(|i| [px(i, y0), px(i, y1 - 1)]).chain((y0..y1).flat_map(|j| [px(x0, j), px(x1 - 1, j)])).collect();
+        edge.sort_unstable();
+        let bg = edge.chunk_by(|a, b| a == b).max_by_key(|run| run.len()).expect("a window")[0];
+        let d = |c: [u8; 4]| (0..3).map(|n| f32::from(c[n].abs_diff(bg[n]))).sum::<f32>();
+        let (far, fi, fj) =
+            (x0..x1).flat_map(|i| (y0..y1).map(move |j| (d(px(i, j)), i, j))).fold((0.0, x0, y0), |a, b| if b.0 > a.0 { b } else { a });
+        let cov = |i: u32, j: u32| (d(px(i, j)) / far).min(1.0);
+        let span = |lines: Vec<(u32, f32)>| {
+            let on: Vec<_> = lines.into_iter().filter(|l| l.1 > 0.06).collect();
+            let (first, last) = (on[0], on[on.len() - 1]);
+            (first.0 as f32 + 1.0 - first.1, last.0 as f32 + last.1)
+        };
+        let (l, r) = span((x0..x1).map(|i| (i, (y0..y1).map(|j| cov(i, j)).fold(0.0, f32::max))).collect());
+        let (t, b) = span((y0..y1).map(|j| (j, (x0..x1).map(|i| cov(i, j)).fold(0.0, f32::max))).collect());
+        let area = (x0..x1).flat_map(|i| (y0..y1).map(move |j| (i, j))).map(|(i, j)| cov(i, j)).sum::<f32>() / (k * k);
+        let fg = px(fi, fj);
+        ([l / k, t / k, (r - l) / k, (b - t) / k], [fg[0], fg[1], fg[2]], area)
+    }
+
     /// The tests of a process run at once, and two of them may snapshot under the same name, like the space bar
     /// and Edit Spaces tests with "held" and "lifted". Each snapshot reads its own pixels.
     #[test]
