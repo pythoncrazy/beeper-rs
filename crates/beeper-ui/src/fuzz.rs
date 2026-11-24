@@ -10515,6 +10515,23 @@ fn tray_menu_follows_a_minimized_window_like_desktop() {
     assert_eq!(app.tray_sent.0.map(|s| s.1), Some(true), "back: Minimize to Tray");
 }
 
+/// `.BrandTooltip-module__tooltip` keeps its 6 px margin from the trigger: under a 40 px trigger at y 100, the card
+/// starts at y 146.
+#[test]
+fn tooltips_keep_a_6px_margin_like_desktop() {
+    let app = demo_app("tooltip-margin");
+    let trigger = container(Space::new()).width(40).height(40).into();
+    let tip = app.tip(trigger, "Archive", vec![], tooltip::Position::Bottom);
+    let view = container(tip).padding(100).width(Fill).height(Fill).style(fill_box(Color::BLACK, 0.0));
+    let mut sim = Simulator::with_size(Default::default(), Size::new(400.0, 300.0), view);
+    sim.point_at(Point::new(120.0, 120.0));
+    let _ = sim.simulate([iced::Event::Mouse(mouse::Event::CursorMoved { position: Point::new(120.0, 120.0) })]);
+    let shot = crate::focus::tests::pixels(&mut sim, &iced::Theme::Light, "tooltip-margin");
+    let k = shot.width() / 400;
+    let top = (140 * k..shot.height()).find(|&y| shot.get_pixel(120 * k, y).0 == [255; 4]).expect("the tooltip card");
+    assert_eq!(top / k, 146);
+}
+
 /// Desktop's `.hoverActions` sit 6 px over `.actions` whatever their size, also in the compact list where the 32 px
 /// button runs out of the bottom of the row: the icon of a 26 px Archive and of a 32 px Mark Read starts 28 px under
 /// the top of the row.
@@ -10622,6 +10639,32 @@ fn row_hover_actions_fade_like_desktop() {
     let off = app.unhovered.as_ref().map(|u| u.1).expect("the leave starts the fade");
     assert!(app.hover_progress_at(&id, off).is_some_and(|t| t > 0.5), "they fade back out");
     assert_eq!(app.hover_progress_at(&id, off + fade), None, "and are gone after it");
+}
+
+/// Desktop's `proIndicators` keep their place under the hover action, and fade and shrink away while it grows in.
+#[test]
+fn unread_counts_give_way_to_hover_actions_like_desktop() {
+    use iced_test::selector::Candidate;
+    let mut app = demo_app("count-hover");
+    let id = "!wa_family:beeper.com".to_string();
+    let accent = |app: &BeeperGuiApp| {
+        let mut sim = Simulator::with_size(Default::default(), Size::new(400.0, 800.0), app.view_sidebar());
+        let title = sim.find("Family").expect("the title").bounds();
+        let near = move |c: Candidate<'_>| match c {
+            Candidate::Text { content: "2", bounds, .. } if bounds.x > title.x && (bounds.y - title.y).abs() < 30.0 => Some(bounds),
+            _ => None,
+        };
+        let count = sim.find(near).expect("the count keeps its place");
+        let shot = crate::focus::tests::pixels(&mut sim, &iced::Theme::Light, "count-hover");
+        let k = shot.width() / 400;
+        // The pill's edge, left of its digit.
+        let [r, g, b, _] = shot.get_pixel((count.x as u32 - 2) * k, count.center_y() as u32 * k).0;
+        Color::from_rgb8(r, g, b) == app.pal.accent
+    };
+    assert!(accent(&app), "the count shows");
+    let _ = app.update(UiMessage::ChatList(chat_list::Msg::Hover(id, true)));
+    app.hover_at = Some(std::time::Instant::now() - std::time::Duration::from_secs(1));
+    assert!(!accent(&app), "and is gone under the hover action");
 }
 
 /// Desktop's view-limited media: a pill in place of the media, the viewer that counts a view, the Play queue of the
