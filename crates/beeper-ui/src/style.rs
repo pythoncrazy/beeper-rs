@@ -423,16 +423,29 @@ pub fn clamp<'a>(s: &str, max: f32, lines: usize, size: f32, w: Weight) -> text:
     })
 }
 
+/// [`clamp`]'s text: one line cut where it overflows (`text-overflow: ellipsis`), or more lines whose last ends
+/// after its last whole word (`-webkit-line-clamp`).
 pub fn clamped(s: &str, max: f32, lines: usize, size: f32, w: Weight) -> Rc<str> {
-    thread_local!(static MEMO: Memo<(String, u32, u32, Weight, usize), Rc<str>> = RefCell::default());
+    clamp_lines(s, max, lines, size, w, lines > 1)
+}
+
+/// The first `lines` lines of `s` at `max`, with "…" at the end of the last when more follows. Chromium's
+/// `-webkit-line-clamp` (`words`) keeps the words that wrap onto the last line and cuts them only to make room for
+/// the "…", where `text-overflow: ellipsis` cuts the rest of the text at the edge.
+fn clamp_lines(s: &str, max: f32, lines: usize, size: f32, w: Weight, words: bool) -> Rc<str> {
+    type Key = (String, u32, u32, Weight, usize, bool);
+    thread_local!(static MEMO: Memo<Key, Rc<str>> = RefCell::default());
     assert!(lines > 0, "clamp to zero lines");
     let size = rem(size);
-    memo(&MEMO, (s.to_owned(), max.max(0.0).to_bits(), size.to_bits(), w, lines), || {
+    memo(&MEMO, (s.to_owned(), max.max(0.0).to_bits(), size.to_bits(), w, lines, words), || {
         let s = s.split_whitespace().collect::<Vec<_>>().join(" ");
         let starts: Vec<usize> =
             shape(&s, size, w, Some(max.max(0.0)), |buf| buf.layout_runs().map(|r| r.glyphs.first().map_or(0, |g| g.start)).collect());
-        match starts.get(lines - 1) {
-            Some(&k) if starts.len() > lines => format!("{}{}", &s[..k], ell_line(&s[k..], max, size, w)).into(),
+        match (starts.get(lines - 1), starts.get(lines)) {
+            (Some(&k), Some(&next)) => {
+                let last = if words { format!("{}…", s[k..next].trim_end()) } else { s[k..].to_string() };
+                format!("{}{}", &s[..k], ell_line(&last, max, size, w)).into()
+            }
             _ => s.into(),
         }
     })
@@ -447,7 +460,7 @@ pub fn flow(s: &str, indent: f32, max: f32, lines: usize, size: f32, w: Weight) 
     let width = |i: usize| gs.get(gs.partition_point(|g| g.0 <= i).wrapping_sub(1)).map_or(0.0, |g| g.1);
     let breaks = s.match_indices(' ').map(|(i, _)| i).chain([s.len()]);
     let fit = breaks.take_while(|&i| width(i) <= max - indent).last().unwrap_or(0);
-    (s[..fit].to_string(), clamped(s[fit..].trim_start(), max, lines - 1, size, w))
+    (s[..fit].to_string(), clamp_lines(s[fit..].trim_start(), max, lines - 1, size, w, true))
 }
 
 /// Text in the app font at `size` px in rem. Its line height of `round(size * 1.24)` is Desktop's
@@ -1171,6 +1184,21 @@ mod tests {
         assert_eq!(wraps(&long, 400.0, 13.0), shaped_lines(&long, 400.0, 13.0) > 1);
         assert_eq!(line_count(&long, 400.0, 13.0), shaped_lines(&long, 400.0, 13.0));
         assert!(!wraps("two\nlines", 400.0, 13.0), "a line break is no wrap");
+    }
+
+    /// Chromium's `-webkit-line-clamp` of a chat preview, 126 px wide: the last line keeps the words that wrap onto it
+    /// and its "…" follows the last of them, or cuts it when the line is full; one line cuts at the edge.
+    #[test]
+    fn clamped_lines_end_after_their_last_word_like_chromium() {
+        let clamp = |s: &str, lines| clamped(s, 126.0, lines, 13.0, Weight::Normal).to_string();
+        let secops = "Cross-signing master key and Megolm backup verified across all connected devices.";
+        assert_eq!(clamp(secops, 2), "Cross-signing master key and…");
+        assert_eq!(clamp("Mom: Dinner at 7 tonight? Bring the charger you borrowed", 2), "Mom: Dinner at 7 tonight? Bring the…");
+        assert_eq!(clamp("aaaa bbbb cccc dddd eeee ffff gggg hhhh iiii", 2), "aaaa bbbb cccc dddd eeee ffff gg…");
+        assert_eq!(clamp(secops, 1), "Cross-signing mas…");
+        assert_eq!(clamp("Ship it", 2), "Ship it");
+        let (first, rest) = flow(secops, 30.0, 126.0, 2, 13.0, Weight::Normal);
+        assert_eq!((first.as_str(), &*rest), ("Cross-signing", "master key and…"), "a flowed preview clamps its last line too");
     }
 
     /// CSS `grayscale(100%)` of a logo: each color becomes its luminance, and the tile keeps its shapes.
