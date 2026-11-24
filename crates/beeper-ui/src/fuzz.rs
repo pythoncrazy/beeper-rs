@@ -6833,6 +6833,53 @@ fn create_label_shows_a_draft_space_like_desktop() {
     assert!(ids[0] == LABEL_DRAFT && !ids.iter().any(|s| s == LABEL_NUDGE), "the draft takes the slot of the nudge");
 }
 
+/// The signed-in Desktop's Settings window at 800x740 on Accounts: the pane ends in `.right`'s 8 px frame gap, the 44 px
+/// rows of the sidebar carry 0.33 px rules (one device pixel at a scale of 2) with their titles in the middle, the
+/// account rows have 12 px second lines in a 15 px line, `--color-text-neutrals` titles and Feather's chevron, and
+/// Storage has Desktop's own icon.
+#[test]
+fn settings_window_like_signed_in_desktop() {
+    let mut app = demo_app("settings-real");
+    let _ = app.update(UiMessage::Settings(settings::Msg::Open(SettingsTab::Accounts)));
+    let size = Size::new(800.0, 740.0);
+    let mut sim = Simulator::with_size(Default::default(), size, app.view_settings());
+    let at = |sim: &mut Simulator<'_, UiMessage>, t: &'static str| sim.find(t).expect(t).bounds();
+    let left = at(&mut sim, "10 Free Accounts Remaining");
+    assert!((left.center_x() - (291.0 + 779.0) / 2.0).abs() < 0.5, "the pane's content is 291..779: {left:?}");
+    let general = at(&mut sim, "General");
+    assert!((general.center_y() - 196.1).abs() < 0.5, "General in the middle of 174.1..218.1: {general:?}");
+    let phone = at(&mut sim, "+1 415-555-0142");
+    assert_eq!(phone.height, 15.0, "the 12 px second line");
+    let shot = crate::message::tests::pixels(&mut sim);
+    let k = shot.width() as f32 / size.width;
+    let px = |x: f32, y: f32| shot.get_pixel((x * k) as u32, (y * k) as u32).0;
+    // The rule under General, over the last device pixel of its row.
+    let ruled = ((210.0 * k) as u32..(222.0 * k) as u32).filter(|&y| shot.get_pixel((150.0 * k) as u32, y).0[0] < 0xe0).count();
+    assert_eq!(ruled, 1, "one device pixel of rule");
+    // The ink of a box: the pixels at least half as dark as `fg` against `bg`.
+    let ink = |[x, y, w, h]: [f32; 4], bg: [u8; 3]| {
+        let far = |c: [u8; 4]| (0..3).map(|i| u32::from(c[i].abs_diff(bg[i]))).sum::<u32>() > 160;
+        let xs: Vec<f32> = (0..(w * k) as u32)
+            .map(|i| x + i as f32 / k)
+            .filter(|&cx| (0..(h * k) as u32).any(|j| far(px(cx, y + j as f32 / k))))
+            .collect();
+        let ys: Vec<f32> = (0..(h * k) as u32)
+            .map(|j| y + j as f32 / k)
+            .filter(|&cy| (0..(w * k) as u32).any(|i| far(px(x + i as f32 / k, cy))))
+            .collect();
+        [xs[0], ys[0], xs[xs.len() - 1] + 1.0 / k - xs[0], ys[ys.len() - 1] + 1.0 / k - ys[0]]
+    };
+    let near = |got: [f32; 4], want: [f32; 4]| (0..4).all(|i| (got[i] - want[i]).abs() <= 0.5);
+    // Feather's chevron of the first account: the 4x8 polyline at (750, 79) with its 1.33 px stroke.
+    let chevron = ink([744.0, 73.0, 16.0, 20.0], [0xff; 3]);
+    assert!(near(chevron, [749.5, 78.5, 5.0, 9.0]), "the chevron: {chevron:?}");
+    let storage = ink([18.0, 540.0, 16.0, 16.0], [0x32, 0x54, 0x6a]);
+    assert!(near(storage, [20.8, 541.9, 10.5, 13.1]), "the Storage icon: {storage:?}");
+    let title = ((372.0 * k) as u32..(420.0 * k) as u32).flat_map(|x| ((121.0 * k) as u32..(138.0 * k) as u32).map(move |y| (x, y)));
+    let darkest = title.map(|(x, y)| shot.get_pixel(x, y).0).min_by_key(|c| c[0]).unwrap();
+    assert_eq!(darkest[..3], [0x17, 0x17, 0x17], "the account's name");
+}
+
 #[test]
 fn accounts_settings_rows_have_the_account_menu_like_desktop() {
     let mut app = demo_app("prefs-account-menu");

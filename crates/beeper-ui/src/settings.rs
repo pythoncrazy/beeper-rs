@@ -12,8 +12,8 @@ use crate::units::{compact, grouped};
 use crate::windows;
 use crate::{
     ago, divider, duration, first_groups, group, portal, pref_row, select, slider_style, status_text, style, svg_size, theme_cards,
-    toggle_faded, ADD_ICON, APP_QR, CHANGELOG_URL, CHEVRON_LEFT, CLAUDE_LOGO, COPIED_ICON, COPY_ICON, CURSOR_LOGO, DEVICE_ICONS, LOGO,
-    QR_CODE, REVERT, SELECT_ARROW, SETTINGS_SIZE, TAKE_BEEPER, VSCODE_LOGO, ZOOM_LEVEL,
+    toggle_faded, ADD_ICON, APP_QR, CHANGELOG_URL, CHEVRON_LEFT, CLAUDE_LOGO, CLOUD_ICON, COPIED_ICON, COPY_ICON, CURSOR_LOGO,
+    DEVICE_ICONS, FEATHER_CHEVRON, LOGO, QR_CODE, REVERT, SELECT_ARROW, SETTINGS_SIZE, TAKE_BEEPER, VSCODE_LOGO, ZOOM_LEVEL,
 };
 use beeper_core::config::APP_VERSION;
 use beeper_core::models::*;
@@ -118,8 +118,8 @@ impl SettingsTab {
             ("Devices", Svg(include_bytes!("../assets/settings/devices.svg")), |_| hex(0xf54c03)),
             ("AI", Svg(include_bytes!("../assets/settings/ai.svg")), |_| hex(0x19c9d4)),
             ("Beeper Plus", Svg(include_bytes!("../assets/settings/beeper_plus.svg")), |p| p.accent),
-            ("Integrations", Glyph(icon::PUZZLE), |_| hex(0x7559ff)),
-            ("Storage", Glyph(icon::DATABASE), |_| hex(0x32546a)),
+            ("Integrations", Svg(include_bytes!("../assets/settings/integrations.svg")), |_| hex(0x7559ff)),
+            ("Storage", Svg(include_bytes!("../assets/settings/storage.svg")), |_| hex(0x32546a)),
             ("Help", Svg(include_bytes!("../assets/settings/help.svg")), |p| p.on_secondary),
             ("About", Svg(include_bytes!("../assets/settings/about.svg")), |_| hex(0x1ab5a2)),
         ];
@@ -731,16 +731,15 @@ impl BeeperGuiApp {
             .style(input_style(CLEAR, p.strong, p.text, p.accent, 0.0));
         let clear = (!self.settings_query.is_empty())
             .then(|| button(ic(icon::CLOSE, 12.0).color(p.strong)).bare(p.strong).on_press(UiMessage::Settings(Msg::Query(String::new()))));
-        // Desktop's 16 px Material icon is scaled by 1.2 without a change to its 16 px box.
         let search = container(
             row![
-                ic(icon::SEARCH, 16.0 * 1.2).color(p.strong),
+                crate::material("search", 16.0, p.strong),
                 crate::focus::watch(search_input, |on| UiMessage::Settings(Msg::SearchFocus(on)))
             ]
             .push(clear)
-            .spacing(8.0 - 1.6)
+            .spacing(8)
             .align_y(Center)
-            .padding(Padding::new(6.0 - 1.6).left(8.0 - 1.6).right(8.0)),
+            .padding([6, 8]),
         )
         .style(fill_box(p.search, 38.0));
         // The search results draw the icons at Desktop's 11 px instead of 13 px.
@@ -784,21 +783,18 @@ impl BeeperGuiApp {
             }
             // Desktop's `allProperAccounts`: the Beeper account and the chat accounts.
             let count = (tab == SettingsTab::Accounts)
-                .then(|| container(txt((st.accounts.len() + 1).to_string(), 11.0).color(p.strong)).center(18).style(fill_box(p.chip, 9.0)));
-            let line = row![tile(tab, false, 1.0), txt(tab.name(), 14.0).color(p.strong), Space::new().width(Fill)]
+                .then(|| container(med((st.accounts.len() + 1).to_string(), 11.0).color(p.text)).center(18).style(fill_box(p.chip, 9.0)));
+            let line = row![tile(tab, false, 1.0), txt(tab.name(), 14.0).color(p.text), Space::new().width(Fill)]
                 .push(count)
                 .spacing(8)
                 .align_y(Center)
-                .height(if on { 44 } else { 43 })
+                .height(44)
                 .padding([0, 8]);
-            // Desktop's `.pref-option:has(+ .selected)` and `:last-child` have no divider.
+            // Desktop's `.pref-option:after`: a 0.33 px rule over the bottom of the row from its title, but not on the
+            // selected row (`.selected:after`), the row above it (`:has(+ .selected)`) or the last row.
             let next_on = tabs.get(i + 1).is_none_or(|n| *n == self.active_settings_tab);
-            c.push(button(line).padding(0).width(Fill).style(style).on_press(UiMessage::Settings(Msg::SelectTab(tab)))).push((!on).then(
-                || {
-                    let rule = if next_on { CLEAR } else { p.divider };
-                    container(container(Space::new()).width(Fill).height(1).style(fill_box(rule, 0.0))).padding(Padding::ZERO.left(36.0))
-                },
-            ))
+            let rule = (!on && !next_on).then(|| crate::hairline::hairline(p.divider, 36.0, 0.33, self.bake_scale()));
+            c.push(button(stack![line].push(rule)).padding(0).width(Fill).style(style).on_press(UiMessage::Settings(Msg::SelectTab(tab))))
         });
         // Desktop's search results: the query in each label is at full color, and the rest at half.
         let q = self.settings_query.to_lowercase();
@@ -888,8 +884,8 @@ impl BeeperGuiApp {
         .width(Fill)
         .height(Fill)
         .style(glow_box(self.active_settings_tab.pane(p), Color::BLACK.scale_alpha(0.12), 10.0, 0.0, 10.0));
-        // Desktop's `.prefs-right-pane` fills the window width, with a `drop-shadow(0 0 10px #0000001f)`.
-        let base = container(row![left, container(right).padding(Padding::new(8.0).right(0.0))]).width(Fill).height(Fill);
+        // Desktop's `.prefs-right-pane`, in `.right`'s 8 px frame gap, has a `drop-shadow(0 0 10px #0000001f)`.
+        let base = container(row![left, container(right).padding(8)]).width(Fill).height(Fill);
         drop(st);
         let confirm = self.confirm.filter(|d| SETTINGS_DIALOGS.contains(d)).map(|d| self.view_confirm(d));
         // The menu of an account row of the Accounts settings, or of the actions of an account page.
@@ -1140,20 +1136,25 @@ impl BeeperGuiApp {
             SettingsTab::Accounts => {
                 // Desktop's account row: the account user's photo (`userImage`), the network, and the user.
                 let account = |logo: &str, owner: &str, photo: Option<&str>, name: String, cloud: bool, sub: Option<String>| -> El<'_> {
-                    let title = row![self.face(photo, owner, 14.0, 0.0), semi(name, 14.0).color(p.strong)]
-                        .push(cloud.then(|| ic(icon::CLOUD, 13.0).color(p.sub)))
-                        .spacing(4)
-                        .align_y(Center);
+                    // `AccountListItem-module__line1`, 17 px lines with a 1 px bottom padding, and its `CloudIcon`.
+                    let title =
+                        row![self.face(photo, owner, 14.0, 0.0), semi(name, 14.0).color(p.text)]
+                            .push(cloud.then(|| {
+                                svg(CLOUD_ICON.clone()).width(14).height(10).style(move |_, _| svg::Style { color: Some(p.muted) })
+                            }))
+                            .spacing(4)
+                            .align_y(Center)
+                            .padding(Padding::ZERO.bottom(1.0));
                     let error = status_text(st, logo).map(|s| {
                         let circle = svg(ERROR_CIRCLE.clone()).width(14).height(14).into();
                         self.tip(circle, s, Vec::new(), tooltip::Position::Top)
                     });
                     let line = row![
                         container(svg(brand_svg(brand_key(logo))).width(28).height(28)).center(46),
-                        column![title].push(sub.map(|s| txt(s, 13.0).color(p.sub))).width(Fill),
+                        column![title].push(sub.map(|s| txt(s, 12.0).color(p.muted))).width(Fill),
                     ]
                     .push(error)
-                    .push(ic(icon::CHEVRON_RIGHT, 16.0).color(p.strong))
+                    .push(container(tinted(&FEATHER_CHEVRON, 16.0, p.text)).center(20))
                     .spacing(8)
                     .align_y(Center)
                     .padding(Padding::new(4.0).left(8.0).right(16.0));
@@ -1213,11 +1214,12 @@ impl BeeperGuiApp {
                 let add = UiMessage::Networks(crate::networks::Msg::Open);
                 let remaining = st.features.accounts_remaining();
                 // Desktop's `QLt`: the add button shows while the plan allows another account.
-                let head = row![med(tr("Accounts"), 12.0).color(p.weak), Space::new().width(Fill)]
-                    .push((remaining > 0).then(|| icon_btn(p, icon::CIRCLE_PLUS, 16.0, 22.0, p.accent, add.clone())))
+                // Desktop's `h4`, 13 px in `--color-on-surface-variant`, and its 20 px `AddNewAccountIcon`.
+                let plus = button(tinted(&ADD_ICON, 20.0, p.accent)).bare(p.accent).on_press(add.clone());
+                let head = row![txt(tr("Accounts"), 13.0).color(p.muted), Space::new().width(Fill)]
+                    .push((remaining > 0).then_some(plus))
                     .height(26)
-                    .align_y(Center)
-                    .padding([0, 4]);
+                    .align_y(Center);
                 let card =
                     container(Column::with_children(rows)).width(Fill).padding(1).style(bordered_box(p.prefs_group, p.chip, 1.0, 8.0));
                 vec![column![head, column![card, self.accounts_foot(st, add)].spacing(11)].spacing(8).into()]
