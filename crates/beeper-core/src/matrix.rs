@@ -77,8 +77,8 @@ enum Op {
     PollEdit(String, String, Box<PollData>, Option<String>),
     /// The `com.beeper.disappearing_timer` of an edit without content, and the sender of the edit.
     Timer(String, String, MessageTimer),
-    /// A redaction, and whether the bridge redacted view-once media after its last view.
-    Redact(String, bool),
+    /// A redaction, and what it does to its message.
+    Redact(String, Redaction),
     Remove(String),
     /// Desktop's `com.beeper.view_limited` update: the views left of view-once media.
     ViewsLeft(String, u64),
@@ -920,6 +920,28 @@ fn unresolved_media(c: &Value) -> Option<String> {
     c.get("com.beeper.unresolved_media").filter(|v| !v.is_null()).map(Value::to_string)
 }
 
+/// What a redaction does to its message.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Redaction {
+    /// The message stays as a "deleted" placeholder.
+    Delete,
+    /// Desktop's `com.beeper.view_limited`: the bridge redacted view-once media after its last view.
+    Expire,
+    /// Desktop's `com.beeper.dont_render_redacted_placeholder`: the message goes, unless hidden events show.
+    Hide,
+}
+
+impl Redaction {
+    /// The redaction with content `c`; with `hidden`, a hidden message shows as deleted.
+    fn of(c: &Value, hidden: bool) -> Self {
+        match () {
+            _ if !hidden && c["com.beeper.dont_render_redacted_placeholder"] == true => Redaction::Hide,
+            _ if c["com.beeper.view_limited"] == true => Redaction::Expire,
+            _ => Redaction::Delete,
+        }
+    }
+}
+
 /// The store operation for a timeline event. With `hidden`, the events that Desktop hides become `HIDDEN` rows.
 /// `names` keeps the names of the senders that it looked up, for the next events of the room.
 async fn op(
@@ -935,12 +957,13 @@ async fn op(
     let order = e["unsigned"]["com.beeper.hs.order"].as_i64().unwrap_or(0);
     let poll = matches!(kind.as_str(), "org.matrix.msc3381.poll.start" | "m.poll.start").then(|| poll(c)).flatten();
     let (text, attachments, message_type) = match kind.as_str() {
+        _ if deleted && Redaction::of(&e["unsigned"]["redacted_because"]["content"], hidden) == Redaction::Hide => return None,
         "m.room.message" | "m.sticker" | "m.room.encrypted" if deleted => (None, Vec::new(), "TEXT"),
         _ if deleted => return None,
         "m.reaction" => (None, Vec::new(), "REACTION"),
         "m.room.redaction" => {
             let target = s(&e["redacts"]).or(s(&c["redacts"]))?;
-            return Some(Op::Redact(target, c["com.beeper.view_limited"] == true));
+            return Some(Op::Redact(target, Redaction::of(c, hidden)));
         }
         "m.room.message" if rel["rel_type"] == "m.replace" => {
             let (new, ts) = (&c["m.new_content"], e["origin_server_ts"].as_i64().expect("event timestamp"));
@@ -2177,10 +2200,11 @@ async fn sync_room_after(store: &SharedStore, room: &Room, mut events: Vec<Timel
                         Op::Remove(id) if here(st, &id).is_some() => {
                             st.remove_message(&chat_id, &id).expect("remove a local echo");
                         }
-                        Op::Redact(target, expired) if here(st, &target).is_some() => {
-                            match expired {
-                                true => st.expire_message(&chat_id, &target),
-                                false => st.delete_message(&chat_id, &target),
+                        Op::Redact(target, how) if here(st, &target).is_some() => {
+                            match how {
+                                Redaction::Delete => st.delete_message(&chat_id, &target),
+                                Redaction::Expire => st.expire_message(&chat_id, &target),
+                                Redaction::Hide => st.remove_message(&chat_id, &target),
                             }
                             .expect("redact a known message");
                         }
@@ -3103,8 +3127,15 @@ async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), Pu
             };
             room.send_raw("m.room.message", edit_content(&target, text, &mentions, attachment)?).await?;
         }
+        // Desktop's `getRedactionExtraContent`: a room with `delete_hide_placeholder` leaves no "deleted" placeholder.
         Outgoing::Redact { target } => {
-            room.redact(&event(target)?, None, None).await.map_err(|x| x.to_string())?;
+            let target = event(target)?;
+            if state(&room, "com.beeper.room_features").await.is_some_and(|f| f["delete_hide_placeholder"] == true) {
+                let content = serde_json::json!({ "com.beeper.dont_render_redacted_placeholder": true });
+                redact_with(&client, &room, target.as_str(), content).await?;
+            } else {
+                room.redact(&target, None, None).await.map_err(|x| x.to_string())?;
+            }
         }
         // Desktop's `sendReactionEvent`: a custom emoji reacts with its image and names its shortcode.
         Outgoing::React { txn, target, key, img_url: Some(img) } => {
@@ -7462,6 +7493,47 @@ mod tests {
         assert_eq!(gone.view_once_kind(), Some("img"), "the expired message keeps the kind of its media");
         let preview = st.chat("!room:x").preview.clone().expect("a preview");
         assert_eq!(preview.id, "$gone", "Desktop's `Pct`: expired media still previews its chat");
+    }
+
+    /// Desktop's `com.beeper.dont_render_redacted_placeholder`: a redaction with it removes its message instead of
+    /// leaving "deleted", and a delete in a room with `delete_hide_placeholder` sends it.
+    #[tokio::test]
+    async fn redactions_without_a_placeholder_remove_the_message_like_desktop() {
+        let text = |id: &str| stub_event(id, "m.room.message", json!({ "msgtype": "m.text", "body": "hi" }));
+        let hide = json!({ "com.beeper.dont_render_redacted_placeholder": true });
+        let mut redaction = stub_event("$r", "m.room.redaction", hide.clone());
+        redaction["redacts"] = json!("$gone");
+        let mut old = stub_event("$old", "m.room.message", json!({}));
+        old["unsigned"]["redacted_because"] = json!({ "content": hide });
+        let mut kept = stub_event("$kept", "m.room.message", json!({}));
+        kept["unsigned"]["redacted_because"] = json!({ "content": {} });
+        let events = vec![text("$a"), old, kept, text("$gone"), redaction];
+        let mut sync = stub_sync();
+        let features = json!({ "type": "com.beeper.room_features", "state_key": "", "sender": "@me:x", "event_id": "$f",
+            "origin_server_ts": 1, "content": { "delete_hide_placeholder": true } });
+        sync["rooms"]["join"]["!room:x"]["state"]["events"].as_array_mut().unwrap().push(features);
+        let bodies = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = bodies.clone();
+        let url = crate::bridge_stub::serve(move |method, path, body| match path.split_once('?').map_or(path, |p| p.0) {
+            "/_matrix/client/versions" => (200, json!({ "versions": ["v1.11"] })),
+            "/_matrix/client/v3/sync" => (200, sync.clone()),
+            "/_matrix/client/v3/keys/upload" => (200, json!({ "one_time_key_counts": {} })),
+            p if p.ends_with("/messages") => (200, json!({ "start": "t", "chunk": events.iter().rev().collect::<Vec<_>>() })),
+            p if p.ends_with("/members") => (200, json!({ "chunk": [] })),
+            p if method == "PUT" && p.contains("/redact/") => {
+                seen.lock().unwrap().push(body);
+                (200, json!({ "event_id": "$redaction" }))
+            }
+            _ => (404, json!({ "errcode": "M_NOT_FOUND", "error": "not in the stub" })),
+        })
+        .await;
+        let store = stub_store(&crate::testing::temp_dir("no-placeholder"), &url).await;
+        sync_stub_room(&store, "!room:x").await;
+        let has = |id: &str| store.read().msg_idx_by_id.contains_key(id);
+        assert!(has("$a") && has("$kept") && !has("$gone") && !has("$old"), "only a plain redaction leaves a placeholder");
+        store.write().queue("!room:x", super::Outgoing::Redact { target: "$a".into() });
+        super::flush(store.clone()).await.expect("the homeserver takes the redaction");
+        assert_eq!(*bodies.lock().unwrap(), [hide]);
     }
 
     /// The SDK's `ViewLimitedMedia`: a provisioning request through the homeserver to the bridge, with the limit of the
