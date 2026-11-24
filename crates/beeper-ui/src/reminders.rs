@@ -216,21 +216,21 @@ impl BeeperGuiApp {
     }
 
     /// Desktop's `zit` submenu of the message menu: Upgrade to Beeper Plus without Beeper Plus or a free use, Mark as
-    /// Done for a set reminder, the times (`Hx`) and Custom…. Each row comes with its height.
-    pub(crate) fn message_remind_items(&self, st: &BeeperStore, mid: &str) -> Vec<(El<'_>, f32)> {
+    /// Done for a set reminder, the times (`Hx`) and Custom….
+    pub(crate) fn message_remind_items(&self, st: &BeeperStore, mid: &str) -> Vec<El<'_>> {
         let p = &self.pal;
         let (now, h24) = (now_unix_millis(), st.settings.pref("timeFormat") == 1);
         let can = st.feature("remind-later").on;
         let close = |msg: UiMessage| UiMessage::Message(message::Msg::Menu(Box::new(msg)));
-        let item = |label: String, at: String, msg: Option<UiMessage>| (menu_item(p, None, label, at, msg), menu_pitch());
+        let item = |label: String, at: String, msg: Option<UiMessage>| menu_item(p, None, label, at, msg);
         let set = |at: i64| can.then(|| close(UiMessage::Reminders(Msg::Message(mid.into(), Some(at)))));
         let upgrade = (!can).then(|| {
             let open = close(UiMessage::Settings(settings::Msg::Open(SettingsTab::BeeperPlus)));
-            [item(tr("Upgrade to Beeper Plus").into(), String::new(), Some(open)), (menu_rule(p), MENU_RULE)]
+            [item(tr("Upgrade to Beeper Plus").into(), String::new(), Some(open)), menu_rule(p)]
         });
         let done = st.message_reminders.contains_key(mid).then(|| {
             let done = close(UiMessage::Reminders(Msg::Message(mid.into(), None)));
-            [item(trx("Mark as Done", "message reminder menu action").into(), String::new(), Some(done)), (menu_rule(p), MENU_RULE)]
+            [item(trx("Mark as Done", "message reminder menu action").into(), String::new(), Some(done)), menu_rule(p)]
         });
         let last = last_used(st, now).map(|at| item(tr("Last Used").into(), last_used_label(at, h24), set(at)));
         let presets = remind_presets(&st.settings, now).into_iter().map(|(label, at)| {
@@ -239,9 +239,7 @@ impl BeeperGuiApp {
         });
         let custom = close(UiMessage::CommandBar(commands::Msg::OpenSubMenu(commands::SubMenu::RemindMessage(mid.into()))));
         let custom = item(tr("Custom…").into(), String::new(), can.then_some(custom));
-        (upgrade.into_iter().flatten().chain(done.into_iter().flatten()).chain(last).chain(presets))
-            .chain([(menu_rule(p), MENU_RULE), custom])
-            .collect()
+        (upgrade.into_iter().flatten().chain(done.into_iter().flatten()).chain(last).chain(presets)).chain([menu_rule(p), custom]).collect()
     }
 
     /// Desktop's Snooze menu `Jde` of the chats `ids`: Upgrade to Beeper Plus, the end of the snooze of one snoozed chat,
@@ -381,8 +379,8 @@ mod tests {
         (app, chat, "$remind".into())
     }
 
-    fn items(rows: Vec<(El<'_>, f32)>) -> El<'_> {
-        Column::with_children(rows.into_iter().map(|r| r.0)).into()
+    fn items(rows: Vec<El<'_>>) -> El<'_> {
+        Column::with_children(rows).into()
     }
 
     /// Desktop's message reminders (`zit`): Remind Me opens the times and Custom…, a set reminder turns it into Edit
@@ -393,7 +391,7 @@ mod tests {
         let (mut app, chat, mid) = internal_app("message-reminders");
         let _ = app.update(UiMessage::SelectChat(chat.clone()));
         let _ = app.update(UiMessage::Message(message::Msg::OpenMenu(mid.clone())));
-        assert!(simulator(app.view_message_menu(&mid).0).find("Remind Me").is_ok());
+        assert!(simulator(app.view_message_menu(&mid)).find("Remind Me").is_ok());
         let _ = app.update(UiMessage::Reminders(Msg::MessageSub));
         assert!(app.pane.remind_sub);
         {
@@ -414,7 +412,7 @@ mod tests {
             assert!(sends, "the reminder goes to the reminders room");
             assert!(simulator(items(app.message_remind_items(&st, &mid))).find("Mark as Done").is_ok());
         }
-        assert!(simulator(app.view_message_menu(&mid).0).find("Edit Reminder").is_ok());
+        assert!(simulator(app.view_message_menu(&mid)).find("Edit Reminder").is_ok());
         let pill = format!("{} {}", reminder_day(at), clock(at, false));
         assert!(simulator(app.view_conversation()).find(pill.as_str()).is_ok(), "the header pill shows the reminder");
         let _ = app.update(UiMessage::ChatList(chat_list::Msg::SelectTab(InboxTab::Reminders)));
@@ -424,7 +422,7 @@ mod tests {
         assert_eq!(soonest, Some(mid.clone()), "the Chat Info toolbar dismisses it");
         drop(st);
         app.store.write().whoami.internal = false;
-        assert!(simulator(app.view_message_menu(&mid).0).find("Edit Reminder").is_err(), "only the internal channel");
+        assert!(simulator(app.view_message_menu(&mid)).find("Edit Reminder").is_err(), "only the internal channel");
         app.store.write().whoami.internal = true;
         let _ = app.update(UiMessage::Reminders(Msg::Message(mid.clone(), None)));
         assert!(app.store.read().message_reminders.is_empty(), "Mark as Done dismisses it");

@@ -4317,7 +4317,7 @@ fn pending_and_failed_messages_menu_like_desktop() {
     let _ = app.update(UiMessage::Composer(composer::Msg::SendQueued(Some(note.into()))));
     let id = app.store.read().outbox[0].2.message().expect("a local echo").to_string();
     let items = |app: &BeeperGuiApp| {
-        let mut sim = simulator(app.view_message_menu(&id).0);
+        let mut sim = simulator(app.view_message_menu(&id));
         let labels = ["Edit…", "Reply…", "Delete…", "Bookmark", "Copy", "Forward…"];
         let shown: Vec<&str> = labels.into_iter().filter(|l| sim.find(*l).is_ok()).collect();
         let at = app.store.read().loaded(&id).expect("the local echo").timestamp.clone();
@@ -4335,7 +4335,7 @@ fn pending_and_failed_messages_menu_like_desktop() {
     }
     assert_eq!(items(&app), on_its_way, "a failed send");
     let mine = app.store.read().messages.iter().rev().find(|m| m.chat_id == note && m.id != id).unwrap().id.clone();
-    let mut sim = simulator(app.view_message_menu(&mine).0);
+    let mut sim = simulator(app.view_message_menu(&mine));
     assert!(["Edit…", "Reply…", "Delete…", "Forward…"].iter().all(|l| sim.find(*l).is_ok()), "a sent message");
 }
 
@@ -8362,7 +8362,7 @@ fn messages_disappear_like_desktop() {
     };
     let _ = app.update(UiMessage::SelectChat(id));
     assert!(tall(app.view_conversation()).find("2 messages disappeared").is_ok(), "one note for the timed-out ones");
-    let menu = |app: &BeeperGuiApp, mid: &str, label: &str| simulator(app.view_message_menu(mid).0).find(label).is_ok();
+    let menu = |app: &BeeperGuiApp, mid: &str, label: &str| simulator(app.view_message_menu(mid)).find(label).is_ok();
     assert!(menu(&app, "timed_2", "Disappears in about 1 hour"), "the line after Sent at");
     let recipient = match group {
         true => "Disappears 1 minute after someone in the group reads it",
@@ -9627,7 +9627,7 @@ fn reply_privately_like_desktop() {
         let mine = msgs.find(|m| m.is_sender == Some(true)).map(|m| m.id.clone());
         (theirs.expect("a message from someone").clone(), mine, c.account_id.clone())
     };
-    let has = |app: &BeeperGuiApp, mid: &str| simulator(app.view_message_menu(mid).0).find("Reply Privately…").is_ok();
+    let has = |app: &BeeperGuiApp, mid: &str| simulator(app.view_message_menu(mid)).find("Reply Privately…").is_ok();
     assert!(has(&app, &theirs.id));
     assert!(mine.is_none_or(|m| !has(&app, &m)), "not for your own messages");
     let _ = app.update(UiMessage::ChatList(chat_list::Msg::ReplyPrivately(theirs.id.clone())));
@@ -9703,10 +9703,10 @@ fn message_actions_follow_room_features_like_desktop() {
     let old = MessageRules { edit_max_age: Some(60), react: false, reply: false, ..BEEPER_MESSAGES };
     set(&mut app, old);
     let _ = app.update(UiMessage::SelectChat(id.clone()));
-    let clicked = |app: &BeeperGuiApp, label: &str| -> Vec<UiMessage> { clicks(app.view_message_menu(&mine).0, label) };
-    assert!(simulator(app.view_message_menu(&mine).0).find("Reply…").is_err(), "the network has no replies");
+    let clicked = |app: &BeeperGuiApp, label: &str| -> Vec<UiMessage> { clicks(app.view_message_menu(&mine), label) };
+    assert!(simulator(app.view_message_menu(&mine)).find("Reply…").is_err(), "the network has no replies");
     assert!(clicked(&app, "Edit…").is_empty(), "disabled like Desktop");
-    assert!(simulator(app.view_message_menu(&mine).0).find("React…").is_err(), "the network has no reactions");
+    assert!(simulator(app.view_message_menu(&mine)).find("React…").is_err(), "the network has no reactions");
     let ask = clicked(&app, "Delete…");
     assert!(
         matches!(&ask[..], [UiMessage::Message(message::Msg::Menu(m))] if matches!(&**m, UiMessage::Message(message::Msg::AskDelete(v)) if v == std::slice::from_ref(&mine)))
@@ -9719,9 +9719,9 @@ fn message_actions_follow_room_features_like_desktop() {
     let t = titles(&app);
     assert!(t.contains(&"Delete…".into()) && t.contains(&"Edit".into()) && !t.contains(&"Reply".into()));
     set(&mut app, MessageRules { delete: false, ..old });
-    assert!(simulator(app.view_message_menu(&mine).0).find("Delete…").is_ok(), "Remove from Beeper stays");
+    assert!(simulator(app.view_message_menu(&mine)).find("Delete…").is_ok(), "Remove from Beeper stays");
     app.store.write().delete_message(&id, &mine).expect("delete the message");
-    assert!(simulator(app.view_message_menu(&mine).0).find("Delete…").is_err(), "a deleted message has no Delete…");
+    assert!(simulator(app.view_message_menu(&mine)).find("Delete…").is_err(), "a deleted message has no Delete…");
     assert!(titles(&app).contains(&format!("Delete message is not supported for {network} yet")));
 }
 
@@ -9770,7 +9770,7 @@ fn delete_dialog_removes_from_beeper_like_desktop() {
     rules(&mut app, false, false);
     assert_eq!(dialog(&mut app, &[&mine]).2, ["Remove from Beeper"]);
     rules(&mut app, true, false);
-    assert!(simulator(app.view_message_menu(&theirs).0).find("Delete…").is_ok(), "received messages have Delete…");
+    assert!(simulator(app.view_message_menu(&theirs)).find("Delete…").is_ok(), "received messages have Delete…");
     let both = dialog(&mut app, &[&mine, &theirs]);
     let note = format!("Removing them from Beeper keeps them on {network} for you and {name}.");
     assert_eq!(both, ("Delete messages?".into(), note, vec!["Remove from Beeper"]), "only your messages get a mode");
@@ -9782,7 +9782,7 @@ fn delete_dialog_removes_from_beeper_like_desktop() {
     assert!(app.confirm.is_none(), "the button closes the dialog");
     let _ = app.update(UiMessage::SelectChat(cid.clone()));
     assert!(simulator(app.view_main()).find("Removed from Beeper").is_ok(), "the row of a removed message");
-    assert!(simulator(app.view_message_menu(&mine).0).find("Delete…").is_err(), "a removed message has no Delete…");
+    assert!(simulator(app.view_message_menu(&mine)).find("Delete…").is_err(), "a removed message has no Delete…");
     let account = stored(&app.store.read(), &mine).account_id;
     let note = |account: &str, kind: &str, title: &str| {
         let mut st = app.store.write();
@@ -9808,7 +9808,7 @@ fn message_menu_speed_and_read_like_desktop() {
         m.expect("a voice message").id.clone()
     };
     let _ = app.update(UiMessage::Message(message::Msg::OpenMenu(voice.clone())));
-    let picked: Vec<UiMessage> = { clicks(app.view_message_menu(&voice).0, "Playback Speed") };
+    let picked: Vec<UiMessage> = { clicks(app.view_message_menu(&voice), "Playback Speed") };
     apply(&mut app, picked);
     let picked: Vec<UiMessage> = { clicks(app.view_main(), "1.5x") };
     apply(&mut app, picked);
@@ -9824,9 +9824,9 @@ fn message_menu_speed_and_read_like_desktop() {
         let m = m.expect("an unread message");
         (m.chat_id.clone(), m.id.clone())
     };
-    let read = |app: &BeeperGuiApp| simulator(app.view_message_menu(&unread).0).find("Mark as Read").is_ok();
+    let read = |app: &BeeperGuiApp| simulator(app.view_message_menu(&unread)).find("Mark as Read").is_ok();
     assert!(read(&app));
-    let picked: Vec<UiMessage> = { clicks(app.view_message_menu(&unread).0, "Mark as Read") };
+    let picked: Vec<UiMessage> = { clicks(app.view_message_menu(&unread), "Mark as Read") };
     apply(&mut app, picked);
     assert!(!read(&app), "the message is read");
     let st = app.store.read();
@@ -11822,7 +11822,7 @@ fn add_custom_emoji_like_desktop() {
     let mut app = demo_app("add-custom-emoji");
     let (_, mid) = custom_emoji_chat(&mut app, true);
     fn menu<'a>(app: &'a BeeperGuiApp, mid: &str) -> Simulator<'a, UiMessage> {
-        simulator(app.view_message_menu(mid).0)
+        simulator(app.view_message_menu(mid))
     }
     let item = "Add :owl: to Custom Emoji";
     let _ = app.update(UiMessage::Message(EmoticonMenu(mid.clone(), Some(":owl:".into()), "mxc://x/owl".into())));
@@ -12021,8 +12021,9 @@ fn message_menus_open_where_chromium_puts_them() {
         let _ = app.update(UiMessage::CloseModals);
         [(row.x, row.y), (first.x, first.y)]
     });
+    // The first rate is level with Playback Speed.
     let want =
-        [[(313.0, 162.79999), (606.0, 163.79999)], [(313.0, 264.19995), (606.0, 265.19995)], [(313.0, 534.19995), (606.0, 535.19995)]];
+        [[(313.0, 162.79999), (606.0, 162.79999)], [(313.0, 264.19995), (606.0, 264.19995)], [(313.0, 534.19995), (606.0, 534.19995)]];
     assert_eq!(got, want);
 }
 
