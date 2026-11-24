@@ -264,6 +264,12 @@ pub const fn fw(weight: Weight) -> Font {
     Font { family: Family::Name("Inter"), weight, ..Font::DEFAULT }
 }
 
+/// Drops the shaped words that no text used for five checks, each a minute apart: cosmic-text keeps the glyphs of each
+/// word that it shaped, so a word that shows again is not shaped again.
+pub(crate) fn trim_shaped_words() {
+    font_system().write().expect("font system").raw().shape_run_cache.trim(5);
+}
+
 fn shape<T>(s: &str, size: f32, w: Weight, width: Option<f32>, f: impl FnOnce(&cosmic_text::Buffer) -> T) -> T {
     ensure_fonts_loaded();
     let mut fs = font_system().write().expect("font system");
