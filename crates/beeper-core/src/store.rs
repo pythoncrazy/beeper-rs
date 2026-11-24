@@ -665,6 +665,8 @@ pub struct BeeperStore {
     pub skin_tone: u8,
     /// The last synced [`crate::matrix::RULES`].
     pub inbox_rules: serde_json::Value,
+    /// The [`crate::features::REQUESTS`] flag that the chats were made with.
+    pub requests_folder: bool,
     /// Desktop's `mutedRoomIDs`: the `room_ids` of the global `com.beeper.muted` account data.
     pub muted_rooms: Vec<String>,
     /// The state events and the room account data that the chats of the rooms read from the SDK, between syncs.
@@ -798,7 +800,7 @@ impl BeeperStore {
             account_overrides: serde_json::Value::Null,
             features,
             next_seq: 1000,
-        }, default: setup, settings, verification, bridge_accounts, pin_rank, recent_chat_ids, network_spaces,
+        }, default: requests_folder, setup, settings, verification, bridge_accounts, pin_rank, recent_chat_ids, network_spaces,
             sub_accounts, demo_servers, contacts, bridge_sessions, accounts, labels, chats, chat_changes, chat_idx_by_id, chat_order,
             local_chat_idx_by_id, messages, msg_idx_by_id, chat_msg_indices, loaded, unloaded, shown,
             thread_msg_indices, timeline_revs, timeline_writes, moves, assets, assets_by_mxc, connect, matrix,
