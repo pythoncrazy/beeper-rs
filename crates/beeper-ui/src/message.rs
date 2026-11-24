@@ -444,10 +444,7 @@ pub(crate) fn media_box(window_w: f32, size: Option<(f32, f32)>, share: f32) -> 
     const STRIP: f32 = 80.0;
     let Some((w, h)) = size.filter(|s| s.0 > 0.0 && s.1 > 0.0) else { return (share * window_w, HIGH, true) };
     let (o, r) = ((share * window_w).min(w), w / h);
-    let fitted = match w / o > h / HIGH {
-        true => (o, (o / r).min(HIGH), false),
-        false => ((HIGH * r).min(o), HIGH, false),
-    };
+    let fitted = if w / o > h / HIGH { (o, (o / r).min(HIGH), false) } else { ((HIGH * r).min(o), HIGH, false) };
     match r {
         _ if r > o / STRIP => (o, STRIP, true),
         _ if r > TALL_W / HIGH => fitted,
@@ -1184,10 +1181,7 @@ impl BeeperGuiApp {
         .flatten()
         .collect();
         let head: Vec<(El, f32)> = before.into_iter().chain(remind).chain(after).collect();
-        let top = match self.pane().remind_sub {
-            true => remind_top,
-            false => head.iter().map(|r| r.1).sum::<f32>() + 11.0,
-        };
+        let top = if self.pane().remind_sub { remind_top } else { head.iter().map(|r| r.1).sum::<f32>() + 11.0 };
         // Desktop's `Zit`: no Delete… for the message that you edit.
         let delete = (!editing && delete_dialog(&st, &[m]).is_some())
             .then(|| item(tr("Delete…").into(), "", Some(UiMessage::Message(Msg::AskDelete(vec![mid.clone()])))));
@@ -1478,10 +1472,7 @@ impl BeeperGuiApp {
         let reminder = reminder.map(|(remind_at_ms, if_no_reply)| {
             let (day, time) = (reminder_day(remind_at_ms), clock(remind_at_ms, st.settings.pref("timeFormat") == 1));
             let at = if day_of(remind_at_ms) == today() { time.clone() } else { format!("{time} {day}") };
-            let tip = match if_no_reply {
-                true => trf("Set to remind at %s if no reply", &[&at]),
-                false => trf("Set to remind at %s", &[&at]),
-            };
+            let tip = if if_no_reply { trf("Set to remind at %s if no reply", &[&at]) } else { trf("Set to remind at %s", &[&at]) };
             let label = row![ic(icon::SCHEDULE, 16.0).color(ORANGE), semi(format!("{day} {time}"), 11.0).color(ORANGE)];
             let pill = container(label.spacing(4).align_y(Center))
                 .padding(pad(2.0, 8.0, 2.0, 4.0))
@@ -1755,10 +1746,7 @@ impl BeeperGuiApp {
     fn view_scroll_to_bottom<'a>(&'a self, st: &BeeperStore, chat: &Chat) -> Option<El<'a>> {
         let p = &self.pal;
         let (shown, t) = scroll_fade(self.pane())?;
-        let alpha = match shown {
-            true => ((t - SCROLL_WAIT) / SCROLL_FADE).clamp(0.0, 1.0),
-            false => 1.0 - (t / SCROLL_FADE).clamp(0.0, 1.0),
-        };
+        let alpha = if shown { ((t - SCROLL_WAIT) / SCROLL_FADE).clamp(0.0, 1.0) } else { 1.0 - (t / SCROLL_FADE).clamp(0.0, 1.0) };
         if alpha == 0.0 {
             return None;
         }
@@ -1968,11 +1956,8 @@ impl BeeperGuiApp {
             // Desktop's `showSeenIcon`: never on an action; in a group on an own message or the last one, and in a
             // DM on an own message after the last received one.
             let own = tail.is_sender == Some(true);
-            let seen_icon = !membership(tail)
-                && match group {
-                    true => own || end == msgs.len(),
-                    false => own && last_received.is_none_or(|r| end - 1 > r),
-                };
+            let seen_icon =
+                !membership(tail) && if group { own || end == msgs.len() } else { own && last_received.is_none_or(|r| end - 1 > r) };
             let mut viewers: Vec<(&str, &str)> =
                 (last_seen.iter()).filter(|(_, (at, _))| seen_icon && *at == end - 1).map(|(u, (_, ts))| (&u[..], &ts[..])).collect();
             viewers.sort_by_key(|&(_, ts)| ts);
@@ -2556,10 +2541,7 @@ impl BeeperGuiApp {
                 None => emoji(r.text),
             })
             .collect();
-        let line: El<'a> = match glyphs.is_empty() {
-            true => emoji(text.to_string()),
-            false => Row::with_children(glyphs).align_y(Bottom).into(),
-        };
+        let line: El<'a> = if glyphs.is_empty() { emoji(text.to_string()) } else { Row::with_children(glyphs).align_y(Bottom).into() };
         // Desktop's `title` of the `message-text` of an emoji message: its time.
         let time = format_short_ts(&m.timestamp, st.settings.pref("timeFormat") == 1);
         let line = self.tip(line, time, vec![], tooltip::Position::Top);
@@ -2640,10 +2622,7 @@ impl BeeperGuiApp {
         };
         let (slot, press): (El<'_>, _) = if let Some(raw) = m.unresolved_media.as_ref().filter(|_| !is_video) {
             let failed = self.resolving_media.get(&m.id) == Some(&false);
-            let (label, alpha) = match failed {
-                true => (tr("Could not load. Click to try again"), 0.45),
-                false => (tr("Click to load"), 0.25),
-            };
+            let (label, alpha) = if failed { (tr("Could not load. Click to try again"), 0.45) } else { (tr("Click to load"), 0.25) };
             (
                 stack![base, pill(label, alpha)].into(),
                 UiMessage::Loaded(loads::Msg::ResolveMedia(m.account_id.clone(), m.id.clone(), raw.clone())),
@@ -3053,10 +3032,7 @@ impl BeeperGuiApp {
         let room = if self.conversation_width() - 8.0 <= 384.0 { 2 } else { usize::MAX };
         let flyover: Vec<El<'a>> = flyover.into_iter().chain(quick).take(room).collect();
         let flyover = (!flyover.is_empty()).then(|| -> El<'a> {
-            let row = match mine {
-                true => Row::with_children(flyover.into_iter().rev()),
-                false => Row::with_children(flyover),
-            };
+            let row = if mine { Row::with_children(flyover.into_iter().rev()) } else { Row::with_children(flyover) };
             mouse_area(row).on_enter(UiMessage::Message(Msg::ShowQuickReactions)).into()
         });
         // Desktop's download button beside an attachment, and the time of a message without text in its flyover.
@@ -4067,10 +4043,7 @@ impl BeeperGuiApp {
         let token = st.beeper_state.access_token.clone();
         drop(st);
         if let Some(link) = link {
-            return match link.starts_with(crate::deeplink::SCHEME) {
-                true => self.open_link(&link),
-                false => self.update(UiMessage::OpenUrl(link)),
-            };
+            return if link.starts_with(crate::deeplink::SCHEME) { self.open_link(&link) } else { self.update(UiMessage::OpenUrl(link)) };
         }
         let Some(url) = url else { return Task::none() };
         if !self.pressing.insert((mid.clone(), id.clone())) {

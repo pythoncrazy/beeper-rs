@@ -890,10 +890,7 @@ impl BeeperGuiApp {
             let items = options.into_iter().map(|f| {
                 let key = format!("{}/{}", a.bridge, f.id);
                 let label = FLOW_LABELS.iter().find(|l| l.0 == key).map(|l| tr(l.1).to_string());
-                let label = label.unwrap_or_else(|| match f.name.is_empty() {
-                    true => f.id.clone(),
-                    false => bridge_text("flowName", &key, &f.name),
-                });
+                let label = label.unwrap_or_else(|| if f.name.is_empty() { f.id.clone() } else { bridge_text("flowName", &key, &f.name) });
                 menu_item(p, None, label, "", (!a.busy).then(|| go(AddMsg::Flow(f.id.clone()))))
             });
             let list = crate::menu_card(p, Column::with_children(items), 200);

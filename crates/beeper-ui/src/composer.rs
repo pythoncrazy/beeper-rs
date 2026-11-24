@@ -83,10 +83,7 @@ fn pasted_link(t: &str) -> Option<String> {
 /// Desktop's `vL(text, { length: 100 })`.
 fn quick_reply_row(r: &beeper_core::models::QuickReply) -> (String, String, String) {
     let text: String = r.text.split_whitespace().collect::<Vec<_>>().join(" ");
-    let text = match text.chars().count() > 100 {
-        true => format!("{}...", text.chars().take(97).collect::<String>()),
-        false => text,
-    };
+    let text = if text.chars().count() > 100 { format!("{}...", text.chars().take(97).collect::<String>()) } else { text };
     (format!("{} - {text}", r.title), r.title.clone(), text)
 }
 
@@ -720,10 +717,7 @@ impl BeeperGuiApp {
         self.pane.link_dialog = None;
         self.pane.suggest = 0;
         // Desktop types nothing for an empty composer or a Send Later message.
-        let typing = match self.pane.composer.is_empty() || self.pane.send_later.is_some() {
-            true => Task::none(),
-            false => self.typing(true),
-        };
+        let typing = if self.pane.composer.is_empty() || self.pane.send_later.is_some() { Task::none() } else { self.typing(true) };
         Task::batch([typing, self.fetch_link_previews()])
     }
 
@@ -1627,10 +1621,7 @@ impl BeeperGuiApp {
             Msg::Submit if !self.can_compose() => {}
             Msg::Submit => {
                 self.submit_composer(false);
-                return match self.pane.thread_root.is_some() {
-                    true => Task::none(),
-                    false => self.typing(false),
-                };
+                return if self.pane.thread_root.is_some() { Task::none() } else { self.typing(false) };
             }
             Msg::SendAndArchive => {
                 let cid = self.pane.selected_chat_id.clone().expect("a chat is selected");

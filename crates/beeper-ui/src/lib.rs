@@ -4753,10 +4753,7 @@ impl BeeperGuiApp {
                 let task = self.update_login(m);
                 // Desktop's recovery key fields take the keyboard when their screen opens (`autoFocus`).
                 let keyed = matches!(self.login.screen, login::Screen::RecoveryKey | login::Screen::ConfirmKey);
-                return match keyed && self.login.screen != screen {
-                    true => Task::batch([task, operation::focus(verify::KEY_INPUT)]),
-                    false => task,
-                };
+                return if keyed && self.login.screen != screen { Task::batch([task, operation::focus(verify::KEY_INPUT)]) } else { task };
             }
             UiMessage::Verify(m) => return self.update_verify(m),
             UiMessage::Reauth(m) => return self.update_reauth(m),
@@ -5463,10 +5460,7 @@ impl BeeperGuiApp {
                 crate::ui_theme::window_bg(body, self.pal.backdrop, self.pal.window).into()
             }
         };
-        let (base, menu_drop) = match in_main {
-            true => self.with_menu_bar(base),
-            false => (base, None),
-        };
+        let (base, menu_drop) = if in_main { self.with_menu_bar(base) } else { (base, None) };
         let modal = match (&self.quick_look_target, self.show_command_palette) {
             (Some((title, detail)), _) => Some(self.view_quick_look(title, detail)),
             (None, true) => Some(self.view_command_palette()),
@@ -5692,10 +5686,7 @@ impl BeeperGuiApp {
                 }
             };
             let left = sub.is_some() && x + MESSAGE_MENU_W + sub_w > self.pane().size.width;
-            let (x, menu) = match left {
-                true => (x - sub_w, row![].push(sub).push(menu).into()),
-                false => (x, row![menu].push(sub).into()),
-            };
+            let (x, menu) = if left { (x - sub_w, row![].push(sub).push(menu).into()) } else { (x, row![menu].push(sub).into()) };
             (menu, x, y)
         });
         let edit_menu = self.pane().edit_menu.as_ref().map(|(at, word)| {

@@ -206,10 +206,7 @@ impl BeeperGuiApp {
                     (s.connected, s.mxid) = (connect, connect.then(|| format!("!{server}:beeper.local")));
                 }
                 drop(st);
-                let text = match connect {
-                    true => trf("Connecting %s...", &[&name]),
-                    false => trf("Disconnecting %s...", &[&name]),
-                };
+                let text = if connect { trf("Connecting %s...", &[&name]) } else { trf("Disconnecting %s...", &[&name]) };
                 self.show(Toast { stays: true, id: Some(format!("server-{server}")), ..Toast::new(text) });
                 let (p, sent) = (self.provision(&id), server.clone());
                 let change = async move {

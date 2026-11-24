@@ -790,10 +790,7 @@ impl BeeperGuiApp {
         let title = |s: &str| container(med(s.to_string(), 13.0).color(p.sub)).padding([8, 12]);
         let chats: Vec<&Chat> = l.rooms.iter().filter_map(|r| st.resolve_chat_idx(r).map(|i| &st.chats[i])).collect();
         let fit = 1 + ((LABEL_SETTINGS_SIZE.width - 16.0 - 32.0 - 20.0 - 24.0 - 36.0) / 28.0) as usize;
-        let shown = match l.rooms.len() <= fit && chats.len() >= l.rooms.len() {
-            true => chats.len(),
-            false => chats.len().min(fit - 1),
-        };
+        let shown = if l.rooms.len() <= fit && chats.len() >= l.rooms.len() { chats.len() } else { chats.len().min(fit - 1) };
         let more = l.rooms.len() - shown;
         let faces = chats[..shown].iter().map(|c| self.chat_avatar(c, 36.0, 1.25)).chain((more > 0).then(|| {
             // Desktop translates "+%d" ("count of avatars not shown in a pile") in no language.
@@ -1191,10 +1188,7 @@ impl BeeperGuiApp {
                 let st = self.store.read();
                 let edits = d.personal || st.chats[st.resolve_chat_idx(&d.chat).expect("an edited group")].edits & 2 != 0;
                 drop(st);
-                return match edits && !d.saving {
-                    true => self.group_edit(GroupEdit::Picked(Ok(vec![path]))),
-                    false => Task::none(),
-                };
+                return if edits && !d.saving { self.group_edit(GroupEdit::Picked(Ok(vec![path]))) } else { Task::none() };
             }
             GroupEdit::Picked(Ok(paths)) => {
                 let Some(path) = paths.into_iter().next() else { return Task::none() };
@@ -1315,10 +1309,7 @@ impl BeeperGuiApp {
             let label = txt(tr("Remove Photo"), 11.0).color(p.accent);
             container(button(label).bare(p.accent).on_press(edit(GroupEdit::Remove))).center_x(Fill)
         });
-        let hint = match d.personal {
-            true => Some(c.room_title()).filter(|t| !t.is_empty()).unwrap_or(tr("Chat Name")),
-            false => tr("Group Title"),
-        };
+        let hint = if d.personal { Some(c.room_title()).filter(|t| !t.is_empty()).unwrap_or(tr("Chat Name")) } else { tr("Group Title") };
         let title = text_input(hint, &d.title)
             .id(PERSONAL_INPUT)
             .on_input_maybe(can(0).then_some(move |t| edit(GroupEdit::Title(t))))

@@ -116,10 +116,7 @@ pub(crate) fn behavior(st: &BeeperStore, c: &Chat) -> Option<Behavior> {
     });
     let net_mutes = network.clone().filter(|_| chat.is_none() && !st.settings.account(&c.account_id).notifications);
     let net_hides = network.clone().filter(|_| c.is_hidden_from_inbox == Some(true));
-    let hidden = match labels.is_empty() {
-        true => net_hides.is_some(),
-        false => labels.iter().any(|l| l.1),
-    };
+    let hidden = if labels.is_empty() { net_hides.is_some() } else { labels.iter().any(|l| l.1) };
     let muted = chat.is_some() || (!labels.is_empty() && labels.iter().all(|l| l.2)) || net_mutes.is_some();
     // Desktop's `FK`: the first deciding label by name.
     let first = |pick: &dyn Fn(&(Source, bool, bool)) -> bool| {

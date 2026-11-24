@@ -402,10 +402,7 @@ impl BeeperGuiApp {
         let st = self.store.read();
         // Desktop's `${SWITCH_FIRST_9_ACCOUNTS.key}+${n}` of the first nine spaces.
         let modifier = st.settings.hotkey_keys("Switch First 9 Spaces Modifier");
-        let hotkey = |n: usize| match n < 9 {
-            true => hotkey_caps(&format!("{modifier}+{}", n + 1)),
-            false => vec![],
-        };
+        let hotkey = |n: usize| if n < 9 { hotkey_caps(&format!("{modifier}+{}", n + 1)) } else { vec![] };
         let numbers = st.settings.on("showUnreadCount");
         // A dark rich theme's `AccountBadge` dot is white with the text in `--color-from`.
         let (dot_bg, dot_fg) = p.badge.map_or((p.accent, Color::WHITE), |from| (Color::WHITE, from));

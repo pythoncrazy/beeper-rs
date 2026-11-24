@@ -289,10 +289,7 @@ impl BeeperGuiApp {
     /// Desktop's `Toast`: the newest toast, or the toast at an index of `older_toasts`.
     pub(crate) fn toast_card<'a>(&'a self, t: &Toast, older: Option<usize>) -> El<'a> {
         let p = &self.pal;
-        let (bg, fg) = match t.error {
-            true => (ON_ERROR, Color::WHITE),
-            false => (p.card, p.strong),
-        };
+        let (bg, fg) = if t.error { (ON_ERROR, Color::WHITE) } else { (p.card, p.strong) };
         let btn = |(label, msg): &(&'static str, UiMessage), fg: Color| {
             let label = semi(*label, 13.0).line_height(lh(18.0)).color(fg);
             let action = match t.dismiss {

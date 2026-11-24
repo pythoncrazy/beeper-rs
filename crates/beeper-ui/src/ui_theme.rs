@@ -109,10 +109,7 @@ pub fn apply(p: &mut Palette, theme: UiTheme, dark: bool, now_ms: i64) {
             (p.chip, p.link_card) = (received, received);
             p.backdrop = Some(Backdrop { from, to, rich: false, offset: 0.0 });
             // `--gradient-brand` and `--color-brand`.
-            p.brand_stops = Some(match dark {
-                false => [hsl(h, 86.0, 40.0), hsl(h, 75.0, 30.0)],
-                true => [hsl(h, 86.0, 30.0), hsl(h, 75.0, 23.0)],
-            });
+            p.brand_stops = Some(if dark { [hsl(h, 86.0, 30.0), hsl(h, 75.0, 23.0)] } else { [hsl(h, 86.0, 40.0), hsl(h, 75.0, 30.0)] });
             p.brand = primary;
             primary
         }
