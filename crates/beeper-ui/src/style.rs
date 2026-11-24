@@ -985,9 +985,10 @@ pub const fn hex(v: u32) -> Color {
     Color::from_rgb(((v >> 16) & 255) as f32 / 255.0, ((v >> 8) & 255) as f32 / 255.0, (v & 255) as f32 / 255.0)
 }
 
+/// A color at an opacity, which Chromium keeps in 8 bits: the 0.1 of `--color-backing-shade` is 26/255, so the space bar
+/// is #D5D6DB on the window, where a GPU blending the exact 0.1 draws #D5D6DC.
 const fn hexa(v: u32, a: f32) -> Color {
-    let c = hex(v);
-    Color { a, ..c }
+    Color { a: (a * 255.0).round() / 255.0, ..hex(v) }
 }
 
 /// One row for each color: the Desktop 4.3.308 CSS token, its light value and its dark value. Linux always has
@@ -1197,6 +1198,15 @@ pub fn cubic_bezier(x: f32, [x1, y1, x2, y2]: [f32; 4]) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Desktop's space bar, `--color-backing-shade` on `--left-pane-bg` with Chromium's 26/255 for its 0.1: #D5D6DB in
+    /// the light theme (measured) and #323334 in the dark one.
+    #[test]
+    fn the_space_bar_blends_like_chromium() {
+        for (p, want) in [(BEEPER_LIGHT, [0xd5, 0xd6, 0xdb]), (BEEPER_DARK, [0x32, 0x33, 0x34])] {
+            assert_eq!(flat(p.window, p.hover).into_rgba8()[..3], want);
+        }
+    }
 
     /// cosmic-text keeps the glyphs of each shaped word: a text measures the same from the kept words as when it was
     /// first shaped, and again after the trims dropped them.
