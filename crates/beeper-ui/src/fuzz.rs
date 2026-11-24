@@ -11995,6 +11995,37 @@ fn menus_open_where_chromium_puts_them() {
     }
 }
 
+/// Like Chromium's native menus, the message menu opens below the cursor, or above it ending at it, and its Playback
+/// Speed submenu opens level with its row, moved up near the bottom of the window. Each place is the top-left corner
+/// of the text of Playback Speed and of the first rate.
+#[test]
+fn message_menus_open_where_chromium_puts_them() {
+    let size = Size::new(1200.0, 800.0);
+    let mut app = demo_app("message-menu-places");
+    app.pane.size = size;
+    let voice = {
+        let st = app.store.read();
+        let m = st.messages.iter().find(|m| m.attachments.first().is_some_and(|a| app.playable(a)));
+        m.expect("a voice message").id.clone()
+    };
+    let rate = format!("{}x", crate::voice::RATES[0]);
+    let got = [40.0, 520.0, 790.0].map(|y| {
+        let _ = app.update(UiMessage::Message(message::Msg::OpenMenu(voice.clone())));
+        app.pane.message_menu.as_mut().expect("the menu").1 = Point::new(300.0, y);
+        app.audio.sub = true;
+        let (row, first) = {
+            let mut sim = Simulator::with_size(Default::default(), size, app.view_main());
+            let mut at = |s: &str| sim.find(s).unwrap_or_else(|_| panic!("{s} shows")).bounds().position();
+            (at("Playback Speed"), at(&rate))
+        };
+        let _ = app.update(UiMessage::CloseModals);
+        [(row.x, row.y), (first.x, first.y)]
+    });
+    let want =
+        [[(313.0, 162.79999), (606.0, 163.79999)], [(313.0, 264.19995), (606.0, 265.19995)], [(313.0, 534.19995), (606.0, 535.19995)]];
+    assert_eq!(got, want);
+}
+
 /// An image that covers its box, wider than the box, is cut at the box in the software renderer as in wgpu: the
 /// media of the info pane, the attachments of the composer and link previews are `ContentFit::Cover`.
 #[test]
