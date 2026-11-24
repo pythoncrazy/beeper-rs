@@ -429,7 +429,9 @@ impl BeeperGuiApp {
             container(btn).id(id).into()
         };
         let requests = self.count("requests", || st.chats.iter().filter(|c| st.new_request(c)).count());
-        let g = |c: char| -> El<'static> { ic(c, 24.0).color(p.strong).into() };
+        // Desktop's spaces inherit the body's `--color-text-neutrals`, and the footer buttons are `--color-on-surface`.
+        let glyph = |c: char, fg: Color| -> El<'static> { ic(c, 24.0).color(fg).into() };
+        let g = |c: char| glyph(c, p.text);
         let ring_color = p.fg;
         let ring =
             svg(DASHED_RING.clone()).width(32).height(32).opacity(0.15_f32).style(move |_, _| svg::Style { color: Some(ring_color) });
@@ -514,7 +516,7 @@ impl BeeperGuiApp {
                 "scheduled" => tab("rail-send-later", i, g(icon::SCHEDULE_SEND), InboxTab::SendLater, 0, false),
                 "requests" => tab("rail-requests", i, g(icon::EMAIL), InboxTab::Requests, requests, false),
                 "snoozed" => {
-                    let moon = tinted(&MOON_STARS, 24.0, p.strong);
+                    let moon = tinted(&MOON_STARS, 24.0, p.text);
                     tab("rail-snoozed", i, moon, InboxTab::Snoozed, 0, false)
                 }
                 "low_priority" => tab(
@@ -566,10 +568,10 @@ impl BeeperGuiApp {
             .on_press(settings.clone());
         let me_btn = self.target(window, "rail-settings", me_btn, Keys::press(settings), Look::Hidden);
         let footer = column![
-            tip(rail_btn("rail-media".into(), g(icon::PHOTO_LIBRARY), false, media), tr("Media"), vec![]),
+            tip(rail_btn("rail-media".into(), glyph(icon::PHOTO_LIBRARY, p.strong), false, media), tr("Media"), vec![]),
             // Desktop's "Add an account" opens the Add an Account window (`showAddAccountModal`).
             tip(
-                rail_btn("rail-add".into(), g(icon::LIBRARY_ADD), false, UiMessage::Networks(crate::networks::Msg::Open)),
+                rail_btn("rail-add".into(), glyph(icon::LIBRARY_ADD, p.strong), false, UiMessage::Networks(crate::networks::Msg::Open)),
                 tr("Add an account"),
                 vec![]
             ),
