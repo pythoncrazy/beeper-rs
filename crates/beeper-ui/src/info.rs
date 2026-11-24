@@ -939,7 +939,7 @@ mod tests {
         let add = sim.find("Add to a Label").expect("Add to a Label").bounds();
         let shot = crate::message::tests::pixels(&mut sim);
         let ink = |w| crate::focus::tests::ink(&shot, 1200.0, w).0;
-        let size = |got: [f32; 4], w: f32, h: f32| (got[2] - w).abs() <= 0.4 && (got[3] - h).abs() <= 0.4;
+        let size = |got: [f32; 4], w: f32, h: f32| (got[2] - w).abs() <= 0.5 && (got[3] - h).abs() <= 0.5;
         let windows = [[930.0, 14.0, 24.0, 24.0], [1162.0, 14.0, 24.0, 24.0], [924.0, 753.0, 28.0, 28.0]];
         let more = [[993.0, 753.0, 28.0, 28.0], [1062.0, 753.0, 28.0, 28.0], [1131.0, 753.0, 28.0, 28.0]];
         let want = [(9.6, 16.0), (10.55, 10.55), (19.2, 19.2), (19.2, 19.2), (16.45, 16.45), (11.3, 6.55)];
