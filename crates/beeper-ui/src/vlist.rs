@@ -7,19 +7,19 @@
 
 use crate::prelude::*;
 use iced::advanced::layout::{self, flex};
-use iced::advanced::{mouse, overlay, renderer};
+use iced::advanced::{mouse, overlay, renderer, Renderer as _};
 use iced::{window, Alignment};
 use std::hash::{Hash, Hasher};
 
 const OVERSCAN: usize = 15;
 /// How long a list counts as scrolling after its visible span last moved, like `virtua`'s `isScrolling`.
 const SCROLL_IDLE: std::time::Duration = std::time::Duration::from_millis(150);
-/// The height of a section label, Desktop's date pill with its margin: a label floats while the next one is further
-/// below the line.
-const LABEL: f32 = 32.0;
-/// How far above the line a section start may be for its label to float while the list stands still: Desktop hides a
-/// date (`i + 20 < scrollOffset`) once its row is 20 px under the 36 px header, 64 px above its 48 px sticky top.
-const IDLE: f32 = 64.0;
+/// The height of a section label, Desktop's 24 px date pill, which its row places 4 px under its top.
+const LABEL: f32 = 24.0;
+/// The fade of a label that hides or shows: `.sticky-date-container`'s `opacity 0.1s cubic-bezier(.165, .84, .44, 1)`.
+const FADE: f32 = 0.1;
+/// The key of the label of the section that starts at the row of a key.
+const LABEL_KEY: u64 = 0x9e37_79b9_7f4a_7c15;
 /// The visible height that a list uses before a frame measures it.
 const FIRST_SPAN: f32 = 1600.0;
 
@@ -65,6 +65,18 @@ impl Hasher for Same {
 #[derive(Default)]
 pub struct VList(RefCell<Inner>);
 
+/// Desktop's `sticky-date-container`: each section's label is `position: sticky` in a box from its section to the next,
+/// so it floats at `line` once its place goes above it, and the next section pushes it up. While the list stands still,
+/// a label hides once its section starts more than 20 px above `pad` (`offset + 20 < scrollOffset`, where the offsets
+/// leave out the padding of the scrolling container).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Float {
+    /// The padding at the top of the scrolling container.
+    pub pad: f32,
+    /// The sticky top of the label (`.sticky-date-slider`) under the top of the viewport.
+    pub line: f32,
+}
+
 #[derive(Default)]
 struct Inner {
     /// The width of the measured rows.
@@ -85,12 +97,10 @@ struct Inner {
     stale: bool,
     /// The rows that start a section, as ascending indices of the keys: the days of Desktop's messages list.
     sections: Vec<usize>,
-    /// How far below the top of the viewport a floating label goes.
-    line: f32,
-    /// The last section that starts above the line, whose own label the list covers.
-    covered: Option<usize>,
-    /// The start of the section whose label floats at the line.
-    sticky: Option<usize>,
+    /// How the labels of the sections float.
+    float: Option<Float>,
+    /// Whether the label of the section at the row of each key shows, and since when.
+    fades: HashMap<u64, (bool, std::time::Instant)>,
     /// When the visible span last moved.
     moved: Option<std::time::Instant>,
 }
@@ -100,7 +110,16 @@ impl VList {
     /// list at its bottom. `estimate` is the height of a row before the first measurement. `row` builds a row from
     /// its index, and the list publishes `relist` when it must build other rows.
     pub fn view<'a, M: Clone + 'a>(
+        &'a self, keys: &[u64], end: bool, estimate: f32, relist: M, row: impl FnMut(usize) -> Element<'a, M>,
+    ) -> Element<'a, M> {
+        self.labeled(keys, end, estimate, relist, row, |_| None)
+    }
+
+    /// [`Self::view`] with the label of each section, which `label` builds from the index of its first row. The list
+    /// draws the labels of its sections in view, and that of the last section above them.
+    pub fn labeled<'a, M: Clone + 'a>(
         &'a self, keys: &[u64], end: bool, estimate: f32, relist: M, mut row: impl FnMut(usize) -> Element<'a, M>,
+        mut label: impl FnMut(usize) -> Option<Element<'a, M>>,
     ) -> Element<'a, M> {
         let mut guard = self.0.borrow_mut();
         let inner = &mut *guard;
@@ -143,38 +162,48 @@ impl VList {
         let (near, far) = (starts[lo], y - starts[hi]);
         let shown = if end { n - hi..n - lo } else { lo..hi };
         let assumed = shown.clone().map(height).collect();
+        // The sections in view, after the last one that starts above them: each with its row and that of the next.
+        let first = inner.sections.partition_point(|&s| s < shown.start).saturating_sub(1);
+        let sections: Vec<usize> = inner.sections[first..].iter().copied().take_while(|&s| s < shown.end).collect();
+        let row_of = |s: usize| s.checked_sub(shown.start).filter(|&j| j < shown.len());
+        let next = |k: usize| inner.sections.get(first + k + 1).copied().and_then(row_of);
+        let sections: Vec<(Label, usize)> =
+            sections.iter().enumerate().map(|(k, &s)| ((row_of(s), next(k), keys[s] ^ LABEL_KEY), s)).collect();
+        let float = inner.float;
         drop(guard);
+        let (labels, labeled): (Vec<Label>, Vec<Element<'a, M>>) = sections.into_iter().filter_map(|(l, s)| Some((l, label(s)?))).unzip();
         Element::new(Rows {
             list: self,
             end,
-            base: shown.start,
             keys: keys[shown.clone()].to_vec(),
             assumed,
-            children: shown.map(&mut row).collect(),
+            children: shown.map(&mut row).chain(labeled).collect(),
+            labels,
+            float,
             before: if end { far } else { near },
             after: if end { near } else { far },
             relist,
         })
     }
 
-    /// Sets the rows that start the sections, as ascending indices of the keys of the next views, and how far below
-    /// the top of the viewport their labels float.
-    pub fn sections(&self, starts: Vec<usize>, line: f32) {
+    /// Sets the rows that start the sections, as ascending indices of the keys of the next views, and how their labels
+    /// float: `None` keeps them in place.
+    pub fn sections(&self, starts: Vec<usize>, float: Option<Float>) {
         let mut inner = self.0.borrow_mut();
-        (inner.sections, inner.line) = (starts, line);
+        (inner.sections, inner.float) = (starts, float);
     }
 
-    /// The last section that starts above the line. Like Desktop, whose dates are all `sticky-date-container`s, its
-    /// label shows only at the line, so the view leaves it out of its row.
-    pub fn covered(&self) -> Option<usize> {
-        self.0.borrow().covered
-    }
-
-    /// Desktop's `sticky-date-container`: the start of the covered section, whose label floats at the line while the
-    /// list scrolls, or while its start is less than `IDLE` above the line. A frame where it or the covered section
-    /// changes publishes the list message.
-    pub fn sticky(&self) -> Option<usize> {
-        self.0.borrow().sticky
+    /// The opacity of the label of the section that starts at the row of `key`, which fades in or out as it shows or
+    /// hides.
+    pub fn alpha(&self, key: u64) -> f32 {
+        self.0.borrow().fades.get(&(key ^ LABEL_KEY)).map_or(1.0, |&(shown, at)| {
+            let t = crate::style::cubic_bezier((at.elapsed().as_secs_f32() / FADE).min(1.0), [0.165, 0.84, 0.44, 1.0]);
+            if shown {
+                t
+            } else {
+                1.0 - t
+            }
+        })
     }
 
     /// The key of the row at the far edge of the last visible span, like the end of virtua's `onRangeChange`: the
@@ -225,19 +254,45 @@ fn rows(layout: Layout<'_>) -> impl Iterator<Item = Layout<'_>> {
     layout.children().next().expect("the rows node").children()
 }
 
+/// A section's label: the built row of its section, that of the next section, and its key. A section above the built
+/// rows starts above them, and one below them starts below the view.
+type Label = (Option<usize>, Option<usize>, u64);
+
 /// The rows that a view of a `VList` builds, under a spacer of `before` and over a spacer of `after`.
 struct Rows<'a, M> {
     list: &'a VList,
     end: bool,
-    /// The index of the first built row in the keys of the view.
-    base: usize,
     keys: Vec<u64>,
     /// The heights that the view gave the rows.
     assumed: Vec<f32>,
+    /// The rows, then the labels.
     children: Vec<Element<'a, M>>,
+    labels: Vec<Label>,
+    float: Option<Float>,
     before: f32,
     after: f32,
     relist: M,
+}
+
+impl<M> Rows<'_, M> {
+    /// The keys of the rows, then those of the labels.
+    fn all_keys(&self) -> Vec<u64> {
+        self.keys.iter().copied().chain(self.labels.iter().map(|l| l.2)).collect()
+    }
+
+    /// Where each label goes under the top of the viewport, and whether it shows.
+    fn placed(&self, layout: Layout<'_>, viewport: &Rectangle, scrolling: bool) -> Vec<(f32, bool)> {
+        let tops: Vec<f32> = rows(layout).map(|r| r.bounds().y - viewport.y).collect();
+        let top = |j: Option<usize>, none: f32| j.and_then(|j| tops.get(j).copied()).unwrap_or(none);
+        let place = |&(row, next, _): &Label| {
+            let (t, below) = (top(row, f32::NEG_INFINITY), top(next, f32::INFINITY));
+            match self.float {
+                Some(f) => ((t + 4.0).max(f.line).min(below - LABEL), scrolling || t >= f.pad - 20.0),
+                None => (t + 4.0, true),
+            }
+        };
+        self.labels.iter().map(place).collect()
+    }
 }
 
 impl<M: Clone> Widget<M, Theme, Renderer> for Rows<'_, M> {
@@ -246,7 +301,7 @@ impl<M: Clone> Widget<M, Theme, Renderer> for Rows<'_, M> {
     }
 
     fn state(&self) -> tree::State {
-        tree::State::new(self.keys.clone())
+        tree::State::new(self.all_keys())
     }
 
     fn children(&self) -> Vec<Tree> {
@@ -255,9 +310,10 @@ impl<M: Clone> Widget<M, Theme, Renderer> for Rows<'_, M> {
 
     /// Gives each row the state of the row with the same key, so that a row keeps its state when the rows move.
     fn diff(&self, tree: &mut Tree) {
-        let old = std::mem::replace(tree.state.downcast_mut::<Vec<u64>>(), self.keys.clone());
+        let keys = self.all_keys();
+        let old = std::mem::replace(tree.state.downcast_mut::<Vec<u64>>(), keys.clone());
         let mut old: HashMap<u64, Tree> = old.into_iter().zip(std::mem::take(&mut tree.children)).collect();
-        tree.children = (self.keys.iter().zip(&self.children))
+        tree.children = (keys.iter().zip(&self.children))
             .map(|(k, child)| match old.remove(k) {
                 Some(mut t) => {
                     t.diff(child.as_widget());
@@ -273,6 +329,7 @@ impl<M: Clone> Widget<M, Theme, Renderer> for Rows<'_, M> {
     }
 
     fn layout(&mut self, tree: &mut Tree, renderer: &Renderer, limits: &layout::Limits) -> layout::Node {
+        let n = self.keys.len();
         let rows = flex::resolve(
             flex::Axis::Vertical,
             renderer,
@@ -282,12 +339,20 @@ impl<M: Clone> Widget<M, Theme, Renderer> for Rows<'_, M> {
             Padding::ZERO,
             0.0,
             Alignment::Start,
-            &mut self.children,
-            &mut tree.children,
+            &mut self.children[..n],
+            &mut tree.children[..n],
         );
         let size = rows.size();
+        // Each label in its place, 4 px into the row of its section, or above the rows.
+        let wide = layout::Limits::new(Size::ZERO, Size::new(size.width, f32::INFINITY));
+        let labels = (self.children[n..].iter_mut().zip(&mut tree.children[n..]).zip(&self.labels))
+            .map(|((label, tree), &(row, _, _))| {
+                let y = row.map_or(-LABEL, |j| rows.children()[j].bounds().y + 4.0);
+                label.as_widget_mut().layout(tree, renderer, &wide).move_to((0.0, self.before + y))
+            })
+            .collect();
         let size = Size::new(size.width, size.height + self.before + self.after);
-        layout::Node::with_children(size, vec![rows.move_to((0.0, self.before))])
+        layout::Node::with_children(size, vec![rows.move_to((0.0, self.before)), layout::Node::with_children(size, labels)])
     }
 
     fn operate(&mut self, tree: &mut Tree, layout: Layout<'_>, renderer: &Renderer, operation: &mut dyn Operation) {
@@ -334,21 +399,28 @@ impl<M: Clone> Widget<M, Theme, Renderer> for Rows<'_, M> {
         }
         inner.seen = Some((at, viewport.height));
         let scrolling = inner.moved.is_some_and(|t| now.duration_since(t) < SCROLL_IDLE);
-        // How far below the line each built row starts. A row above the built ones starts above it.
-        let tops: Vec<f32> = rows(layout).map(|r| r.bounds().y - viewport.y - inner.line).collect();
-        let top = |row: usize| row.checked_sub(self.base).and_then(|j| tops.get(j)).copied();
-        let above = |row: usize| top(row).map_or(row < self.base, |y| y < 0.0);
-        let covered = inner.sections.iter().rposition(|&s| above(s));
-        let sticky = covered.filter(|&k| {
-            let next_clear = inner.sections.get(k + 1).and_then(|&s| top(s)).is_none_or(|y| y >= LABEL);
-            next_clear && (scrolling || top(inner.sections[k]).is_some_and(|y| y >= -IDLE))
-        });
-        let (covered, sticky) = (covered.map(|k| inner.sections[k]), sticky.map(|k| inner.sections[k]));
-        let sticky_changed =
-            (std::mem::replace(&mut inner.sticky, sticky) != sticky) | (std::mem::replace(&mut inner.covered, covered) != covered);
+        // A label that starts to show or hide fades, and the view builds it again at each step.
+        let mut fading = false;
+        for (&(_, _, key), (_, shows)) in self.labels.iter().zip(self.placed(layout, viewport, scrolling)) {
+            match inner.fades.get(&key) {
+                Some(&(old, at)) if old == shows => fading |= at.elapsed().as_secs_f32() < FADE,
+                Some(_) => {
+                    inner.fades.insert(key, (shows, now));
+                    fading = true;
+                }
+                // A label that shows up hidden is hidden at once.
+                None => {
+                    inner.fades.insert(key, (shows, now.checked_sub(std::time::Duration::from_secs(1)).unwrap_or(now)));
+                    fading |= !shows;
+                }
+            }
+        }
+        if fading {
+            shell.request_redraw();
+        }
         // `virtua`'s `onRangeChange` once the scroll stops, for the timeline to read through its last row in view.
         let settled = !scrolling && inner.moved.take().is_some();
-        if changed || sticky_changed || settled || at < inner.safe.0 || at + viewport.height > inner.safe.1 {
+        if changed || fading || settled || at < inner.safe.0 || at + viewport.height > inner.safe.1 {
             shell.publish(self.relist.clone());
         }
     }
@@ -369,6 +441,20 @@ impl<M: Clone> Widget<M, Theme, Renderer> for Rows<'_, M> {
         for ((child, state), layout) in self.children.iter().zip(&tree.children).zip(rows(layout)) {
             if layout.bounds().intersects(viewport) {
                 child.as_widget().draw(state, renderer, theme, style, layout, cursor, viewport);
+            }
+        }
+        let inner = self.list.0.borrow();
+        let scrolling = inner.moved.is_some_and(|t| t.elapsed() < SCROLL_IDLE);
+        let n = self.keys.len();
+        let labels = layout.children().nth(1).expect("the labels node").children();
+        let placed = self.labels.iter().zip(self.placed(layout, viewport, scrolling));
+        for (((label, state), layout), (&(_, _, key), (y, shows))) in
+            self.children[n..].iter().zip(&tree.children[n..]).zip(labels).zip(placed)
+        {
+            // A label that the view built before the list knew whether it shows waits for the next view.
+            if shows || inner.fades.contains_key(&key) {
+                let dy = Vector::new(0.0, viewport.y + y - layout.bounds().y);
+                renderer.with_translation(dy, |r| label.as_widget().draw(state, r, theme, style, layout, cursor, &(*viewport - dy)));
             }
         }
     }
@@ -421,27 +507,41 @@ mod tests {
         assert_eq!(list.nearest(Some(2)), Some(100.0), "a reveal of a row that the list does not have keeps its place");
     }
 
-    /// Like Desktop's dates, which all are `sticky-date-container`s, the label of a section that starts above the
-    /// line shows only at the line: while the list stands still, only when its start is less than 64 px above the
-    /// line, and never while the next label is less than a label below the line.
+    /// Desktop's `sticky-date-container`s, measured in Desktop 4.3.308 with a 36 px padding and the 48 px sticky top:
+    /// a label sits 4 px into its section, at most 84 px under the top, and above the next section; while the list
+    /// stands still, it hides once its section starts more than 20 px above the padding.
     #[test]
-    fn labels_float_at_the_line_like_desktop() {
-        // 20 rows of 50 px at the bottom of a 300 px viewport: rows 14 to 19 show, and row 15 starts 50 px down.
+    fn labels_stick_and_hide_like_desktop() {
+        // 20 rows of 50 px at the bottom of a 300 px viewport: row 14 starts at the top, row 15 50 px under it.
         let keys: Vec<u64> = (0..20).collect();
-        let float = |sections: Vec<usize>| {
+        fn color(s: usize) -> Color {
+            Color::from_rgb8(10 * s as u8, 0, 0)
+        }
+        fn view<'a>(list: &'a VList, keys: &'a [u64]) -> Element<'a, UiMessage> {
+            let bar = |s: usize| {
+                let c = color(s).scale_alpha(list.alpha(keys[s]));
+                let bar = iced::widget::container(iced::widget::Space::new().width(Length::Fill).height(LABEL));
+                Some(bar.style(crate::style::fill_box(c, 0.0)).into())
+            };
+            let rows = list.labeled(keys, true, 50.0, UiMessage::Relist, |_| iced::widget::Space::new().height(50).into(), bar);
+            iced::widget::scrollable(rows).anchor_bottom().height(Length::Fill).into()
+        }
+        let drawn = |sections: Vec<usize>| -> Vec<Option<u32>> {
             let list = VList::default();
-            list.sections(sections, 76.0);
-            let rows = list.view(&keys, true, 50.0, (), |_| iced::widget::Space::new().height(50).into());
-            let view = iced::widget::scrollable(rows).anchor_bottom().height(Length::Fill);
-            let mut sim = iced_test::Simulator::with_size(Default::default(), Size::new(400.0, 300.0), view);
+            list.sections(sections.clone(), Some(Float { pad: 36.0, line: 84.0 }));
+            let size = Size::new(400.0, 300.0);
+            let mut sim = iced_test::Simulator::with_size(Default::default(), size, view(&list, &keys));
             let _ = sim.simulate([Event::Window(window::Event::RedrawRequested(std::time::Instant::now()))]);
             drop(sim);
-            (list.covered(), list.sticky())
+            // The next view knows which labels hide.
+            let mut sim = iced_test::Simulator::with_size(Default::default(), size, view(&list, &keys));
+            let shot = crate::focus::tests::pixels(&mut sim, &iced::Theme::Light, "labels");
+            let top = |s: usize| (0..shot.height()).find(|&y| shot.get_pixel(20, y).0[..3] == color(s).into_rgba8()[..3]).map(|y| y / 2);
+            sections.into_iter().map(top).collect()
         };
-        assert_eq!(float(vec![0, 16]), (Some(0), None), "a day that starts 24 px under the line keeps its label");
-        assert_eq!(float(vec![0, 17]), (Some(0), None), "a day that starts far above hides its label");
-        assert_eq!(float(vec![0, 15]), (Some(15), Some(15)), "26 px above the line, its label floats");
-        assert_eq!(float(vec![0, 15, 16]), (Some(15), None), "the next label pushes it away");
-        assert_eq!(float(vec![0, 14]), (Some(14), None), "76 px above the line, it hides");
+        assert_eq!(drawn(vec![0, 15]), [None, Some(84)], "a day that starts 50 px down floats 84 px down, and the one above hides");
+        assert_eq!(drawn(vec![0, 15, 16]), [None, Some(76), Some(104)], "the next day pushes it up");
+        assert_eq!(drawn(vec![0, 17]), [None, Some(154)], "a day lower down shows in its place");
+        assert_eq!(drawn(vec![14, 17]), [None, Some(154)], "a day that starts at the top hides, 16 px under the padding");
     }
 }
