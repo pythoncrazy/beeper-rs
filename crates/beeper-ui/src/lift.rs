@@ -27,6 +27,8 @@ enum Origin {
     Press,
     /// The center.
     Center,
+    /// The center, clipped at the content's box.
+    Clip,
 }
 
 pub fn lift<'a, Message>(content: impl Into<Element<'a, Message>>, dy: f32, scale: f32) -> Lift<'a, Message> {
@@ -53,6 +55,12 @@ pub fn press<'a, Message>(content: impl Into<Element<'a, Message>>, scale: f32) 
 /// Draws `content` at `scale` from its center, like a CSS `transform: scale(...)`.
 pub fn shrink<'a, Message>(content: impl Into<Element<'a, Message>>, scale: f32) -> Lift<'a, Message> {
     Lift { content: content.into(), dx: 0.0, dy: 0.0, scale, fit: None, origin: Origin::Center }
+}
+
+/// Draws `content` at `scale` from its center and clipped at its box, like a CSS `transform: scale(...)` in an
+/// `overflow: hidden` box.
+pub fn clip<'a, Message>(content: impl Into<Element<'a, Message>>, scale: f32) -> Lift<'a, Message> {
+    Lift { content: content.into(), dx: 0.0, dy: 0.0, scale, fit: None, origin: Origin::Clip }
 }
 
 impl<Message> Lift<'_, Message> {
@@ -99,12 +107,16 @@ impl<Message> Widget<Message, Theme, Renderer> for Lift<'_, Message> {
         let (x, y, scale) = match self.origin {
             Origin::Corner => (b.x + b.width, b.y + b.height, self.scale),
             Origin::Press if !*tree.state.downcast_ref::<bool>() => (b.center_x(), b.center_y(), 1.0),
-            Origin::Press | Origin::Center => (b.center_x(), b.center_y(), self.scale),
+            Origin::Press | Origin::Center | Origin::Clip => (b.center_x(), b.center_y(), self.scale),
         };
         let t = Transformation::translate(x + self.dx, y + self.dy) * Transformation::scale(scale) * Transformation::translate(-x, -y);
-        renderer.with_transformation(t, |r| {
-            self.content.as_widget().draw(&tree.children[0], r, theme, style, layout, cursor, viewport);
-        });
+        let draw = |r: &mut Renderer| {
+            r.with_transformation(t, |r| self.content.as_widget().draw(&tree.children[0], r, theme, style, layout, cursor, viewport));
+        };
+        match self.origin {
+            Origin::Clip => renderer.with_layer(b, draw),
+            _ => draw(renderer),
+        }
     }
 }
 

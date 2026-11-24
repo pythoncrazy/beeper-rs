@@ -470,7 +470,7 @@ impl BeeperGuiApp {
             row![]
                 .push(picked.map(network_logo))
                 .push(txt(label, 12.0).color(p.strong))
-                .push(ic(icon::EXPAND_MORE, 16.0).color(p.strong))
+                .push(tinted(&CHEVRON_DOWN, 16.0, p.strong))
                 .spacing(4)
                 .align_y(Center),
         )
@@ -492,7 +492,7 @@ impl BeeperGuiApp {
             .padding([8, 0])
             .style(input_style(CLEAR, p.strong, p.sub, p.accent, 0.0));
         let inputs = Row::with_children(pills).push(field).spacing(4).align_y(Center);
-        row![ic(icon::SEARCH, 16.0).color(p.sub), inputs]
+        row![crate::platform(ic(icon::SEARCH, 16.0).color(p.sub)), inputs]
             .push(users.is_empty().then_some(all_acc))
             .spacing(8)
             .align_y(Center)
@@ -506,7 +506,7 @@ impl BeeperGuiApp {
         let picked = self.new_chat_account.as_deref();
         let options = std::iter::once(None).chain(listed.iter().map(|a| Some(a.as_str()))).map(|a| -> El<'_> {
             let label = a.map_or_else(|| tr("All accounts").into(), |a| account_option(st, a, listed));
-            let check = (a == picked).then(|| ic(icon::CHECK, 16.0).color(p.strong));
+            let check = (a == picked).then(|| tinted(&crate::MEDIA_ICONS[6], 16.0, p.strong));
             let line = row![]
                 .push(a.map(network_logo))
                 .push(ell(&label, 160.0, 13.0, Weight::Normal).color(p.strong).width(Fill))
@@ -596,7 +596,7 @@ impl BeeperGuiApp {
                 .style(btn_style([bg, p.chip, p.selected], [p.strong; 3], 6.0))
                 .on_press(UiMessage::NewChat(msg))
         };
-        let group_btn = action(ic(icon::GROUP, 20.0).color(p.accent).into(), tr("New Group"), p.chip, new_chat::Msg::NewGroup);
+        let group_btn = action(crate::platform(ic(icon::GROUP, 20.0).color(p.accent)), tr("New Group"), p.chip, new_chat::Msg::NewGroup);
         let join_btn = action(tinted(&MAT_LINK, 20.0, p.accent), tr("Join a Matrix room"), CLEAR, new_chat::Msg::ToggleJoinMatrix);
         let group_btn = listed.iter().any(|a| self.can_group(a)).then(|| container(group_btn).padding([0, 8]).into());
         (group_btn, container(join_btn).padding([0, 8]).into())

@@ -33,10 +33,13 @@ impl BeeperGuiApp {
             let hover = Color { a: 0.1, ..p.text };
             let options = options.into_iter().map(|(label, on, m)| {
                 let fg = if on || !any { p.text } else { p.sub };
-                let line =
-                    row![semi(label, 11.0).color(fg), Space::new().width(Fill), ic(icon::CHECK, 16.0).color(if on { fg } else { CLEAR })]
-                        .spacing(8)
-                        .align_y(Center);
+                let line = row![
+                    semi(label, 11.0).color(fg),
+                    Space::new().width(Fill),
+                    tinted(&crate::MEDIA_ICONS[6], 16.0, if on { fg } else { CLEAR })
+                ]
+                .spacing(8)
+                .align_y(Center);
                 let style = btn_style([CLEAR, hover, hover], [fg; 3], 4.0);
                 button(line)
                     .padding([6, 4])
@@ -48,7 +51,7 @@ impl BeeperGuiApp {
             let head = row![
                 semi(f.label(chip).unwrap_or_else(|| tr(SEARCH_CHIPS[chip]).into()), 13.0).color(p.text),
                 Space::new().width(Fill),
-                ic(icon::EXPAND_MORE, 14.0).color(p.text)
+                tinted(&CHEVRON_DOWN, 16.0, p.text)
             ]
             .spacing(4)
             .padding([0, 12])
@@ -214,7 +217,8 @@ impl BeeperGuiApp {
                 row![input, sized_select(p, no_reply, no_reply[usize::from(!self.cmd_no_reply)], pick, 13.0, pad)]
             }
             Some(_) => row![input],
-            None => row![ic(icon::SEARCH, 14.0).color(p.sub), input, mode_btn],
+            // `.command-bar .inputs .search-icon`: a 16 px `PlatformIcon`.
+            None => row![crate::platform(ic(icon::SEARCH, 16.0).color(p.sub)), input, mode_btn],
         };
         inputs.spacing(8).align_y(Center).padding(Padding::new(6.0).left(13.0).right(8.0)).into()
     }
@@ -278,7 +282,7 @@ impl BeeperGuiApp {
             let fg = if disabled { p.text.scale_alpha(0.3) } else { p.text };
             let label = f.label(i);
             let style = if label.is_some() { bordered_box(CLEAR, p.text, 1.0, 20.0) } else { bordered_box(p.chip, CLEAR, 1.0, 20.0) };
-            let body = row![semi(label.unwrap_or_else(|| tr(placeholder).into()), 13.0).color(fg), ic(icon::EXPAND_MORE, 14.0).color(fg)]
+            let body = row![semi(label.unwrap_or_else(|| tr(placeholder).into()), 13.0).color(fg), tinted(&CHEVRON_DOWN, 16.0, fg)]
                 .spacing(4)
                 .align_y(Center);
             let chip = button(body).bare(fg).padding([4, 13]);
@@ -396,7 +400,11 @@ impl BeeperGuiApp {
             },
             (None, Some(l), _) => {
                 let title = crate::links::shown_title(l);
-                let sub = row![ic(icon::LINK, 12.0).color(p.text), ell(&l.url, 77.0, 10.0, Weight::Semibold).color(p.text)];
+                // Desktop's `link` system icon, 13 by 12.
+                let sub = row![
+                    container(tinted(&crate::LINK_ICON, 12.0, p.text)).center_x(13),
+                    ell(&l.url, 77.0, 10.0, Weight::Semibold).color(p.text)
+                ];
                 card(title, sub.spacing(4).align_y(Center).into())
             }
             (None, None, Some(a)) => {

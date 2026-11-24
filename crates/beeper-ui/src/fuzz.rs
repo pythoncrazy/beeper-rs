@@ -10561,6 +10561,73 @@ fn menus_draw_desktop_icons() {
     assert!((chevron[2] - 4.3).abs() <= 0.3 && (chevron[3] - 7.6).abs() <= 0.3, "the submenu chevron: {chevron:?}");
 }
 
+/// Desktop's `PlatformIcon`s of the command bar, New Chat and Label Settings at `scale(1.2)` and clipped at their box:
+/// the 16 px search of the command bar's input (13.2), its 24 px "No results" search (19.7), New Group's 20 px
+/// `group` (24 by 14, clipped to 20), and the 18 px `RowIcon`s (inbox 15.1, notifications_off 15.65 by 17.55) and
+/// 16 px chevron of Label Settings (5.9 by 9.6, less the antialiased tip).
+#[test]
+fn search_and_sheet_icons_like_desktop() {
+    let size = Size::new(1200.0, 800.0);
+    let near = |got: [f32; 4], w: f32, h: f32| (got[2] - w).abs() <= 0.4 && (got[3] - h).abs() <= 0.4;
+    // The snapshot of the main window and the bounds of the text `at` in it.
+    let shot = |app: &BeeperGuiApp, at: &str| {
+        let mut sim = Simulator::with_size(Default::default(), size, app.view_main());
+        let b = sim.find(at).unwrap_or_else(|_| panic!("{at}")).bounds();
+        (crate::message::tests::pixels(&mut sim), b)
+    };
+    let mut app = demo_app("search-icons");
+    let main = app.main_window.expect("a main window");
+    let _ = app.update(UiMessage::Window(windows::Msg::Resized(main, size)));
+    let _ = app.update(UiMessage::RunHotkey("Command Bar"));
+    let _ = app.update(UiMessage::CommandBar(commands::Msg::Query("zzqqxx".into())));
+    let (s, empty) = shot(&app, "No results");
+    let (input, glass) = (ink_of(&s, size, [306.0, 228.0, 24.0, 24.0]), ink_of(&s, size, [empty.x + 20.5, empty.y - 34.0, 26.0, 26.0]));
+    assert!(near(input, 13.16, 13.16) && near(glass, 19.74, 19.74), "the command bar's search icons: {input:?} {glass:?}");
+    let _ = app.update(UiMessage::CommandBar(commands::Msg::TogglePalette));
+    let _ = app.update(UiMessage::NewChat(new_chat::Msg::Open));
+    let (s, group) = shot(&app, "New Group");
+    let icon = ink_of(&s, size, [group.x - 32.0, group.y - 1.0, 30.0, 16.0]);
+    assert!(near(icon, 20.0, 14.0), "New Group's icon: {icon:?}");
+    let _ = app.update(UiMessage::Labels(labels::Msg::OpenSettings("lbl_work".into())));
+    let size = Size::new(341.0, 563.0);
+    let s = crate::focus::tests::shot(app.view_label_settings(&app.label_settings[0]), size, "label-settings-icons");
+    let (inbox, mute, chevron) = (
+        ink_of(&s, size, [33.0, 300.0, 26.0, 28.0]),
+        ink_of(&s, size, [33.0, 340.0, 26.0, 28.0]),
+        ink_of(&s, size, [292.0, 238.0, 16.0, 24.0]),
+    );
+    assert!(near(inbox, 15.12, 15.12) && near(mute, 15.65, 17.55), "the row icons: {inbox:?} {mute:?}");
+    assert!((chevron[2] - 5.9).abs() <= 0.5 && (chevron[3] - 9.6).abs() <= 0.5, "the Chats chevron: {chevron:?}");
+}
+
+/// Desktop's `getSpaceIcon` and the drag handle and dots of Edit Spaces are `PlatformIcon`s at `scale(1.2)`: archive
+/// at 14 (13.4), email at 16 (15.4 by 11.5), low_priority_space at 12 (11.5 by 8.9), its `drag_handle` at 20 (16 by
+/// 7, two bars 2.5 px apart) and `more_horiz` at 16 (11.5 by 2.9).
+#[test]
+fn edit_spaces_icons_like_desktop() {
+    let mut app = demo_app("edit-spaces-icons");
+    let _ = app.update(UiMessage::OpenEditSpaces);
+    let size = rail::SPACES_SIZE;
+    let s = crate::focus::tests::shot(app.view_edit_spaces(app.spaces_window.as_ref().expect("Edit Spaces")), size, "edit-spaces-icons");
+    let near = |got: [f32; 4], w: f32, h: f32| (got[2] - w).abs() <= 0.4 && (got[3] - h).abs() <= 0.4;
+    let want = [
+        ([31.0, 165.0, 24.0, 24.0], 13.44, 13.44),
+        ([31.0, 294.0, 24.0, 24.0], 15.36, 11.52),
+        ([31.0, 337.0, 24.0, 24.0], 11.52, 8.87),
+        ([300.0, 166.0, 26.0, 24.0], 16.0, 7.0),
+        ([266.0, 380.0, 24.0, 16.0], 11.52, 2.88),
+    ];
+    for (w, ww, wh) in want {
+        let got = ink_of(&s, size, w);
+        assert!(near(got, ww, wh), "{got:?} in {w:?}, Desktop's {ww} by {wh}");
+    }
+}
+
+/// The ink box of the window `w` of a snapshot of a view of `size`.
+fn ink_of(shot: &::image::RgbaImage, size: Size, w: [f32; 4]) -> [f32; 4] {
+    crate::focus::tests::ink(shot, size.width, w).0
+}
+
 /// The pixels of the sign-in window at points of its 330x620 layout.
 fn login_pixels(app: &BeeperGuiApp, points: &[(u32, u32)]) -> Vec<Color> {
     let mut sim = Simulator::with_size(Default::default(), Size::new(330.0, 620.0), app.view_login());

@@ -805,7 +805,7 @@ impl BeeperGuiApp {
             });
             let empty =
                 // `.command-bar .empty` is 14 px.
-                column![crate::ic(crate::icon::SEARCH, 24.0).color(p.sub), crate::style::fixed(tr("No results"), 14.0, iced::font::Weight::Normal).color(p.sub)]
+                column![crate::platform(crate::ic(crate::icon::SEARCH, 24.0).color(p.sub)), crate::style::fixed(tr("No results"), 14.0, iced::font::Weight::Normal).color(p.sub)]
                     .spacing(8)
                     .align_x(Center);
             return column![].push(hint).push(container(empty).center(Fill)).height(Fill).into();
