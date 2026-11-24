@@ -1452,6 +1452,8 @@ pub enum Msg {
     DeleteTo(text_editor::Motion, bool),
     /// Mod-z undoes the last composer edit group; Shift-Mod-z and Mod-y redo it.
     Undo(bool),
+    /// The Edit menu's Undo and Redo (Electron's `webContents.undo` and `redo`), which leave toasts and sends alone.
+    History(bool),
     /// Toggles a `format::LABELS` button on the composer selection.
     Format(usize),
     /// A hotkey of a `format::LABELS` button, and where the caret was when it came.
@@ -1612,6 +1614,7 @@ impl BeeperGuiApp {
             | Msg::Edit(..)
             | Msg::DeleteTo(..)
             | Msg::Undo(..)
+            | Msg::History(..)
             | Msg::Changed(..)
             | Msg::FormatKey(..)
             | Msg::Format(..)
@@ -2084,7 +2087,7 @@ impl BeeperGuiApp {
             Msg::Undo(true) if self.queued_here() => {
                 return self.update(UiMessage::Composer(Msg::SendQueued(self.pane.selected_chat_id.clone())));
             }
-            Msg::Undo(redo) => {
+            Msg::Undo(redo) | Msg::History(redo) => {
                 let h = &mut self.pane.history;
                 let (from, to) = if redo { (&mut h.redo, &mut h.undo) } else { (&mut h.undo, &mut h.redo) };
                 let Some(text) = from.pop() else { return Task::none() };

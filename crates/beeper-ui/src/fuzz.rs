@@ -4795,6 +4795,52 @@ fn the_menu_bar_shows_with_alt_like_desktop() {
     assert_eq!((app.menu_bar, app.sidebar_hidden), (None, !hidden), "the item runs and the menu bar hides");
 }
 
+/// Electron's roles in Desktop's menus on Linux: the Edit menu with its English labels and accelerators, File's
+/// "Close", and the Window menu, whose Zoom and Bring All to Front do nothing off macOS. Undo and Redo undo typing.
+#[test]
+fn menu_roles_like_electron() {
+    let mut app = demo_app("menu-roles");
+    let menu = |app: &BeeperGuiApp, title: &str| -> Vec<(String, String)> {
+        let menus = app.menus();
+        let items = menus.into_iter().find(|m| m.0 == title).expect("the menu").1;
+        items.into_iter().map(|i| i.map_or_else(Default::default, |(label, keys, _)| (label, keys))).collect()
+    };
+    let item = |l: &str, k: &str| (l.to_string(), k.to_string());
+    let rule = Default::default;
+    assert_eq!(
+        menu(&app, "Edit"),
+        [
+            item("Undo", "Ctrl+Z"),
+            item("Redo", "Ctrl+Shift+Z"),
+            rule(),
+            item("Cut", "Ctrl+X"),
+            item("Copy", "Ctrl+C"),
+            item("Paste", "Ctrl+V"),
+            item("Delete", ""),
+            rule(),
+            item("Select All", "Ctrl+A")
+        ]
+    );
+    assert_eq!(menu(&app, "Window"), [item("Zoom", ""), item("Minimize", "Ctrl+M"), item("Bring All to Front", "")]);
+    assert_eq!(menu(&app, "File")[3], item("Close", "Ctrl+W"));
+    let _ = app.update(UiMessage::SelectChat(NOTE_CHAT_ID.into()));
+    let _ = app.update(UiMessage::Composer(composer::Msg::Type("hello".into())));
+    let run = |app: &mut BeeperGuiApp, title: &str, label: &str| {
+        let items = app.menus().into_iter().find(|m| m.0 == title).expect("the menu").1;
+        let msg = items.into_iter().flatten().find(|i| i.0 == label).expect("the item").2;
+        let _ = app.update(UiMessage::MenuBar(menubar::Msg::Run(Box::new(msg))));
+    };
+    run(&mut app, "Edit", "Undo");
+    assert_eq!(app.pane.composer.text(), "", "Undo takes the typing back");
+    run(&mut app, "Edit", "Redo");
+    assert_eq!(app.pane.composer.text(), "hello", "and Redo puts it back");
+    run(&mut app, "Edit", "Delete");
+    assert_eq!(app.pane.composer.text(), "hello", "Delete at a caret does nothing");
+    run(&mut app, "Edit", "Select All");
+    run(&mut app, "Edit", "Delete");
+    assert_eq!(app.pane.composer.text(), "", "Delete deletes the selection");
+}
+
 /// Desktop's `activityTimestamp` and `isArchivedInList`: a draft moves its chat to the top, and out of the archive.
 #[test]
 fn drafts_move_chats_like_desktop() {
