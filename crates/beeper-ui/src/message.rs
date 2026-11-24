@@ -63,6 +63,19 @@ fn tipped_links(spans: &[iced::widget::text::Span<'_, String>], html: bool) -> H
 /// Desktop's `filter: brightness(0.8)` of the attachments of a selected message (`.message-attachments-container`),
 /// as 20% black over their 17 px corners.
 /// The user ID of a `matrix.to` mention link.
+/// `text` with the place of Desktop's link arrow (`selectable::ARROW_SLOT`) after each of `links`, found in order.
+fn with_arrows(text: &str, links: &[String]) -> String {
+    let (mut out, mut at) = (String::with_capacity(text.len()), 0);
+    for link in links {
+        if let Some(i) = text[at..].find(link.as_str()) {
+            out.push_str(&text[at..at + i + link.len()]);
+            out.push_str(crate::selectable::ARROW_SLOT);
+            at += i + link.len();
+        }
+    }
+    out + &text[at..]
+}
+
 fn mentioned_user(link: &str) -> Option<String> {
     link.strip_prefix("https://matrix.to/#/").and_then(beeper_core::codec::url_decode).filter(|id| id.starts_with('@'))
 }
@@ -2805,11 +2818,17 @@ impl BeeperGuiApp {
             Vec<(Option<crate::Frames>, Option<String>, String)>,
             bool,
         );
+        // The text of each link that has an arrow, in order.
+        let mut arrowed: Vec<String> = Vec::new();
         let blocks: Vec<Block> = match m.html.as_deref() {
             Some(html) => beeper_core::codec::html_blocks(html)
                 .into_iter()
                 .map(|mut b| {
                     at_mentions(&mut b.runs);
+                    let external = |r: &&beeper_core::codec::Run| {
+                        r.emoticon.is_none() && r.link.as_deref().is_some_and(|l| mentioned_user(l).is_none())
+                    };
+                    arrowed.extend(b.runs.iter().filter(external).map(|r| r.text.clone()));
                     let plain = b.runs.iter().map(|r| r.text.as_str()).collect();
                     // Each custom emoji's image, `title` and `data-original-src`.
                     let images = b.runs.iter().filter_map(|r| Some((r.emoticon.as_deref()?, r.title.clone())));
@@ -2832,6 +2851,7 @@ impl BeeperGuiApp {
                 })
                 .collect(),
             None => {
+                arrowed.extend(crate::linkify::links(text).into_iter().map(|(range, _)| text[range].to_string()));
                 let spans = with_emoji_font(plain(text));
                 vec![(None, spans, text.to_string(), 0, 0, Vec::new(), false)]
             }
@@ -2874,7 +2894,8 @@ impl BeeperGuiApp {
         // A message with block HTML wraps as usual. A wrapped message without balance takes the whole width.
         // The time's inline-block (`room`) has a break before it: it ends the last line when it fits there, and else
         // takes a line of its own.
-        let flat = crate::style::chromium_breaks(text);
+        // The measured text has the place of each link's arrow, as the drawn spans do.
+        let flat = crate::style::chromium_breaks(&with_arrows(text, &arrowed)).into_owned();
         let trails = |w: f32| room > 0.0 && crate::style::trails(&flat, w, 13.0, room);
         let blocks_html = m.html.as_deref().is_some_and(|h| BLOCK_TAGS.iter().any(|t| h.contains(&format!("<{t}"))));
         let width = match code_w > 0.0 || crate::style::wraps(&flat, max, 13.0) || trails(max) {
@@ -6178,6 +6199,30 @@ pub(crate) mod tests {
             let near = |a: f32, b: f32| (a - b).abs() <= 0.5;
             assert!(near(bubble.width, 22.0 + w + 6.0 + time.width) && bubble.height == 34.0, "{text}: {bubble:?} {time:?}");
             assert!(near(time.x - bubble.x, 11.0 + w + 6.0), "{text}: {bubble:?} {time:?}");
+        }
+    }
+
+    /// Desktop's link arrows take 12 px each on their line, so they count where the time goes: a bubble just wide
+    /// enough for "https://protomaps.com/", its arrow, 6 px and the time keeps the time on the line (34 px high), and
+    /// 1 px less sends it to a line of its own (50 px high), as with two links and words on one line (measured in
+    /// Desktop 4.3.308: 227.625 px fits and 226.625 px does not, with "3:10 AM").
+    #[test]
+    fn link_arrows_count_where_the_time_goes() {
+        let mut app = crate::fuzz::demo_app("arrow-room");
+        // The width of a window without its sidebar whose bubbles are `cap` wide: by its 85vw or its row.
+        app.sidebar_hidden = true;
+        app.pane.size.width = 2000.0;
+        let frame = app.pane.size.width - app.bubble_row(false);
+        let window = |cap: f32| (cap + frame).max(cap / 0.85);
+        for text in ["https://protomaps.com/", "see https://protomaps.com/ and https://example.org/ ok"] {
+            let (wide, time) = sent_bubble(&mut app, text, 2000.0);
+            let fit = 22.0 + crate::style::text_width(text, 13.0, Weight::Normal) + 12.0 * text.matches("https").count() as f32;
+            let fit = fit + 6.0 + time.width;
+            assert!((wide.width - fit).abs() <= 0.5, "{text}: {wide:?}");
+            let (bubble, _) = sent_bubble(&mut app, text, window(fit + 0.05));
+            assert_eq!(bubble.height, 34.0, "{text} fits with its time: {bubble:?}");
+            let (bubble, time) = sent_bubble(&mut app, text, window(fit - 1.0));
+            assert!(bubble.height == 50.0 && time.y - bubble.y == 26.0, "{text}: the time on its own line: {bubble:?} {time:?}");
         }
     }
 }

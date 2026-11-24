@@ -366,7 +366,18 @@ fn shape_wrapped<T>(
     let mut buf = cosmic_text::Buffer::new(fs.raw(), cosmic_text::Metrics::new(size, size * 1.2));
     buf.set_wrap(fs.raw(), wrap);
     buf.set_size(fs.raw(), width, None);
-    buf.set_text(fs.raw(), s, &to_attributes(face.font()), cosmic_text::Shaping::Advanced, None);
+    let attrs = to_attributes(face.font());
+    match s.contains(crate::selectable::ARROW_SLOT) {
+        // A link's arrow is 12 px of 13 px text, like the span that draws it.
+        true => {
+            let arrow = attrs.clone().metrics(cosmic_text::Metrics::new(size * 12.0 / 13.0, size * 1.2));
+            let parts = s.split(crate::selectable::ARROW_SLOT).enumerate();
+            let spans =
+                parts.flat_map(|(i, part)| [(i > 0).then(|| (crate::selectable::ARROW_SLOT, arrow.clone())), Some((part, attrs.clone()))]);
+            buf.set_rich_text(fs.raw(), spans.flatten(), &attrs, cosmic_text::Shaping::Advanced, None);
+        }
+        false => buf.set_text(fs.raw(), s, &attrs, cosmic_text::Shaping::Advanced, None),
+    }
     f(&buf)
 }
 
