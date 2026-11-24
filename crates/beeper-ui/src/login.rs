@@ -1336,7 +1336,7 @@ impl BeeperGuiApp {
             .on_link_click(|m: UiMessage| m)
             .size(rem(11.0))
             .line_height(iced::widget::text::LineHeight::Absolute(rem(14.0).into()))
-            .width(crate::style::balanced_width(&plain, 278.0, 11.0))
+            .width(crate::style::balanced_width(&plain, 278.0, 11.0, 0.0))
             .center();
         container(terms).center_x(Fill).into()
     }
