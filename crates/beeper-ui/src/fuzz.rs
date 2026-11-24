@@ -7379,6 +7379,35 @@ fn previews_start_the_name_2_px_after_the_sender_like_desktop() {
     assert!((0..3).all(|c| (f32::from(darkest[c]) - faded(c)).abs() < 4.0), "{darkest:?} {bottom:?} {top:?} on {ground:?}");
 }
 
+/// Desktop's sender before a media chip is the text "Name: ", so the chip starts a 13 px space (3.66 px of Inter)
+/// after the colon, not 4 px.
+#[test]
+fn media_previews_start_the_chip_a_space_after_the_sender_like_desktop() {
+    let app = demo_app("row-sender-chip");
+    {
+        let mut st = app.store.write();
+        let idx = st.chats.iter().position(|c| c.title == "Family").expect("Family");
+        st.update_chat(idx, |c| {
+            let p = c.preview.as_mut().expect("a preview");
+            let img = Attachment { attachment_type: "img".into(), file_name: Some("a.png".into()), ..Default::default() };
+            (p.text, p.html, p.attachments, p.links) = (Some("Look".into()), None, vec![img], Vec::new());
+        });
+    }
+    let mut sim = simulator(app.view_sidebar());
+    let text = |sim: &mut Simulator<'_, UiMessage>, pick: fn(&str) -> bool| {
+        let found = sim.find(|c: iced_test::selector::Candidate<'_>| match c {
+            iced_test::selector::Candidate::Text { content, bounds, .. } if pick(content) => Some(bounds),
+            _ => None,
+        });
+        found.expect("a preview text")
+    };
+    let name = text(&mut sim, |t| t.starts_with("Mom:"));
+    let label = text(&mut sim, |t| t == "Image");
+    // The chip's 2 px padding and its 12 px glyph, then the label's 2 px padding.
+    let chip = name.x + crate::style::text_width("Mom: ", 13.0, Weight::Normal);
+    assert!((label.x - 16.0 - chip).abs() < 0.05, "the chip starts at {}, not {chip}", label.x - 16.0);
+}
+
 /// Desktop's colored network badge (`BrandNetworkIcon`) is the brand tile with 35 % corners, where a circle leaves the
 /// corners of its 16 px box to the cutout around it.
 #[test]
