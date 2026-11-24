@@ -49,6 +49,7 @@ impl BeeperGuiApp {
                 return window::toggle_maximize(id.or(self.main_window).expect("the main window"));
             }
             Msg::Focused(focused) => {
+                self.tray_sent.1 = true;
                 self.focused = focused;
                 // A window that the window manager minimizes loses the focus, and one that it restores gains it.
                 let minimized = match (focused, self.main_window) {
@@ -76,11 +77,15 @@ impl BeeperGuiApp {
                 return self.quit();
             }
             Msg::Minimize(id) => {
+                self.tray_sent.1 = true;
                 self.minimized |= Some(id) == self.main_window;
                 return window::minimize(id, true);
             }
             // A focus that came back while the window manager answered wins.
-            Msg::Minimized(minimized) => self.minimized = minimized && !self.focused,
+            Msg::Minimized(minimized) => {
+                self.minimized = minimized && !self.focused;
+                self.tray_sent.1 = true;
+            }
             Msg::Opened(id) => {
                 let scale = window::scale_factor(id).map(|s| UiMessage::Window(Msg::Scale(s)));
                 // The serials of the input that the window gets from now on let the app raise its windows later.

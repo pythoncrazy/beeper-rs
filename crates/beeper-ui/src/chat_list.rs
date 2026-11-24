@@ -1673,10 +1673,13 @@ impl BeeperGuiApp {
             (false, Some(from)) => (Color::WHITE, from),
             (false, None) => (p.accent, Color::WHITE),
         };
+        // Desktop's `proIndicators` fade and shrink away in `.1s ease-in-out` while a hover action grows in their place.
+        let acts = || self.row_action(&st.settings, c, l.hover_action, 1.0).is_some();
+        let keep = 1.0 - self.hover_progress(&c.id).filter(|_| acts()).unwrap_or(0.0);
         let count = match l.counts {
             // `.unreadCount` is `1lh` of 14 px, or 12 px in the compact list.
-            true => unread.then(|| count_badge(c, dot_bg, dot_fg, if l.compact { 12.0 } else { 14.0 })),
-            false => (c.unread_mentions > 0).then(|| ic(icon::AT_SIGN, 12.0).color(p.accent).into()),
+            true => unread.then(|| count_badge(c, dot_bg.scale_alpha(keep), dot_fg.scale_alpha(keep), if l.compact { 12.0 } else { 14.0 })),
+            false => (c.unread_mentions > 0).then(|| ic(icon::AT_SIGN, 12.0).color(p.accent.scale_alpha(keep)).into()),
         };
         // Desktop's `indicators`: the unread dot, and a red dot while a send of the chat waits for Retry.
         let dot = (!l.counts).then(|| {
@@ -1684,8 +1687,7 @@ impl BeeperGuiApp {
             let errored = st.has_errored(&c.id).then(|| dot(hex(0xf44336)));
             container(column![].push(unread.then(|| dot(dot_bg))).push(errored).spacing(4)).width(12)
         });
-        let count =
-            count.filter(|_| self.hovered_chat.as_ref() != Some(&c.id) || self.row_action(&st.settings, c, l.hover_action, 1.0).is_none());
+        let count = count.map(|b| crate::lift::shrink(b, keep).into());
         let count = if self.plays(c) { Some(self.view_once_play(&c.id)) } else { count };
         let preview = self.view_chat_preview(l, c, draft, count);
         let avatar = self.chat_avatar(c, l.av, 1.25);
