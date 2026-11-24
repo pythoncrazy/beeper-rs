@@ -490,9 +490,9 @@ impl Ctx {
     }
 
     /// `withSpinner`: runs `run`, then shows its result line on stderr like the last frame of the ink spinner, before
-    /// the output of the command, unless `--quiet`.
-    pub fn spinner<T>(&mut self, label: &str, run: impl FnOnce(&mut Self) -> Res<T>, done: impl Fn(&T) -> String) -> Res<T> {
-        let quiet = self.on("quiet");
+    /// the output of the command, unless `quiet` or `--quiet`.
+    pub fn spinner<T>(&mut self, quiet: bool, label: &str, run: impl FnOnce(&mut Self) -> Res<T>, done: impl Fn(&T) -> String) -> Res<T> {
+        let quiet = quiet || self.on("quiet");
         let result = run(self);
         match (&result, quiet) {
             (_, true) => {}
