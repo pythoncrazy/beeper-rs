@@ -152,7 +152,7 @@ pub fn ensure_fonts_loaded() {
         for ttf in [font!("icons.ttf"), font!("Sniglet-ExtraBold.ttf"), FONT_EMOJI] {
             db.load_font_source(Source::Binary(Arc::new(ttf)));
         }
-        let knicknack = desktop_asars().find_map(|p| knicknack_woff(&p));
+        let knicknack = desktop_asars(Path::new("/proc")).find_map(|p| knicknack_woff(&p));
         KNICKNACK.store(knicknack.is_some(), Ordering::Relaxed);
         for woff in INTER.into_iter().chain([REDACTED_WOFF]).chain(knicknack.as_deref()) {
             db.load_font_source(Source::Binary(Arc::new(woff_to_sfnt(woff))));
@@ -175,9 +175,11 @@ pub fn initials_font() -> Font {
 
 /// The `app.asar` archive of an installed Beeper Desktop: a Linux package, a running Desktop on Linux wherever it runs
 /// from (a mounted or an extracted AppImage), Windows, or macOS.
-fn desktop_asars() -> impl Iterator<Item = PathBuf> {
+/// `proc` is the process table, `/proc`: a process that ends during the scan, or one of another user that cannot be
+/// read, is skipped.
+fn desktop_asars(proc: &Path) -> impl Iterator<Item = PathBuf> {
     let env = |k| std::env::var_os(k).map(PathBuf::from);
-    let exes = std::fs::read_dir("/proc").into_iter().flatten().flatten().filter_map(|e| std::fs::read_link(e.path().join("exe")).ok());
+    let exes = std::fs::read_dir(proc).into_iter().flatten().flatten().filter_map(|e| std::fs::read_link(e.path().join("exe")).ok());
     let mounts = exes.filter(|exe| exe.ends_with("beepertexts")).filter_map(|exe| exe.parent().map(Path::to_path_buf));
     let opt = ["/opt/beeper", "/opt/Beeper", "/opt/BeeperTexts"].map(PathBuf::from);
     let windows = env("LOCALAPPDATA").into_iter().flat_map(|l| ["BeeperTexts", "beeper"].map(|n| l.join("Programs").join(n)));
@@ -1239,30 +1241,32 @@ mod tests {
     use super::*;
 
     /// Desktop draws avatar initials in Knicknack, which loads from the `app.asar` of a running Desktop wherever it runs
-    /// from, like an extracted AppImage: else they fall back to Sniglet's round, slanted letters.
-    #[cfg(target_os = "linux")]
+    /// from, like an extracted AppImage: else they fall back to Sniglet's round, slanted letters. A process table with
+    /// a Desktop, one that ended and one whose executable cannot be read.
+    #[cfg(unix)]
     #[test]
     fn knicknack_loads_from_a_running_desktop_anywhere() {
-        let dir = std::env::temp_dir().join(format!("beeper-rs-squashfs-root-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let exe = dir.join("beepertexts");
-        std::fs::copy("/bin/sleep", &exe).unwrap();
-        // Another test that forks while the copy is open for writing makes it busy for a moment.
-        let mut desktop = loop {
-            match std::process::Command::new(&exe).arg("30").spawn() {
-                Err(e) if e.raw_os_error() == Some(26) => std::thread::sleep(std::time::Duration::from_millis(10)),
-                r => break r.unwrap(),
-            }
-        };
-        let link = format!("/proc/{}/exe", desktop.id());
-        while std::fs::read_link(&link).ok().as_ref() != Some(&exe) {
-            std::thread::sleep(std::time::Duration::from_millis(5));
+        let dir = std::env::temp_dir().join(format!("beeper-rs-knicknack-{}", std::process::id()));
+        let (proc, root) = (dir.join("proc"), dir.join("squashfs-root"));
+        for d in ["1", "2", "self"].map(|p| proc.join(p)).into_iter().chain([root.join("resources")]) {
+            std::fs::create_dir_all(d).unwrap();
         }
-        let found = desktop_asars().any(|a| a == dir.join("resources/app.asar"));
-        desktop.kill().unwrap();
-        desktop.wait().unwrap();
+        std::os::unix::fs::symlink(root.join("beepertexts"), proc.join("2/exe")).unwrap();
+        std::os::unix::fs::symlink("/usr/bin/sleep", proc.join("self/exe")).unwrap();
+        // An `app.asar`: the size of its index, the JSON index, then the file.
+        let woff = b"wOFF font".to_vec();
+        let index = format!(
+            r#"{{"files":{{"build":{{"files":{{"renderer":{{"files":{{"knicknack-bold-x.woff":{{"offset":"0","size":{}}}}}}}}}}}}}}}"#,
+            woff.len()
+        );
+        let n = u32::try_from(index.len()).unwrap();
+        let asar = [4, n + 8, n + 4, n].into_iter().flat_map(|v| v.to_le_bytes()).chain(index.into_bytes()).chain(woff.clone());
+        std::fs::write(root.join("resources/app.asar"), asar.collect::<Vec<u8>>()).unwrap();
+        let found: Vec<PathBuf> = desktop_asars(&proc).filter(|a| a.starts_with(&dir)).collect();
+        assert_eq!(found, [root.join("resources/app.asar")]);
+        assert_eq!(knicknack_woff(&found[0]), Some(woff));
+        assert_eq!(desktop_asars(&dir.join("gone")).filter(|a| a.starts_with(&dir)).count(), 0, "no process table");
         std::fs::remove_dir_all(&dir).unwrap();
-        assert!(found, "the app.asar next to the running Desktop");
     }
 
     /// cosmic-text keeps the glyphs of each shaped word: a text measures the same from the kept words as when it was
