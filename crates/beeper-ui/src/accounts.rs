@@ -56,6 +56,7 @@ impl BeeperGuiApp {
                     let email = profile.email.clone();
                     st.features.subscribed = profile.plan != Plan::Free;
                     st.features.internal = profile.internal;
+                    st.features.whoami.clone_from(&profile.features);
                     st.whoami = profile;
                     let info = (st.beeper_state.access_token.clone(), st.beeper_state.user_id.clone(), st.config.demo);
                     if st.me().email != email {
