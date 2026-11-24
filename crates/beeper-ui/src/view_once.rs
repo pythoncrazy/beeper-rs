@@ -508,7 +508,7 @@ impl BeeperGuiApp {
         let line = row![lead, txt(label(m), 13.0).color(fg)].spacing(4).align_y(Center);
         match variant {
             Variant::Filled => container(line).padding(Padding::new(8.0).right(12.0)).style(fill_box(bg, 17.0)).into(),
-            Variant::Outlined => container(line).padding([6, 9]).style(bordered_box(bg, p.received, 2.0, 17.0)).into(),
+            Variant::Outlined => container(line).padding([6, 9]).style(bordered_box(bg, p.chip, 2.0, 17.0)).into(),
             Variant::Quote => line.into(),
         }
     }

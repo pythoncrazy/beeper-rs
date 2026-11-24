@@ -1051,8 +1051,6 @@ palette! {
     sent_meta: Color = hexa(0xffffff, 0.8), hexa(0xffffff, 0.8);
     /// `--bubble-out-fg`.
     sent_fg: Color = hex(0xffffff), hex(0xffffff);
-    /// `--color-secondary-container`: received bubbles.
-    received: Color = hex(0xefeff0), hex(0x232326);
     /// `--color-background-message-bubble-received`: link previews, file rows, received voice notes and contact cards,
     /// and the outline of a deleted message.
     link_card: Color = hex(0xededed), hex(0x282828);
@@ -1060,8 +1058,6 @@ palette! {
     rule: Color = hex(0xb3b3b3), hex(0x4c4c4c);
     /// `--color-primary`.
     accent: Color = hex(0x0d4ffb), hex(0x2561fb);
-    /// `--toggle-style-knob-on`, and `--checkbox-style-bg-selected`: the fill of a checked `Checkbox`.
-    toggle_on: Color = hex(0x0d4ffb), hex(0x0d4ffb);
     /// `--color-highlight-reaction`: your own reactions, which a monochrome theme fills with its backdrop.
     highlight: Color = hex(0xcbd9ff), hex(0x1b43aa);
     /// The color of the quote of your own message (`LinkedMessage` `isSender`) under a rich theme, else `None`.
@@ -1089,7 +1085,7 @@ palette! {
     prefs_border: Color = hex(0xededed), hex(0x282828);
     /// `--color-on-surface` at 0.05: the Settings search field.
     search: Color = hexa(0x202124, 0.05), hexa(0xf6f6f6, 0.05);
-    /// `--color-secondary-container`.
+    /// `--color-secondary-container`: received bubbles and chips.
     chip: Color = hex(0xefeff0), hex(0x232326);
     /// `--color-text-info`.
     link: Color = hex(0x0069db), hex(0x5cadff);
@@ -1097,15 +1093,14 @@ palette! {
     button: Color = hex(0xffffff), hex(0x505050);
     /// `--color-border-button-secondary`.
     button_border: Color = hex(0xe2e2e2), hex(0x5e5e5e);
-    /// `--button-primary-main-bg`: the fill of Desktop's primary `Button`.
+    /// `--semantic-colors-bg-fill-main`: the fill of Desktop's primary `Button` (`--button-primary-main-bg`), of a
+    /// checked `Checkbox` and `Toggle` knob (`--checkbox-style-bg-selected`, `--toggle-style-knob-on`), and the
+    /// `:focus-visible` outline of all three (`--app-focus-ring`).
     main: Color = hex(0x0d4ffb), hex(0x0d4ffb);
     /// `--button-secondary-main-bg`: the fill of Desktop's secondary `Button`.
     main_muted: Color = hexa(0x0d4ffb, 0.14), hexa(0x0d4ffb, 0.26);
     /// `--button-secondary-main-text`.
     main_text: Color = hex(0x0d4ffb), hex(0x638efc);
-    /// `--app-focus-ring`, which is `--semantic-colors-bg-fill-main`: the `:focus-visible` outline of Desktop's
-    /// `Button`, `Toggle` and `Checkbox`.
-    focus_ring: Color = hex(0x0d4ffb), hex(0x0d4ffb);
     /// `--appearance-color-bg-secondary`: the fill of Desktop's action buttons.
     bg_secondary: Color = hex(0xeaebf0), hex(0x1c1d1e);
     /// `--appearance-color-border-secondary`.
@@ -1452,10 +1447,10 @@ mod tests {
     #[test]
     fn palette_matches_desktop_tokens() {
         let rows: [(&str, Token, Color, Color); 10] = [
-            ("--app-focus-ring", |p| p.focus_ring, hex(0x0d4ffb), hex(0x0d4ffb)),
+            ("--app-focus-ring", |p| p.main, hex(0x0d4ffb), hex(0x0d4ffb)),
             ("--left-pane-bg", |p| p.window, hex(0xeaebf0), hex(0x1c1d1e)),
             ("--color-primary", |p| p.accent, hex(0x0d4ffb), hex(0x2561fb)),
-            ("--color-secondary-container", |p| p.received, hex(0xefeff0), hex(0x232326)),
+            ("--color-secondary-container", |p| p.chip, hex(0xefeff0), hex(0x232326)),
             ("--color-text-neutrals", |p| p.text, hex(0x171717), hex(0xededed)),
             ("--color-on-surface", |p| p.strong, hex(0x202124), hex(0xf6f6f6)),
             ("--color-text-secondary", |p| p.sub, hexa(0x3c3c44, 0.69), hexa(0xebebf5, 0.63)),

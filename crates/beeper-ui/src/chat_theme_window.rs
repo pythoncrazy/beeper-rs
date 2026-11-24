@@ -64,7 +64,7 @@ impl BeeperGuiApp {
             container(crate::style::fixed(tr(text), 13.0, Weight::Normal).color(fg)).padding([8, 12]).style(fill_box(bg, 17.0))
         };
         let lines = column![
-            bubble("Pick a wallpaper and bubble color", p.received, p.strong),
+            bubble("Pick a wallpaper and bubble color", p.chip, p.strong),
             container(bubble("Only you see your chat theme", sent, sent_fg)).align_right(Fill),
         ]
         .spacing(8);

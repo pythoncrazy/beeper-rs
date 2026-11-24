@@ -347,7 +347,7 @@ impl BeeperGuiApp {
             Space::new().width(Fill),
             txt(list_ts(&m.timestamp, h24), 11.0).line_height(lh(7.0)).color(dim(p.text))
         ];
-        let (bg, fg) = if mine { (p.sent, p.sent_fg) } else { (p.received, p.strong) };
+        let (bg, fg) = if mine { (p.sent, p.sent_fg) } else { (p.chip, p.strong) };
         let (bg, fg) = (dim(bg), dim(fg));
         let body = clamped(m.text.as_deref().expect("text message"), 554.0, 3, 13.0, Weight::Normal);
         let lower = body.to_ascii_lowercase();

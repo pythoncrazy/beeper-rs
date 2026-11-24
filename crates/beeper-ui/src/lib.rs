@@ -847,7 +847,7 @@ fn has_flag(c: &Chat, flag: ChatFlag) -> bool {
 }
 
 fn checkbox<'a>(p: &Palette, on: bool) -> El<'a> {
-    let (bg, ring) = if on { (p.toggle_on, CLEAR) } else { (CLEAR, p.toggle_off) };
+    let (bg, ring) = if on { (p.main, CLEAR) } else { (CLEAR, p.toggle_off) };
     let check = on.then(|| ic(icon::CHECK, 12.0).color(Color::WHITE));
     container(check).center(16).style(bordered_box(bg, ring, 1.5, 8.0)).into()
 }
@@ -1360,7 +1360,7 @@ fn toggle<'a>(p: &Palette, on: bool, msg: Option<UiMessage>) -> El<'a> {
 }
 
 fn toggle_faded<'a>(p: &Palette, on: bool, msg: Option<UiMessage>, alpha: f32) -> El<'a> {
-    let colors = [p.toggle_off, p.toggle_on, p.toggle_off].map(|c| c.scale_alpha(alpha));
+    let colors = [p.toggle_off, p.main, p.toggle_off].map(|c| c.scale_alpha(alpha));
     button(toggle::toggle(on, colors)).bare(p.text).on_press_maybe(msg).into()
 }
 
@@ -5840,7 +5840,7 @@ impl BeeperGuiApp {
         let open = self.pane.selected_chat_id.as_deref().expect("an open chat");
         let chat = &st.chats[st.resolve_chat_idx(open).expect("chat exists")];
         let targets = switch_targets(&st, chat).expect("a chat with switch targets");
-        let line = || container(Space::new().width(Fill).height(1)).style(fill_box(p.received, 0.0));
+        let line = || container(Space::new().width(Fill).height(1)).style(fill_box(p.chip, 0.0));
         let header = container(semi(tr("Switch Chat"), 13.0).color(p.strong)).padding(Padding::new(12.0).left(27.0).right(8.0));
         // Desktop's card is as wide as its rows, up to 300 px.
         let wide = |c: &Chat| {
