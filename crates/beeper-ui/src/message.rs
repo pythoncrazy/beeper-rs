@@ -4914,7 +4914,8 @@ pub(crate) mod tests {
         let time = |minute| format_short_ts(&at(minute), h24);
         let label = alone(&app, &mid).find("Edited").expect("the Edited button").bounds();
         let tip = hover_change(&app, &mid, label.center()).expect("Edited after 3m");
-        assert!(tip.y + tip.height <= label.y, "{tip:?} is above the button");
+        // The top tooltip has no room over the button at the top of the view, so `flip-block` puts it under.
+        assert!(tip.y >= label.y + label.height, "{tip:?} is under the button");
         assert!(alone(&app, &mid).find(time(1)).is_err());
         let _ = app.update(UiMessage::Message(Msg::ToggleEditHistory(mid.clone())));
         let mut sim = alone(&app, &mid);

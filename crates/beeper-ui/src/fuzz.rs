@@ -10520,6 +10520,32 @@ fn tooltips_keep_a_6px_margin_like_desktop() {
     assert_eq!(top / k, 146);
 }
 
+/// `.BrandTooltip-module__tooltip`'s `position-try: flip-block` and `flip-inline`: a tooltip that does not fit on its
+/// side of the trigger goes to the other side, 6 px from it: under a 40 px trigger at y 10 for a top one, and left of
+/// a trigger at the right edge for a right one.
+#[test]
+fn tooltips_flip_to_the_other_side_like_desktop() {
+    let app = demo_app("tooltip-flip");
+    let size = Size::new(400.0, 300.0);
+    let shot = |at: tooltip::Position, pad: Padding| {
+        let trigger = container(Space::new()).width(40).height(40).into();
+        let tip = app.tip(trigger, "Archive", vec![], at);
+        let view = container(tip).padding(pad).width(Fill).height(Fill).style(fill_box(Color::BLACK, 0.0));
+        let mut sim = Simulator::with_size(Default::default(), size, view);
+        let over = Point::new(pad.left + 20.0, pad.top + 20.0);
+        sim.point_at(over);
+        let _ = sim.simulate([iced::Event::Mouse(mouse::Event::CursorMoved { position: over })]);
+        crate::focus::tests::pixels(&mut sim, &iced::Theme::Light, "tooltip-flip")
+    };
+    let top = shot(tooltip::Position::Top, Padding::ZERO.top(10.0).left(100.0));
+    let k = top.width() / 400;
+    let card = (50 * k..top.height()).find(|&y| top.get_pixel(120 * k, y).0 == [255; 4]).expect("the card under the trigger");
+    assert_eq!(card / k, 56, "flipped under the trigger");
+    let right = shot(tooltip::Position::Right, Padding::ZERO.top(100.0).left(350.0));
+    let edge = (0..350 * k).rev().find(|&x| right.get_pixel(x, 120 * k).0 == [255; 4]).expect("the card left of the trigger");
+    assert_eq!(edge / k, 343, "flipped left of the trigger");
+}
+
 /// Desktop's `.hoverActions` sit 6 px over `.actions` whatever their size, also in the compact list where the 32 px
 /// button runs out of the bottom of the row: the icon of a 26 px Archive and of a 32 px Mark Read starts 28 px under
 /// the top of the row.
