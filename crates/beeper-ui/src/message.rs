@@ -2036,10 +2036,7 @@ impl BeeperGuiApp {
             let flags = (first, last, chain, thread, hide_time);
             // Desktop's `message-main` is a `.negate-redacted-region` of the redacted timeline.
             let view = crate::style::region(false, || self.view_message(st, chat, ms, flags, (status, replies), head));
-            let view = match send_rise(st, m) {
-                Some(t) => lift::lift(view, 14.0 * (1.0 - t), 0.97 + 0.03 * t).into(),
-                None => view,
-            };
+            let view = if let Some(t) = send_rise(st, m) { lift::lift(view, 14.0 * (1.0 - t), 0.97 + 0.03 * t).into() } else { view };
             let flash = self.flash.as_ref().filter(|(id, _)| *id == m.id).map(|(_, at)| {
                 let t = (at.elapsed().as_secs_f32() / 1.5).min(1.0);
                 let a = if t < 0.2 { ease_out(t / 0.2) } else { 1.0 - ease_out((t - 0.2) / 0.8) };
@@ -3744,10 +3741,7 @@ impl BeeperGuiApp {
             Msg::ImageFetched(r) => {
                 let copy = |(width, height, px): (usize, usize, Vec<u8>), c: &mut Option<arboard::Clipboard>| {
                     let img = arboard::ImageData { width, height, bytes: px.into() };
-                    let c = match c {
-                        Some(c) => c,
-                        None => c.insert(arboard::Clipboard::new().map_err(|e| e.to_string())?),
-                    };
+                    let c = if let Some(c) = c { c } else { c.insert(arboard::Clipboard::new().map_err(|e| e.to_string())?) };
                     c.set_image(img).map_err(|e| e.to_string())
                 };
                 if let Err(e) = r.and_then(|b| copy(b, &mut self.image_clipboard)) {

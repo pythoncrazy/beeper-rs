@@ -450,10 +450,7 @@ impl BeeperGuiApp {
             AddMsg::Emoji(_, r) => a.emoji = r.ok().map(image::Handle::from_bytes),
             // A phone field takes a new value in its country, like Desktop's `PhoneInput` with a new `value`.
             AddMsg::Field(f, v) => {
-                let v = match a.phones.get_mut(&f) {
-                    Some(field) => field.set(&v),
-                    None => v,
-                };
+                let v = if let Some(field) = a.phones.get_mut(&f) { field.set(&v) } else { v };
                 a.touched.insert(f.clone());
                 a.values.insert(f, v);
             }

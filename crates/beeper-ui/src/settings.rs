@@ -2256,10 +2256,7 @@ impl BeeperGuiApp {
         let desc = r.desc.map(|d| [pref_text(&st.settings, d, args).as_str()].into_iter().chain(paid).collect::<Vec<_>>().join("\n\n"));
         let row = pref_row(p, trs(r.label, label), desc.as_deref(), r.badge.map(|b| badge(p, b)), control);
         // Desktop's `label-wrapper` toggles the checkbox on a click anywhere in the row.
-        let row = match press.clone() {
-            Some(m) => mouse_area(row).on_press(m).into(),
-            None => row,
-        };
+        let row = if let Some(m) = press.clone() { mouse_area(row).on_press(m).into() } else { row };
         // Desktop's switch rows, and the button of Blocked users (`.BlockedUsersPref-module__button:focus-visible`
         // takes the same fill).
         match r.control {

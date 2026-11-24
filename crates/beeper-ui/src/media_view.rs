@@ -694,10 +694,7 @@ impl BeeperGuiApp {
         let live = !car.in_media && m.is_deleted != Some(true);
         let reply = (c.messages.reply && live).then(|| {
             let start = UiMessage::Composer(composer::Msg::StartReply(m.id.clone()));
-            let start = match self.drawn_opener() {
-                Some(opener) => UiMessage::InWindow(opener, Box::new(start)),
-                None => start,
-            };
+            let start = if let Some(opener) = self.drawn_opener() { UiMessage::InWindow(opener, Box::new(start)) } else { start };
             UiMessage::Commands(vec![UiMessage::Media(Msg::CloseCarousel), start])
         });
         let right = self.pane().size.width - 8.0 - 28.0 * if reply.is_some() { 4.0 } else { 3.0 };

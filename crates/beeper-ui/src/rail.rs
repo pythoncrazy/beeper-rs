@@ -454,10 +454,7 @@ impl BeeperGuiApp {
             // Desktop's `iR`: the space name, with the account's nickname.
             let label = space_name(&st, &acc);
             let error = space_error(&st, &acc);
-            let label = match error {
-                Some(s) => format!("{label} ({s})"),
-                None => label,
-            };
+            let label = if let Some(s) = error { format!("{label} ({s})") } else { label };
             let select = UiMessage::Rail(rail::Msg::Select((!on).then_some(acc.clone())));
             let btn = rail_btn(format!("rail-{acc}-button"), logo, on, select);
             let btn = match error {

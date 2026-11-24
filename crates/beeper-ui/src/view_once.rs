@@ -259,10 +259,7 @@ impl BeeperGuiApp {
             }
             Msg::Toggle => {
                 let v = self.view_once.viewer.as_mut().expect("an open viewer plays");
-                v.audio = match v.audio.1 {
-                    Some(_) => (v.audio_pos(), None),
-                    None => (v.audio.0, Some(Instant::now())),
-                };
+                v.audio = if v.audio.1.is_some() { (v.audio_pos(), None) } else { (v.audio.0, Some(Instant::now())) };
                 v.output();
             }
             Msg::Tick => {

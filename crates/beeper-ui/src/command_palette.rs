@@ -277,10 +277,7 @@ impl BeeperGuiApp {
             let disabled = room.is_some() && i == 0;
             let fg = if disabled { p.text.scale_alpha(0.3) } else { p.text };
             let label = f.label(i);
-            let style = match label {
-                Some(_) => bordered_box(CLEAR, p.text, 1.0, 20.0),
-                None => bordered_box(p.chip, CLEAR, 1.0, 20.0),
-            };
+            let style = if label.is_some() { bordered_box(CLEAR, p.text, 1.0, 20.0) } else { bordered_box(p.chip, CLEAR, 1.0, 20.0) };
             let body = row![semi(label.unwrap_or_else(|| tr(placeholder).into()), 13.0).color(fg), ic(icon::EXPAND_MORE, 14.0).color(fg)]
                 .spacing(4)
                 .align_y(Center);

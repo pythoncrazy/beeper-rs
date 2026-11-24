@@ -1173,10 +1173,7 @@ impl BeeperGuiApp {
         };
         st.set_personal(&chat, Some(name.clone()), None);
         drop(st);
-        let text = match &name {
-            Some(n) => trf("Renamed to %s for you", &[n]),
-            None => tr("Removed your name for this chat").into(),
-        };
+        let text = if let Some(n) = &name { trf("Renamed to %s for you", &[n]) } else { tr("Removed your name for this chat").into() };
         self.act(what, UiMessage::Info(info::Msg::SetPersonalName(chat, old)), Some((text, None)));
     }
 

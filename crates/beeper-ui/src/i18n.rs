@@ -178,10 +178,7 @@ fn table_of(code: &str) -> Option<&'static HashMap<String, Vec<String>>> {
 /// The translation into language `code` (`None` for the current one) of a key that the program builds, like Desktop's
 /// `t(key, context)`: its context entry, else its plain entry.
 pub fn translate_in(code: Option<&str>, key: &str, context: &str) -> Option<String> {
-    let t = match code {
-        Some(c) => table_of(c)?,
-        None => table()?.1,
-    };
+    let t = if let Some(c) = code { table_of(c)? } else { table()?.1 };
     t.get(&format!("{context}\u{4}{key}")).or_else(|| t.get(key)).map(|f| f[0].clone())
 }
 
