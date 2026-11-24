@@ -369,7 +369,7 @@ pub(crate) fn file_rules(f: &Value) -> FileRules {
 /// bridge for a room without room features or with empty ones.
 pub(crate) fn file_features(features: Option<&Value>, bridge: &Value) -> (crate::models::Files, bool) {
     match features.filter(|f| f.as_object().is_some_and(|f| !f.is_empty())) {
-        Some(f) => (crate::models::Files::new(file_rules(f)), true),
+        Some(f) => (crate::models::Files::new(&file_rules(f)), true),
         None => (crate::models::default_files(bridge), false),
     }
 }
@@ -489,7 +489,7 @@ pub(crate) struct RoomReads {
     create: Value,
     note: bool,
     bridge: Value,
-    features: Option<Value>,
+    features: Option<crate::models::Shared<Value>>,
     tombstone: Option<Value>,
     /// The content of `m.room.power_levels`, without the creators that [`power_levels`] adds.
     levels: Option<Value>,
@@ -520,7 +520,7 @@ impl RoomReads {
             create: create.unwrap_or(Value::Null),
             note: state(room, "com.beeper.rooms.note_to_self").await.is_some(),
             bridge: state(room, "m.bridge").await.unwrap_or(Value::Null),
-            features: state(room, "com.beeper.room_features").await,
+            features: state(room, "com.beeper.room_features").await.as_ref().map(crate::models::Shared::new),
             tombstone: state(room, "m.room.tombstone").await,
             levels: state(room, "m.room.power_levels").await,
             disappearing: state(room, DISAPPEARING_TIMER).await,
@@ -606,7 +606,7 @@ async fn members(room: &Room, reads: &RoomReads) -> (Vec<User>, String, bool) {
     let members = room.members_no_sync(RoomMemberships::JOIN | RoomMemberships::INVITE).await.expect("read room members");
     let levels = power_levels(room, reads);
     let users_default = levels["users_default"].as_i64().unwrap_or(0).try_into().expect("power level");
-    let member_actions = member_actions(reads.features.as_ref());
+    let member_actions = member_actions(reads.features.as_deref());
     let contents: HashMap<String, Value> = states(room, StateEventType::RoomMember)
         .await
         .into_iter()
@@ -710,11 +710,11 @@ async fn chat(room: &Room, reads: &RoomReads, accounts: &[BridgeAccountInfo], ru
     let bridge = &reads.bridge;
     let Known { participants: mut items, title, dm } = known;
     let me = room.own_user_id();
-    let features = &reads.features;
-    let (file, room_features) = file_features(features.as_ref(), bridge);
+    let features = reads.features.as_deref();
+    let (file, room_features) = file_features(features, bridge);
     let tombstone = &reads.tombstone;
     let levels = power_levels(room, reads);
-    let member_actions = member_actions(features.as_ref());
+    let member_actions = member_actions(features);
     let tags = &reads.tags;
     let account_id = account_id(bridge, accounts);
     // Kept members come from a chat that SQLite loaded without their `manage` bits, which the power levels give.
@@ -759,34 +759,34 @@ async fn chat(room: &Room, reads: &RoomReads, accounts: &[BridgeAccountInfo], ru
         }),
         // Desktop's `com.beeper.chats.snoozed` handler keeps a snooze that ends in the future.
         snoozed_until_ms: (reads.snoozed.as_ref()).and_then(|s| s["snoozed_until_ms"].as_i64()).filter(|&ms| ms > now_unix_millis()),
-        delete_modes: features.as_ref().map_or(0, |f| {
+        delete_modes: features.map_or(0, |f| {
             (u8::from(f["delete_chat"] == true) * DELETE_FOR_ME) | (u8::from(f["delete_chat_for_everyone"] == true) * DELETE_FOR_EVERYONE)
         }),
-        can_accept_request: features.as_ref().is_some_and(|f| f["message_request"]["accept_with_button"] == 2),
-        block: block_bits(features.as_ref(), bridge),
-        edits: edit_bits(features.as_ref(), &levels, me.as_str()),
+        can_accept_request: features.is_some_and(|f| f["message_request"]["accept_with_button"] == 2),
+        block: block_bits(features, bridge),
+        edits: edit_bits(features, &levels, me.as_str()),
         member_actions,
         formatting: features
             .as_ref()
             .map_or(ALL_FORMATS, |f| FORMATS.iter().enumerate().filter(|(_, k)| f["formatting"][**k] == 2).fold(0, |m, (i, _)| m | 1 << i)),
         file,
         room_features,
-        features: features.clone().map(Box::new),
-        polls: features.as_ref().map_or(Some(BEEPER_POLLS), poll_rules),
-        messages: features.as_ref().map_or(BEEPER_MESSAGES, message_rules),
-        allowed_reactions: (features.as_ref().map(|f| f["allowed_reactions"].as_array().into_iter().flatten()))
+        features: reads.features.clone(),
+        polls: features.map_or(Some(BEEPER_POLLS), poll_rules),
+        messages: features.map_or(BEEPER_MESSAGES, message_rules),
+        allowed_reactions: (features.map(|f| f["allowed_reactions"].as_array().into_iter().flatten()))
             .into_iter()
             .flatten()
             .filter_map(|r| r.as_str().map(str::to_string))
             .collect(),
-        custom_emoji: crate::models::custom_emoji(features.as_ref(), bridge),
+        custom_emoji: crate::models::custom_emoji(features, bridge),
         disappearing: reads.disappearing.as_ref().and_then(|t| t["timer"].as_u64()).filter(|&t| t > 0),
-        timers: timers(features.as_ref(), &levels, me.as_str()),
+        timers: timers(features, &levels, me.as_str()),
         is_read_only: tombstone.is_some() || read_only(&levels, me.as_str()),
         replacement_room: tombstone.as_ref().and_then(|t| s(&t["replacement_room"])),
-        can_mention_room: features.as_ref().is_none_or(|f| f["formatting"]["at_room_mention"].as_i64() >= Some(1))
+        can_mention_room: features.is_none_or(|f| f["formatting"]["at_room_mention"].as_i64() >= Some(1))
             && power(&levels, me.as_str()) >= levels["notifications"]["room"].as_i64().unwrap_or(50),
-        threads: features.as_ref().is_some_and(|f| f["thread"].as_i64() > Some(0)),
+        threads: features.is_some_and(|f| f["thread"].as_i64() > Some(0)),
         follows: reads.follows.as_ref().and_then(ThreadFollows::parse).unwrap_or_default(),
         // Desktop's `Up`: a sound it knows, else the Default sound.
         notification_sound: (reads.sound.as_ref()).and_then(|d| s(&d["sound"])).filter(|n| CHAT_SOUNDS.contains(&n.as_str())),
