@@ -575,7 +575,7 @@ impl BeeperGuiApp {
         let items = std::iter::once(item(&langs[0])).chain([crate::menu_rule(p)]).chain(langs[1..].iter().map(item));
         let names = langs.iter().map(|(_, n)| text_width(tr(n), 13.0, Weight::Normal));
         let w = 10.0 + 16.0 + 22.0 + names.fold(0.0, f32::max);
-        let h = (8.0 + 11.0 + (langs.len() as f32) * menu_pitch()).min((room - top).max(4.0 * menu_pitch()));
+        let h = (8.0 + MENU_RULE + (langs.len() as f32) * menu_pitch()).min((room - top).max(4.0 * menu_pitch()));
         let list = iced::widget::scrollable(Column::with_children(items).padding([4, 0])).height(h);
         let menu = container(list).width(w).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0));
         Some((column![Space::new().height(top), menu].into(), w))

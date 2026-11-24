@@ -921,7 +921,7 @@ impl BeeperGuiApp {
         rows.push(None);
         rows.extend(first.into_iter().map(Some));
         rows.extend(delete.map(|d| [None, Some(d)]).into_iter().flatten());
-        let h = 8.0 + rows.iter().map(|r| if r.is_some() { menu_pitch() } else { 11.0 }).sum::<f32>();
+        let h = 8.0 + rows.iter().map(|r| if r.is_some() { menu_pitch() } else { MENU_RULE }).sum::<f32>();
         let rows = rows.into_iter().map(|r| match r {
             Some((label, msg)) => {
                 let msg = UiMessage::Commands(vec![UiMessage::Media(Msg::CarouselMenu(false)), msg]);
@@ -1232,7 +1232,7 @@ impl BeeperGuiApp {
                 .collect(),
         };
         actions.extend(deletable(st, m).then(|| act(tr("Delete…"), UiMessage::Media(Msg::AskDelete(vec![(mid.clone(), *k)])))));
-        let h = 8.0 + menu_pitch() * (1 + actions.len()) as f32 + 11.0;
+        let h = 8.0 + menu_pitch() * (1 + actions.len()) as f32 + MENU_RULE;
         let col = Column::with_children([go, menu_rule(p)].into_iter().chain(actions));
         let menu = crate::menu_card(p, col, 180);
         let at = Padding::ZERO.left(at.x.min(w.size.width - 180.0 - 8.0)).top(at.y.min(w.size.height - h - 8.0));

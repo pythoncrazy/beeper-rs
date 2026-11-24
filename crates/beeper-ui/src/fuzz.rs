@@ -4922,6 +4922,22 @@ fn the_header_shows_typing_in_a_dm_like_desktop() {
     }
 }
 
+/// Desktop's `.thread-header-info`: 6 px above and below the 16 px name line, in a 1 px outline that CSS draws
+/// outside the box, so the pill shows 30 px tall.
+#[test]
+fn the_header_pill_like_desktop() {
+    let mut app = demo_app("header-pill");
+    let _ = app.update(UiMessage::SelectChat("!tg_rust:beeper.com".into()));
+    (app.dark, app.pal) = (true, crate::style::palette(true, None, 0));
+    let name = simulator(app.view_main()).find("Beeper Rust Core Team").expect("the name").bounds();
+    let shot = crate::message::tests::pixels(&mut simulator(app.view_main()));
+    // A column through the name, clear of the rounded ends and the avatar, at the scale of 2 of the shot.
+    let x = (2.0 * (name.x + 20.0)) as u32;
+    let around = (2.0 * (name.y - 20.0)) as u32..(2.0 * (name.y + 36.0)) as u32;
+    let card = app.pal.card.into_rgba8();
+    assert_eq!(around.filter(|&y| shot.get_pixel(x, y).0 != card).count(), 2 * 30);
+}
+
 #[test]
 fn deleted_and_encrypted_messages_look_like_desktop() {
     let note = "!note_self:beeper.com";
@@ -5074,27 +5090,42 @@ fn sheets_follow_the_zoom_like_desktop() {
     assert_eq!(app.zoomed_sheets().len(), 3, "New Label and How It Works follow the zoom too");
 }
 
+/// The settings of the first window that `task` opens. The task waits for the window, so only its first one counts.
+pub(crate) fn opened_window(task: Task<UiMessage>) -> Option<window::Settings> {
+    use iced::futures::StreamExt;
+    let actions = iced_runtime::task::into_stream(task)?;
+    let open = actions.filter_map(|a| async move {
+        match a {
+            iced_runtime::Action::Window(iced_runtime::window::Action::Open(_, s, _)) => Some(s),
+            _ => None,
+        }
+    });
+    iced::futures::executor::block_on(open.boxed().next())
+}
+
+/// Electron gives the windows that Desktop's renderer opens its 330 by 400 minimum too: the 340 by 380 Account
+/// Nickname window is 400 px high and the 303 px wide Edit Labels window 330 px wide. Edit Labels, Edit Spaces and
+/// Merge Chats leave out `resizable`, so they resize down to it.
+#[test]
+fn small_windows_open_at_desktops_minimum_size() {
+    let mut app = demo_app("window-minimum");
+    let size = |s: window::Settings| (s.size, s.resizable, s.min_size);
+    let (_, nickname) = app.open_child(crate::nickname::NICKNAME_SIZE);
+    assert_eq!(opened_window(nickname).map(size), Some((Size::new(340.0, 400.0), false, None)));
+    let labels = app.update(UiMessage::Labels(labels::Msg::OpenEdit(NOTE_CHAT_ID.into())));
+    assert_eq!(opened_window(labels).map(size), Some((Size::new(330.0, 488.0), true, Some(windows::MIN_SIZE))));
+    let spaces = app.update(UiMessage::OpenEditSpaces);
+    assert_eq!(opened_window(spaces).map(size), Some((SPACES_SIZE, true, Some(windows::MIN_SIZE))));
+    let (_, poll) = app.open_child(Size::new(400.0, 620.0));
+    assert_eq!(opened_window(poll).map(size), Some((Size::new(400.0, 620.0), false, None)), "a bigger one keeps its size");
+}
+
 /// Desktop's windows open at their size in screen pixels whatever the zoom and the font size, and iced opens a
 /// window at its size times the scale factor.
 #[test]
 fn windows_open_at_their_size_at_any_zoom_like_desktop() {
-    use iced::futures::StreamExt;
     use iced::keyboard::{Key, Modifiers};
-    let opened = |app: &mut BeeperGuiApp| {
-        let task = app.open_settings(SettingsTab::General);
-        let actions = iced_runtime::task::into_stream(task).expect("a window opens");
-        iced::futures::executor::block_on(
-            actions
-                .filter_map(|a| async move {
-                    match a {
-                        iced_runtime::Action::Window(iced_runtime::window::Action::Open(_, s, _)) => Some(s.size),
-                        _ => None,
-                    }
-                })
-                .boxed()
-                .next(),
-        )
-    };
+    let opened = |app: &mut BeeperGuiApp| opened_window(app.open_settings(SettingsTab::General)).map(|s| s.size);
     let mut app = demo_app("zoomed-windows");
     let _ = app.update(UiMessage::Settings(settings::Msg::SetPref("fontSize", 8)));
     assert_eq!(opened(&mut app), Some(SETTINGS_SIZE), "the font size 17 does not zoom the window");
@@ -6102,6 +6133,24 @@ fn edit_and_delete_labels_like_desktop() {
     assert_eq!(st.settings.spaces_order[0].id, format!("label:{}", back.id), "the label keeps its place");
 }
 
+/// Desktop's space bar fills only the selected space: the pointer on another fills nothing.
+#[test]
+fn rail_spaces_show_no_hover_fill_like_desktop() {
+    let app = demo_app("rail-hover");
+    let main = app.main_window.expect("the main window");
+    let mut sim = Simulator::with_size(Default::default(), app.pane.size, app.view(main));
+    let archive = sim.find(iced::widget::Id::new("rail-archive-button")).expect("the Archive space").bounds();
+    let edge = |sim: &mut Simulator<'_, UiMessage>| {
+        let shot = crate::message::tests::pixels(sim);
+        let k = shot.width() as f32 / app.pane.size.width;
+        shot.get_pixel(((archive.x + 3.0) * k) as u32, (archive.center_y() * k) as u32).0
+    };
+    let clear = edge(&mut sim);
+    sim.point_at(archive.center());
+    let _ = sim.simulate([iced::Event::Mouse(mouse::Event::CursorMoved { position: archive.center() })]);
+    assert_eq!(edge(&mut sim), clear);
+}
+
 #[test]
 fn sidebar_follows_the_spaces_order_like_desktop() {
     use beeper_core::models::SpaceOrder;
@@ -6682,6 +6731,18 @@ fn background_menus_like_desktop() {
     assert!(app.show_command_palette && app.list.chat_menu.is_none());
 }
 
+/// Desktop's chat list header hides its chevron in a list of at most 10.625rem inside its 8 px padding
+/// (`@container threads`).
+#[test]
+fn a_narrow_chat_list_hides_the_header_chevron_like_desktop() {
+    let mut app = demo_app("narrow-header");
+    let chevron = String::from(icon::UNFOLD_MORE);
+    for (width, shown) in [(252.0, true), (179.0, true), (178.0, false), (172.0, false)] {
+        app.sidebar_width = width;
+        assert_eq!(simulator(app.view_sidebar()).find(chevron.as_str()).is_ok(), shown, "at {width} px");
+    }
+}
+
 #[test]
 fn space_sheet_like_desktop() {
     let mut app = demo_app("space-sheet");
@@ -6763,6 +6824,47 @@ fn label_settings_like_desktop() {
     assert_eq!(inbox(&app), None, "Delete deletes the label");
 }
 
+/// Desktop's `ThreadListItem` lines from the top of the title line: the time 2 px down, the preview 16 px down
+/// (iced draws the regular 14 px title 1 px lower than Chromium, so its line starts 1 px higher), and the unread
+/// count (`1lh` of 14 px, 12 px in the compact list) 2 px under the top of the preview.
+#[test]
+fn chat_rows_place_their_lines_like_desktop() {
+    fn line(sim: &mut Simulator<'_, UiMessage>, title: Rectangle, f: impl Fn(&str) -> bool + Send + Sync + 'static) -> Rectangle {
+        sim.find(move |c: iced_test::selector::Candidate<'_>| match c {
+            iced_test::selector::Candidate::Text { content, bounds, .. }
+                if f(content) && bounds.x > title.x && (bounds.y - title.y).abs() < 30.0 =>
+            {
+                Some(bounds)
+            }
+            _ => None,
+        })
+        .expect("a line of the row")
+    }
+    let mut app = demo_app("row-lines");
+    let ts = list_ts(app.store.read().chat("!wa_family:beeper.com").last_activity.as_deref().expect("a time"), false);
+    for (compact, preview, count) in [(false, 17.0, 19.0), (true, 16.0, 18.0)] {
+        let _ = app.update(UiMessage::Settings(settings::Msg::SetPref("compactChatList", u8::from(compact))));
+        let mut sim = simulator(app.view_sidebar());
+        let title = sim.find("Family").expect("the title").bounds();
+        let ts = ts.clone();
+        assert_eq!(line(&mut sim, title, move |t| t == ts).y - title.y, 2.0, "the time, compact {compact}");
+        assert_eq!(line(&mut sim, title, |t| t.starts_with("Mom: Dinner")).y - title.y, preview, "the preview, compact {compact}");
+        let badge = line(&mut sim, title, |t| t == "2");
+        let half = if compact { 6.0 } else { 7.0 };
+        assert_eq!(badge.center_y() - title.y, count + half, "the count, compact {compact}");
+    }
+}
+
+/// Desktop's `.UnreadThreads-module__pill`: 30 px high with its 1 px border, with its label 13 px in.
+#[test]
+fn unread_threads_pill_sizes_like_desktop() {
+    let app = demo_app("pill-sizes");
+    let mut sim = simulator(app.view_sidebar());
+    let pill = sim.find(iced::widget::Id::new("unread-threads")).expect("the pill").bounds();
+    let label = sim.find("Unread threads").expect("the label").bounds();
+    assert_eq!((pill.height, label.x - pill.x, label.y - pill.y), (30.0, 13.0, 7.0));
+}
+
 #[test]
 fn chat_list_mutes_receipts_and_errors_like_desktop() {
     let mut app = demo_app("list-states");
@@ -6834,6 +6936,23 @@ fn another_chat_drops_the_pending_reveal() {
     assert!(!app.pane.selected_msgs.is_empty(), "a step selects and reveals a message");
     let _ = app.update(UiMessage::SelectChat(chats[1].clone()));
     drop(simulator(app.view_conversation()));
+}
+
+/// Desktop's pins of 116 px: the title within the 12 px padding, and a bubble wider than the avatar centered on it.
+#[test]
+fn pins_place_their_title_and_bubble_like_desktop() {
+    fn text(sim: &mut Simulator<'_, UiMessage>, start: &'static str) -> Rectangle {
+        sim.find(move |c: iced_test::selector::Candidate<'_>| match c {
+            iced_test::selector::Candidate::Text { content, bounds, .. } if content.starts_with(start) => Some(bounds),
+            _ => None,
+        })
+        .expect(start)
+    }
+    let app = demo_app("pin-places");
+    let mut sim = simulator(app.view_sidebar());
+    let (eric, bubble) = (text(&mut sim, "Eric"), text(&mut sim, "Welcome to"));
+    assert!((bubble.center_x() - eric.center_x()).abs() < 0.5, "the bubble centers on the pin");
+    assert!(text(&mut sim, "Beeper Rust").width <= 116.0 - 24.0, "the title fits in the padding");
 }
 
 #[test]
@@ -9477,7 +9596,8 @@ fn wayland_hides_windows_by_closing_them_like_electron() {
     let (done, _) = run_window_actions(show, Size::new(900.0, 640.0), &[main]);
     let open: Vec<_> = done.iter().filter(|a| a.starts_with("open")).collect();
     assert_eq!(open.len(), 1, "only the main window shows: {done:?}");
-    assert!(open[0].starts_with(&format!("open {main:?} 1200x800 true")), "{done:?}");
+    // Its 800 px have the title bar that winit adds, and the chat window keeps the page's size that it had.
+    assert!(open[0].starts_with(&format!("open {main:?} 1200x{} true", 800.0 - app.title_bar())), "{done:?}");
     assert!(!app.hidden && app.unmapped.iter().all(|w| w.0 != main));
 
     // The tray's click shows all windows: the chat window opens again at the size that it had.
@@ -9610,6 +9730,37 @@ fn main_window_keeps_its_state_like_desktop() {
     let _ = app.update(UiMessage::SelectChat(beeper_core::store::NOTE_CHAT_ID.into()));
     let title = app.store.read().chats.iter().find(|c| c.id == beeper_core::store::NOTE_CHAT_ID).unwrap().title.clone();
     assert_eq!(app.title(main), format!("Beeper | {title}"));
+}
+
+/// Electron draws its title bar inside its window on Wayland, so a window of Desktop's 1200 by 800 opens with 800 px
+/// in all, the title bar that winit adds on top included, and Desktop's minimum height counts it too. On X11 the
+/// window manager's title bar is outside the window for both.
+#[test]
+fn windows_count_the_title_bar_on_wayland_like_electron() {
+    use beeper_core::platform::DisplayServerKind;
+    use iced::futures::StreamExt;
+    let opened = |app: &mut BeeperGuiApp, settings: window::Settings| {
+        let stream = iced_runtime::task::into_stream(app.open_window(settings).1.discard::<UiMessage>()).expect("a window opens");
+        let open = stream.filter_map(|a| async move {
+            match a {
+                iced_runtime::Action::Window(iced_runtime::window::Action::Open(_, s, _)) => Some((s.size, s.min_size)),
+                _ => None,
+            }
+        });
+        iced::futures::executor::block_on(open.boxed().next()).expect("a window opens")
+    };
+    let mut app = demo_app("title-bar");
+    app.display_server = DisplayServerKind::X11;
+    assert_eq!(app.title_bar(), 0.0);
+    let main = BeeperGuiApp::window_settings(MAIN_SIZE);
+    assert_eq!(opened(&mut app, main.clone()), (MAIN_SIZE, Some(Size::new(330.0, 400.0))));
+    app.display_server = DisplayServerKind::Wayland;
+    let bar = app.title_bar();
+    assert!(bar > 0.0, "winit draws a title bar on Wayland");
+    let wayland = (Size::new(1200.0, 800.0 - bar), Some(Size::new(330.0, 400.0 - bar)));
+    assert_eq!(opened(&mut app, main.clone()), wayland, "the title bar is part of the 800 px");
+    let pip = window::Settings { decorations: false, min_size: None, ..main };
+    assert_eq!(opened(&mut app, pip), (MAIN_SIZE, None), "a window without decorations has no title bar");
 }
 
 /// A window that opens maximized maximizes again once the window manager places it, like Desktop's `deferMaximize`:

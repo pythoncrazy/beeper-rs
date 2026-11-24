@@ -278,7 +278,7 @@ impl BeeperGuiApp {
             ]),
             ms.iter().all(|m| deletable(&st, m)).then(|| {
                 let delete = UiMessage::Message(message::Msg::AskDelete(ids.clone()));
-                vec![(menu_rule(p), 11.0), item(tr("Delete…").into(), "", delete)]
+                vec![(menu_rule(p), MENU_RULE), item(tr("Delete…").into(), "", delete)]
             }),
         ]
         .into_iter()
@@ -424,7 +424,7 @@ impl BeeperGuiApp {
                 };
                 let fetch = (!fetching).then(|| UiMessage::Loaded(loads::Msg::Fetch(src.clone())));
                 let download = button(container(icon).center(40)).padding(0).on_press_maybe(fetch);
-                let style = btn_style([p.received; 3], [p.accent; 3], 20.0);
+                let style = btn_style([p.link_card; 3], [p.accent; 3], 20.0);
                 let download = download.style(move |t, s| match s {
                     button::Status::Disabled => style(t, button::Status::Active),
                     s => style(t, s),

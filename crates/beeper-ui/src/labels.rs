@@ -41,7 +41,7 @@ impl BeeperGuiApp {
                 if let Some(&(id, _)) = self.labels_windows.iter().find(|w| w.1 == chat) {
                     return self.raise(id);
                 }
-                let (id, open) = self.open_child(Size::new(303.0, 488.0));
+                let (id, open) = self.open_resizable_child(Size::new(303.0, 488.0));
                 self.labels_windows.push((id, chat));
                 return open;
             }
