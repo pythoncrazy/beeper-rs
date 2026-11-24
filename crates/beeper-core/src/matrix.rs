@@ -2653,14 +2653,27 @@ async fn flush(store: SharedStore) -> Result<(), PushError> {
         // A failed change waits for Retry only with a local echo that shows the error.
         let message = out.message().filter(|id| store.read().stored_message(id).is_some()).map(str::to_string);
         let retry = !matches!(out, Outgoing::Edit { .. });
+        if let Some(id) = message.as_ref().filter(|_| retry) {
+            store.write().sending.entry(id.clone()).or_insert_with(now_unix_millis);
+        }
         let pending = matches!(out, Outgoing::RemoveFromBeeper { .. });
         let flag = match out {
             Outgoing::Flag(f, on) => Some((chat.clone(), f, on)),
             _ => None,
         };
-        let r = match push(&store, chat, out).await {
-            Err(e) if !e.transient => Err(PushError { transient: unreachable(&store).await, ..e }),
-            r => r,
+        // Desktop's `sendQueuedMessages` gives up on a message five times its slow wait after its push began.
+        let wait = message.as_ref().filter(|_| retry).and_then(|id| store.read().send_wait(id));
+        let left = wait.map_or(std::time::Duration::MAX, |(start, wait)| {
+            std::time::Duration::from_millis((start + 5 * wait - now_unix_millis()).max(0).cast_unsigned())
+        });
+        let late = || Err(PushError::from("Message took too long to send".to_string()));
+        let r = match left.is_zero() {
+            true => late(),
+            false => match tokio::time::timeout(left, push(&store, chat, out)).await {
+                Err(_) => late(),
+                Ok(Err(e)) if !e.transient => Err(PushError { transient: unreachable(&store).await, ..e }),
+                Ok(r) => r,
+            },
         };
         let mut st = store.write();
         match (r, message) {
@@ -8752,6 +8765,35 @@ mod tests {
         pushed_until(&store, |st| st.sent.contains_key(&txn)).await;
         assert!(store.read().stored_message(&txn).expect("the echo").send_error.is_none());
         assert!(tries.load(Relaxed) >= 3 && store.read().outbox.is_empty(), "the third try went through");
+    }
+
+    /// Desktop's `sendQueuedMessages` gives up on a send five times its slow wait (a minute, two with a file) after it
+    /// began: until then a send that the homeserver cannot take stays pending, then it fails for Retry.
+    #[tokio::test]
+    async fn sends_give_up_like_desktop() {
+        let url = crate::bridge_stub::serve(move |_, path, _| match path.split('?').next().expect("a path") {
+            "/_matrix/client/versions" => (200, json!({ "versions": ["v1.11"] })),
+            "/_matrix/client/v3/sync" => (200, stub_sync()),
+            "/_matrix/client/v3/keys/upload" => (200, json!({ "one_time_key_counts": {} })),
+            p if p.ends_with("/messages") => (200, json!({ "start": "t0", "chunk": [] })),
+            p if p.contains("/send/m.room.message/") => (503, json!({ "errcode": "M_UNKNOWN", "error": "stub overload" })),
+            _ => (404, json!({ "errcode": "M_NOT_FOUND", "error": "not in the stub" })),
+        })
+        .await;
+        let store = stub_store(&crate::testing::temp_dir("outbox-too-long"), &url).await;
+        sync_stub_room(&store, "!room:x").await;
+        let draft = crate::store::Draft { text: Some("hi".into()), ..Default::default() };
+        let txn = store.write().send("!room:x", draft).expect("a local echo").1.remove(0);
+        let error = |store: &crate::store::SharedStore| store.read().stored_message(&txn).expect("the echo").send_error;
+        let started = crate::config::now_unix_millis() - 290_000;
+        store.write().sending.insert(txn.clone(), started);
+        assert_eq!(store.read().send_wait(&txn), Some((started, 60_000)));
+        assert!(super::flush(store.clone()).await.is_err(), "the homeserver is overloaded");
+        assert_eq!((error(&store), store.read().sending.get(&txn)), (None, Some(&started)), "still sending");
+        store.write().sending.insert(txn.clone(), crate::config::now_unix_millis() - 300_000);
+        super::flush(store.clone()).await.expect("the send gives up");
+        assert_eq!(error(&store).and_then(|e| e.message).as_deref(), Some("Message took too long to send"));
+        assert!(store.read().has_errored("!room:x") && !store.read().sending.contains_key(&txn), "it waits for Retry");
     }
 
     /// A client of a stub homeserver tries each request once, with a short timeout. matrix-sdk retries a 5xx for up to

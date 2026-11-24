@@ -209,6 +209,42 @@ impl BeeperGuiApp {
         self.show_note(note, false)
     }
 
+    /// The next time a send of this device takes long, for [`Self::slow_sends`].
+    pub(crate) fn slow_send_due(&self) -> Option<i64> {
+        let st = self.store.read();
+        let sends = st.sending.keys().filter(|id| !self.slow_sends.contains(*id));
+        sends.filter_map(|id| st.send_wait(id)).map(|(start, wait)| start + wait).min()
+    }
+
+    /// Desktop's `slow-message-send-` toast of `sendQueuedMessages`: a send that takes a minute (two with a file) says
+    /// so, with Show, until its push ends.
+    pub(crate) fn slow_sends(&mut self) {
+        let st = self.store.read();
+        let done: Vec<String> = self.slow_sends.iter().filter(|id| !st.sending.contains_key(*id)).cloned().collect();
+        let now = beeper_core::config::now_unix_millis();
+        let due = st.sending.keys().filter(|id| !self.slow_sends.contains(*id) && st.send_wait(id).is_some_and(|(s, w)| s + w <= now));
+        let due: Vec<(String, String, String)> = due
+            .filter_map(|id| {
+                let chat = st.find_chat(&st.stored_message(id)?.chat_id)?;
+                let at: [&dyn std::fmt::Display; 2] = [&chat.title, &crate::network_name(&chat.account_id)];
+                let text = crate::trf("Sending message to %1$s (%2$s) is taking longer than expected", &at);
+                Some((id.clone(), chat.id.clone(), text))
+            })
+            .collect();
+        drop(st);
+        for id in done {
+            self.slow_sends.remove(&id);
+            self.remove_toast(&format!("slow-message-send-{id}"));
+        }
+        for (message, chat, text) in due {
+            let buttons = vec![(crate::tr("Show"), UiMessage::SelectChat(chat))];
+            let id = Some(format!("slow-message-send-{message}"));
+            self.slow_sends.insert(message);
+            self.show(crate::toasts::Toast { buttons, stays: true, id, ..crate::toasts::Toast::new(text.clone()) });
+            self.sticky_banner = Some(text);
+        }
+    }
+
     pub(crate) fn notify_message(&mut self, m: &Message) -> Task<UiMessage> {
         if let Some(t) = self.pending.typing.get_mut(&m.chat_id) {
             t.1 = None;
