@@ -4339,7 +4339,8 @@ impl BeeperGuiApp {
         if !std::mem::take(&mut self.tray_sent.1) {
             return task;
         }
-        let now = (self.badge_count(), !self.hidden);
+        // Desktop's tray menu offers Show Window while the window hides or is minimized.
+        let now = (self.badge_count(), self.shows());
         if self.tray_sent.0.replace(now) == Some(now) {
             return task;
         }
@@ -6396,7 +6397,8 @@ impl BeeperGuiApp {
             return tooltip(el, Space::new(), at);
         }
         let body = row![med(label, 13.0).color(p.strong)].push(keys).spacing(8).align_y(Center);
-        tooltip(el, self.tip_card(body), at)
+        // `.BrandTooltip-module__tooltip`'s 6 px margin, from the trigger and from the edges of the window.
+        tooltip(el, self.tip_card(body), at).padding(6)
     }
 
     /// The box of Desktop's `BrandTooltip`: `8px 11px` inside, the bubble radius and `--shadow-large-15`.
