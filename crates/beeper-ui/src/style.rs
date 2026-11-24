@@ -998,7 +998,8 @@ palette! {
     sent_fg: Color = hex(0xffffff), hex(0xffffff);
     /// `--color-secondary-container`: received bubbles.
     received: Color = hex(0xefeff0), hex(0x232326);
-    /// `--color-background-message-bubble-received`: link previews.
+    /// `--color-background-message-bubble-received`: link previews, file rows, received voice notes and contact cards,
+    /// and the outline of a deleted message.
     link_card: Color = hex(0xededed), hex(0x282828);
     /// `--color-outline`.
     rule: Color = hex(0xb3b3b3), hex(0x4c4c4c);

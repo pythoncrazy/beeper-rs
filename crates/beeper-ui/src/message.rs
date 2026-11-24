@@ -2123,7 +2123,7 @@ impl BeeperGuiApp {
             let body = row![icon, txt(text, 13.0).font(italic).color(fg)];
             container(body.spacing(5).align_y(iced::Bottom)).padding(Padding::new(13.0).top(9.0).bottom(7.0)).style(bordered_box(
                 CLEAR,
-                mix(p.card, p.received, 0.8),
+                mix(p.card, p.link_card, 0.8),
                 1.0,
                 17.0,
             ))
@@ -2265,7 +2265,8 @@ impl BeeperGuiApp {
                         let time = format_short_ts(&m.timestamp, st.settings.pref("timeFormat") == 1);
                         (time, if mine { sent_meta } else { p.sub })
                     });
-                    self.view_audio(m, a, mine, ts, fg, bg)
+                    // `.audio-player` of a received voice note is `--color-background-message-bubble-received`.
+                    self.view_audio(m, a, mine, ts, fg, if mine { bg } else { dim(p.link_card) })
                 }
                 (false, "img" | "video") if m.unresolved_media.is_some() || self.needs_download(a).is_none() => {
                     self.view_media_attachment(st, m, ai, a, name)
@@ -3305,7 +3306,7 @@ impl BeeperGuiApp {
         };
         let line = row![icon, info].spacing(8).align_y(Center);
         // The disabled row of a fetching file keeps its colors.
-        let style = btn_style([p.received; 3], [p.strong; 3], 17.0);
+        let style = btn_style([p.link_card; 3], [p.strong; 3], 17.0);
         let style = move |t: &Theme, s| style(t, if s == button::Status::Disabled { button::Status::Active } else { s });
         button(container(line).max_width(240.0 - 2.0 * BUBBLE_PAD_X)).padding([8, 11]).style(style).on_press_maybe(press).into()
     }
@@ -3363,7 +3364,7 @@ impl BeeperGuiApp {
             .into_iter()
             .chain(entries)
             .fold(w(&trn("Phone Number", "Phone Numbers", 2, &[]), 12.0, Weight::Semibold), f32::max);
-        let fill = if mine { bg } else { p.received };
+        let fill = if mine { bg } else { p.link_card };
         container(body).width((32.0 + 8.0 + text.ceil()).max(180.0) + 20.0).padding([8, 10]).style(fill_box(fill, 17.0)).into()
     }
 
@@ -5799,6 +5800,20 @@ pub(crate) mod tests {
         assert_eq!(app.file_state(&a), FileState::Ready);
         assert!(app.media.get(&url).is_none(), "the image loads again, from the cache");
         assert!(simulator(app.view_conversation()).find("photo.jpg").is_err(), "the image takes its place");
+    }
+
+    /// Desktop's `.audio-player` of a received voice note and its `AttachmentFileRow` fill with
+    /// `--color-background-message-bubble-received`, not with the secondary container of text bubbles.
+    #[test]
+    fn attachment_fills_like_desktop() {
+        let mut app = crate::fuzz::demo_app("attachment-fills");
+        app.dark = true;
+        app.pal = crate::style::palette(true, None, 0);
+        let _ = app.update(UiMessage::SelectChat("!tg_rust:beeper.com".into()));
+        let shot = pixels(&mut alone(&app, "msg_1003"));
+        let count = |c: Color| shot.pixels().filter(|px| px.0 == c.into_rgba8()).count();
+        assert!(count(app.pal.link_card) > 20_000, "the voice note and the file row: {}", count(app.pal.link_card));
+        assert_eq!(count(app.pal.received), 0, "no text bubble color");
     }
 
     /// A still that is much larger than its box shows from a cut of its box that a worker bakes, like Chromium's
