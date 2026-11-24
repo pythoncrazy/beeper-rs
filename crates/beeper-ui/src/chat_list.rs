@@ -1251,9 +1251,13 @@ impl BeeperGuiApp {
     fn view_list_header(&self, st: &BeeperStore) -> El<'_> {
         let p = &self.pal;
         // `.btn-ghost:active svg`: a pressed Search or New Chat icon turns `--color-icon-translucent-strong`. Each is a
-        // Material icon of a `w` px wide box at `scale(1.2)` in the middle of the button's 6 px sides.
-        let head_btn = |key: &str, c: char, w: f32, size: f32, msg: UiMessage| {
-            let b = button(container(ic(c, size * 1.2)).center_x(w + 12.0).center_y(26))
+        // Material icon of a `w` x `h` px box at `scale(1.2)` in the middle of the button's 6 px sides. Chromium paints
+        // the box on whole pixels of the screen: New Chat's, 17.5 px down the 52 px bar, is on 18 at scale 1.
+        let scale = self.screen_scale * self.zoom;
+        let head_btn = |key: &str, c: char, w: f32, h: f32, msg: UiMessage| {
+            let top = (52.0 - h) / 2.0;
+            let down = Padding::ZERO.top(2.0 * ((top * scale + 0.5).floor() / scale - top));
+            let b = button(container(ic(c, w.min(h) * 1.2)).center_x(w + 12.0).center_y(26).padding(down))
                 .padding(0)
                 .style(btn_style([CLEAR; 3], [p.strong, p.strong, p.fg.scale_alpha(0.9)], 0.0))
                 .on_press(msg.clone());
@@ -1267,7 +1271,7 @@ impl BeeperGuiApp {
         });
         let search = UiMessage::CommandBar(commands::Msg::TogglePalette);
         // The 19x22 and 22x17 boxes of the signed-in Desktop's Search and New Chat icons.
-        let search = head_btn("list-search", icon::SEARCH, 19.0, 19.0, search);
+        let search = head_btn("list-search", icon::SEARCH, 19.0, 22.0, search);
         let new_chat = head_btn("list-new-chat", icon::EDIT_SQUARE, 22.0, 17.0, UiMessage::NewChat(new_chat::Msg::Open));
         row![self.view_list_title(st)]
             .push(self.view_filter_button())
