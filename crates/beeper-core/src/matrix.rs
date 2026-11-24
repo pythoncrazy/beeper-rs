@@ -688,14 +688,18 @@ pub(crate) struct Globals {
     pins: Value,
     muted: Vec<String>,
     notifications: matrix_sdk::notification_settings::NotificationSettings,
+    /// The [`crate::features::REQUESTS`] flag.
+    requests: bool,
 }
 
 impl Globals {
     pub(crate) async fn read(client: &Client) -> Self {
+        let flags = crate::features::Flags { flags: global(client, crate::features::FLAGS).await, ..Default::default() };
         Self {
             pins: global(client, "com.beeper.favourites_order").await,
             muted: muted_rooms(client).await,
             notifications: client.notification_settings().await,
+            requests: flags.get(crate::features::REQUESTS, 0).on,
         }
     }
 
@@ -728,7 +732,8 @@ async fn chat(room: &Room, reads: &RoomReads, accounts: &[BridgeAccountInfo], ru
         id: room.room_id().to_string(),
         is_hidden_from_inbox: Some(hidden_from_inbox(rules, &account_id, bridge, !dm)),
         inbox_group: !dm && bridge["com.beeper.room_type.v2"] != "group_dm",
-        is_request: Some(bridge["channel"]["com.beeper.message_request"] == true),
+        // Desktop's `isRequest`: a bridged chat is a request only with the flag.
+        is_request: Some(bridge["channel"]["com.beeper.message_request"] == true && (globals.requests || account_id == "hungryserv")),
         created_at: reads.create["origin_server_ts"].as_i64(),
         network_name: s(&bridge["network"]["displayname"]),
         network_id: s(&bridge["network"]["id"]),
@@ -4779,10 +4784,15 @@ pub fn with_custom_emoji(pack: &Value, name: &str, url: &str) -> Result<Value, S
     Ok(pack)
 }
 
-/// Applies a change of the inbox rules to every room.
+/// Applies a change of the inbox rules or of the [`crate::features::REQUESTS`] flag to every room.
 async fn sync_rules(client: &Client, store: &SharedStore, globals: &Globals) {
     let rules = global(client, RULES).await;
-    if std::mem::replace(&mut store.write().inbox_rules, rules.clone()) != rules {
+    let changed = {
+        let mut st = store.write();
+        let requests = std::mem::replace(&mut st.requests_folder, globals.requests) != globals.requests;
+        (std::mem::replace(&mut st.inbox_rules, rules.clone()) != rules) | requests
+    };
+    if changed {
         let rooms = futures_util::stream::iter(client.joined_rooms());
         rooms.for_each_concurrent(8, |room| async move { sync_room_with(store, &room, Vec::new(), globals).await }).await;
     }
@@ -5820,6 +5830,7 @@ pub async fn run(store: SharedStore) {
         // Nothing saves a sync before the first one below, so the passes over the rooms read the global account data
         // once.
         let globals = Globals::read(&client).await;
+        store.write().requests_folder = globals.requests;
         for room in client.invited_rooms() {
             sync_invite(&store, &room, &globals).await;
         }
@@ -8269,6 +8280,36 @@ mod tests {
         let store = stub_store(&crate::testing::temp_dir("bot-room"), &url).await;
         sync_stub_room(&store, "!room:x").await;
         assert_eq!(store.read().chat("!room:x").title, "@whatsappbot:beeper.local");
+    }
+
+    /// Desktop's `isRequest`: a bridged message request is one only with the `message-requests-folder-available`
+    /// flag, and a change of the flag makes the chats again.
+    #[tokio::test]
+    async fn bridged_requests_follow_the_requests_flag_like_desktop() {
+        let mut sync = stub_sync();
+        let bridge = json!({ "bridgebot": "@bot:x", "channel": { "id": "c", "com.beeper.message_request": true },
+            "protocol": { "id": "telegram" }, "com.beeper.bridge_name": "telegram" });
+        let bridge = json!({ "type": "m.bridge", "state_key": "", "sender": "@me:x", "event_id": "$b", "origin_server_ts": 1,
+            "content": bridge });
+        sync["rooms"]["join"]["!room:x"]["state"]["events"].as_array_mut().unwrap().push(bridge);
+        let url = crate::bridge_stub::serve(move |_, path, _| match path.split_once('?').map_or(path, |p| p.0) {
+            "/_matrix/client/versions" => (200, json!({ "versions": ["v1.11"] })),
+            "/_matrix/client/v3/sync" => (200, sync.clone()),
+            "/_matrix/client/v3/keys/upload" => (200, json!({ "one_time_key_counts": {} })),
+            p if p.ends_with("/messages") => (200, json!({ "start": "t", "chunk": [] })),
+            p if p.ends_with("/members") => (200, json!({ "chunk": [] })),
+            _ => (404, json!({ "errcode": "M_NOT_FOUND", "error": "not in the stub" })),
+        })
+        .await;
+        let store = stub_store(&crate::testing::temp_dir("requests-flag"), &url).await;
+        sync_stub_room(&store, "!room:x").await;
+        assert_eq!(store.read().chat("!room:x").is_request, Some(false), "no flag, no request");
+        let client = store.read().matrix.clone().expect("a client");
+        let mut globals = super::Globals::read(&client).await;
+        globals.requests = true;
+        super::sync_rules(&client, &store, &globals).await;
+        assert_eq!(store.read().chat("!room:x").is_request, Some(true), "the flag makes the chat a request");
+        assert!(store.read().requests_folder);
     }
 
     /// Desktop's blocking: the `block_user`, `no_unblock` and `report_spam` room features, the
