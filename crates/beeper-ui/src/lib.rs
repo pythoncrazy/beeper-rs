@@ -3470,8 +3470,9 @@ impl BeeperGuiApp {
     }
 
     /// Desktop's `ga` (`mainWindowSetSize`): window `id` takes `size`, at most its screen, grows or shrinks around its
-    /// center, and stays on the screen. Without a position (Wayland), it only takes the size.
-    pub(crate) fn resize_around(id: window::Id, size: Size) -> Task<UiMessage> {
+    /// center, and stays on the screen. Without a position (Wayland), it only takes the size, the title bar's included.
+    pub(crate) fn resize_around(&self, id: window::Id, size: Size) -> Task<UiMessage> {
+        let size = Size::new(size.width, size.height - self.title_bar()) * (1.0 / self.zoom);
         let state = window::position(id).then(move |at| window::size(id).map(move |old| (at, old)));
         let state = state.then(move |(at, old)| window::monitor_size(id).map(move |screen| (at, old, screen)));
         state.then(move |(at, old, screen)| {
@@ -3541,9 +3542,11 @@ impl BeeperGuiApp {
     /// Saves the state of window `id` under `key` in `window.json`. A maximized window keeps the bounds from before.
     fn save_window(&self, id: window::Id, key: &'static str) -> Task<UiMessage> {
         let path = self.store.read().config.data_dir.join("window.json");
-        // Desktop keeps the bounds in screen pixels, and iced gives the size in pixels of the zoom.
-        let zoom = self.zoom;
-        let state = window::is_maximized(id).then(move |max| window::size(id).map(move |size| (max, size * zoom)));
+        // Desktop keeps the bounds in screen pixels with the title bar on Wayland, and iced gives the size of the page
+        // in pixels of the zoom.
+        let (zoom, bar) = (self.zoom, self.title_bar());
+        let size = move |size: Size| Size::new(size.width * zoom, size.height * zoom + bar);
+        let state = window::is_maximized(id).then(move |max| window::size(id).map(move |s| (max, size(s))));
         let state = state.then(move |(max, size)| window::position(id).map(move |at| (max, size, at)));
         state.map(move |(max, size, at)| write_window_state(&path, key, max, size, at)).discard()
     }

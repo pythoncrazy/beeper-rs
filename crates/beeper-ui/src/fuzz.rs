@@ -9445,7 +9445,8 @@ fn wayland_hides_windows_by_closing_them_like_electron() {
     let (done, _) = run_window_actions(show, Size::new(900.0, 640.0), &[main]);
     let open: Vec<_> = done.iter().filter(|a| a.starts_with("open")).collect();
     assert_eq!(open.len(), 1, "only the main window shows: {done:?}");
-    assert!(open[0].starts_with(&format!("open {main:?} 1200x800 true")), "{done:?}");
+    // Its 800 px have the title bar that winit adds, and the chat window keeps the page's size that it had.
+    assert!(open[0].starts_with(&format!("open {main:?} 1200x{} true", 800.0 - app.title_bar())), "{done:?}");
     assert!(!app.hidden && app.unmapped.iter().all(|w| w.0 != main));
 
     // The tray's click shows all windows: the chat window opens again at the size that it had.
@@ -9578,6 +9579,37 @@ fn main_window_keeps_its_state_like_desktop() {
     let _ = app.update(UiMessage::SelectChat(beeper_core::store::NOTE_CHAT_ID.into()));
     let title = app.store.read().chats.iter().find(|c| c.id == beeper_core::store::NOTE_CHAT_ID).unwrap().title.clone();
     assert_eq!(app.title(main), format!("Beeper | {title}"));
+}
+
+/// Electron draws its title bar inside its window on Wayland, so a window of Desktop's 1200 by 800 opens with 800 px
+/// in all, the title bar that winit adds on top included, and Desktop's minimum height counts it too. On X11 the
+/// window manager's title bar is outside the window for both.
+#[test]
+fn windows_count_the_title_bar_on_wayland_like_electron() {
+    use beeper_core::platform::DisplayServerKind;
+    use iced::futures::StreamExt;
+    let opened = |app: &mut BeeperGuiApp, settings: window::Settings| {
+        let stream = iced_runtime::task::into_stream(app.open_window(settings).1.discard::<UiMessage>()).expect("a window opens");
+        let open = stream.filter_map(|a| async move {
+            match a {
+                iced_runtime::Action::Window(iced_runtime::window::Action::Open(_, s, _)) => Some((s.size, s.min_size)),
+                _ => None,
+            }
+        });
+        iced::futures::executor::block_on(open.boxed().next()).expect("a window opens")
+    };
+    let mut app = demo_app("title-bar");
+    app.display_server = DisplayServerKind::X11;
+    assert_eq!(app.title_bar(), 0.0);
+    let main = BeeperGuiApp::window_settings(MAIN_SIZE);
+    assert_eq!(opened(&mut app, main.clone()), (MAIN_SIZE, Some(Size::new(330.0, 400.0))));
+    app.display_server = DisplayServerKind::Wayland;
+    let bar = app.title_bar();
+    assert!(bar > 0.0, "winit draws a title bar on Wayland");
+    let wayland = (Size::new(1200.0, 800.0 - bar), Some(Size::new(330.0, 400.0 - bar)));
+    assert_eq!(opened(&mut app, main.clone()), wayland, "the title bar is part of the 800 px");
+    let pip = window::Settings { decorations: false, min_size: None, ..main };
+    assert_eq!(opened(&mut app, pip), (MAIN_SIZE, None), "a window without decorations has no title bar");
 }
 
 /// A window that opens maximized maximizes again once the window manager places it, like Desktop's `deferMaximize`:
