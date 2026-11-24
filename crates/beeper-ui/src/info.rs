@@ -364,9 +364,10 @@ impl BeeperGuiApp {
         )
         .on_right_press(copy);
         let meta = |s: String| self.info_meta(cid, s);
-        // Desktop's identity `metadata` of a DM that is not merged: the inline username, then the phone number and
-        // the email in their own `div`s, so each starts a line. A click on either opens its `PhoneNumber` or
-        // `EmailAddress` menu. The `.phone` div is a flex row, so its number starts at the left of the block.
+        // Desktop's identity `metadata` of a DM that is not merged: the inline username on the line of the 13 px
+        // `div`, then the phone number and the email in their own `div`s on 14 px lines, so each starts a line. A
+        // click on either opens its `PhoneNumber` or `EmailAddress` menu. The `.phone` div is a flex row, so its number
+        // starts at the left of the block.
         let contact = other.filter(|_| chat.merge.is_none()).map(|u| {
             let lines = [(handle(u), ""), (u.phone_number.as_deref().map(fmt_phone), "phone"), (u.email.clone(), "email")];
             let lines: Vec<(String, &str)> = lines.into_iter().filter_map(|(s, kind)| Some((s?, kind))).collect();
@@ -374,7 +375,7 @@ impl BeeperGuiApp {
             Column::with_children(lines.into_iter().map(|(s, kind)| -> El<'_> {
                 let line = meta(s);
                 match kind {
-                    "" => line.into(),
+                    "" => meta_line(line),
                     _ => {
                         let menu = UiMessage::ChatList(chat_list::Msg::OpenMenu(format!("contact:{cid} {kind}")));
                         let line = line.on_press(menu).interaction(mouse::Interaction::Pointer);
@@ -389,7 +390,7 @@ impl BeeperGuiApp {
             .personal
             .as_ref()
             .filter(|p| p.title.as_ref().is_some_and(|t| *t != p.room_title) && !p.room_title.is_empty())
-            .map(|p| meta(trf("Originally %s", &[&p.room_title])));
+            .map(|p| meta_line(meta(trf("Originally %s", &[&p.room_title]))));
         let network = self.view_info_network(st, chat, cid, other);
         // Desktop's `.thread-info-avatar img` has the `zoom-in` cursor.
         let group = chat.chat_type == "group";
@@ -410,14 +411,14 @@ impl BeeperGuiApp {
     /// A `metadata` row of Chat Info, whose right click copies it.
     fn info_meta(&self, cid: &str, s: String) -> iced::widget::MouseArea<'_, UiMessage> {
         let copy = UiMessage::ChatList(chat_list::Msg::OpenMenu(format!("copy:{cid}\n{s}")));
-        mouse_area(meta_line(txt(s, 11.0).color(Color { a: 0.6, ..self.pal.strong }))).on_right_press(copy)
+        mouse_area(txt(s, 11.0).color(Color { a: 0.6, ..self.pal.strong })).on_right_press(copy)
     }
 
     /// The network of the chat in Chat Info. Desktop's `profileLink`: the network of a DM with a profile URL opens the
     /// profile.
     fn view_info_network(&self, st: &BeeperStore, chat: &Chat, cid: &str, other: Option<&User>) -> El<'_> {
         let network = merged::chat_platform(chat);
-        let Some(url) = profile_link(chat) else { return self.info_meta(cid, network.to_string()).into() };
+        let Some(url) = profile_link(chat) else { return meta_line(self.info_meta(cid, network.to_string())) };
         let fg = Color { a: 0.6, ..self.pal.strong };
         let label = row![txt(network, 11.0).color(fg), tinted(&EXTERNAL_LINK, 8.0, fg)].spacing(4).align_y(Center);
         let label = meta_line(label);
@@ -1039,6 +1040,16 @@ mod tests {
         }
         let (head, about) = (y("Notification sound"), y("Silent chats still show notifications, just without a sound."));
         assert!((about - head - 52.0).abs() < 0.5, "a 26 px select: {}", about - head);
+        // The email of a DM is a `div` in the `metadata` span, on its own 14 px line.
+        let app = info_app("chat-info-dm-layout", JORDAN);
+        let mut sim = tall(app.view_info());
+        let mut y = |label: &str| sim.find(label).expect(label).bounds().y;
+        for (label, above, below) in
+            [("@jordan", "Jordan Park", 26.8), ("jordan@example.com", "@jordan", 15.4), ("iMessage", "jordan@example.com", 20.8)]
+        {
+            let at = y(label) - y(above);
+            assert!((at - below).abs() < 0.5, "{label}: {at} below {above}");
+        }
     }
 
     /// A demo app where Desktop's `snoozeOrSchedulesEnabled` is on: the internal channel with labels.
