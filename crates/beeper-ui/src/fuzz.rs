@@ -10503,6 +10503,23 @@ fn requests_dot_like_desktop() {
     assert_eq!(new(&app), 1, "a request created after the view is new");
 }
 
+/// `.BrandTooltip-module__tooltip` keeps its 6 px margin from the trigger: under a 40 px trigger at y 100, the card
+/// starts at y 146.
+#[test]
+fn tooltips_keep_a_6px_margin_like_desktop() {
+    let app = demo_app("tooltip-margin");
+    let trigger = container(Space::new()).width(40).height(40).into();
+    let tip = app.tip(trigger, "Archive", vec![], tooltip::Position::Bottom);
+    let view = container(tip).padding(100).width(Fill).height(Fill).style(fill_box(Color::BLACK, 0.0));
+    let mut sim = Simulator::with_size(Default::default(), Size::new(400.0, 300.0), view);
+    sim.point_at(Point::new(120.0, 120.0));
+    let _ = sim.simulate([iced::Event::Mouse(mouse::Event::CursorMoved { position: Point::new(120.0, 120.0) })]);
+    let shot = crate::focus::tests::pixels(&mut sim, &iced::Theme::Light, "tooltip-margin");
+    let k = shot.width() / 400;
+    let top = (140 * k..shot.height()).find(|&y| shot.get_pixel(120 * k, y).0 == [255; 4]).expect("the tooltip card");
+    assert_eq!(top / k, 146);
+}
+
 /// Desktop's `.hoverActions` sit 6 px over `.actions` whatever their size, also in the compact list where the 32 px
 /// button runs out of the bottom of the row: the icon of a 26 px Archive and of a 32 px Mark Read starts 28 px under
 /// the top of the row.
