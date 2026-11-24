@@ -873,11 +873,11 @@ impl BeeperGuiApp {
                     let gear = !RAIL_VIEWS.iter().any(|v| v.0 == id) && id != LABEL_NUDGE;
                     let room = if gear { 190.0 } else { 216.0 };
                     let name = row![ell(&space_name(&st, id), room, 13.0, Weight::Semibold).color(p.strong)]
-                        .push(muted.then(|| ic(icon::NOTIFICATIONS_OFF, 12.0).color(p.strong)))
+                        .push(muted.then(|| platform(ic(icon::NOTIFICATIONS_OFF, 12.0).color(p.strong))))
                         .spacing(2)
                         .align_y(Center);
                     let sub = space_subtitle(&st, id).map(|t| txt(t, 11.0).color(p.sub));
-                    let handle = mouse_area(container(tinted(&DRAG_HANDLE, 20.0, p.sub)).center(28))
+                    let handle = mouse_area(container(material("drag_handle", 20.0, p.sub)).center(28))
                         .interaction(iced::mouse::Interaction::Grab)
                         .on_press(edit(SpacesEdit::Drag(id.clone())));
                     let pick = Self::pick(window, sortable::List::Spaces, id, &items, 1);
@@ -886,7 +886,7 @@ impl BeeperGuiApp {
                     let body = row![container(self.space_icon(&st, id)).center(20), column![name].push(sub).width(Fill),]
                         .push(gear.then(|| {
                             let menu = edit(SpacesEdit::Menu(Some(id.clone())));
-                            let gear = mouse_area(container(ic(icon::MORE_HORIZ, 16.0).color(p.sub)).center_x(16))
+                            let gear = mouse_area(container(platform(ic(icon::MORE_HORIZ, 16.0).color(p.sub))).center_x(16))
                                 .interaction(mouse::Interaction::Pointer)
                                 .on_press(menu.clone());
                             plain(format!("gear-{id}"), gear.into(), menu)

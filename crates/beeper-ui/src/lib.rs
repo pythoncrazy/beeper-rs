@@ -887,7 +887,7 @@ fn spread(items: Vec<El<'_>>, size: f32, width: f32) -> El<'_> {
 fn checkbox_plus<'a>(p: &Palette, on: bool) -> El<'a> {
     match on {
         true => checkbox(p, true),
-        false => container(ic(icon::PLUS, 10.0).color(p.sub)).center(16).style(bordered_box(CLEAR, p.sub, 1.5, 8.0)).into(),
+        false => container(platform(ic(icon::ADD, 10.0).color(p.sub))).center(16).style(bordered_box(CLEAR, p.sub, 1.5, 8.0)).into(),
     }
 }
 
@@ -1024,16 +1024,15 @@ fn material_icons(share: f32) -> HashMap<&'static str, svg::Handle> {
 /// Desktop's Material icons by name, with their whole view box.
 static MATERIAL: std::sync::LazyLock<HashMap<&str, svg::Handle>> = std::sync::LazyLock::new(|| material_icons(1.0));
 
-/// Desktop's `PlatformIcon`: `icon` drawn at its inline `scale(1.2)`, past its box. A glyph of the icons font keeps
-/// the text color around it.
+/// Desktop's `PlatformIcon`: `icon` drawn at its inline `scale(1.2)` and clipped at its box
+/// (`.materialIcon { overflow: hidden }`). A glyph of the icons font keeps the text color around it.
 fn platform<'a>(icon: impl Into<El<'a>>) -> El<'a> {
-    crate::lift::shrink(icon, 1.2).into()
+    crate::lift::clip(icon, 1.2).into()
 }
 
-/// Desktop's `PlatformIcon` of a Material icon: a `size` px box that its `scale(1.2)` draws past and that clips it
-/// (`.materialIcon { overflow: hidden }`).
+/// Desktop's `PlatformIcon` of a Material icon: a `size` px box.
 fn material<'a>(name: &str, size: f32, color: Color) -> El<'a> {
-    container(platform(tinted(&MATERIAL[name], size, color))).width(size).height(size).clip(true).into()
+    platform(tinted(&MATERIAL[name], size, color))
 }
 
 /// Desktop's `yD`: the label icons by id, in the order of the picker.
@@ -6680,12 +6679,13 @@ impl BeeperGuiApp {
     /// Desktop's `getSpaceIcon`.
     fn space_icon(&self, st: &BeeperStore, id: &str) -> El<'static> {
         let p = &self.pal;
-        let glyph = |c: char, size: f32| -> El<'static> { ic(c, size).color(p.strong).into() };
+        // Desktop's `PlatformIcon`s of its sizes.
+        let glyph = |c: char, size: f32| platform(ic(c, size).color(p.strong));
         match id {
             "inbox" => glyph(icon::INBOX, 16.0),
             "archive" => glyph(icon::ARCHIVE, 14.0),
             "reminders" => glyph(icon::SCHEDULE, 14.0),
-            "snoozed" => tinted(&MOON_STARS, 14.0, p.strong),
+            "snoozed" => material("moon_stars", 14.0, p.strong),
             "requests" => glyph(icon::EMAIL, 16.0),
             "low_priority" => glyph(icon::LOW_PRIORITY_SPACE, 12.0),
             "scheduled" => glyph(icon::SCHEDULE_SEND, 14.0),
