@@ -580,6 +580,9 @@ pub struct ChatParticipants {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ChatDraftAttachment {
+    /// Desktop's draft attachment ID, the key of the attachment; empty for one that only names its upload.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub id: String,
     #[serde(rename = "uploadID")]
     pub upload_id: String,
     #[serde(rename = "fileName", skip_serializing_if = "Option::is_none")]

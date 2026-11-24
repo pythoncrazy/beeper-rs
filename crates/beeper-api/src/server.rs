@@ -307,6 +307,58 @@ fn kind_issue(v: Option<&Value>, kind: &str, optional: bool, path: Value) -> Opt
     (!fits).then(|| type_issue(["code", "expected", "received"], kind, zod_type(v), path))
 }
 
+/// Desktop's `SubmitLoginStepInput`: the step type, the field values as strings, and the optional source and last URL.
+fn login_step_issues(r: &Req) -> Vec<Issue> {
+    let at = |k: &str| json!([k]);
+    let mut issues: Vec<Issue> =
+        enum_issue(r.input("type"), &["user_input", "cookies", "display_and_wait"], at("type")).into_iter().collect();
+    match r.input("fields") {
+        None => {}
+        Some(Value::Object(fields)) => {
+            issues.extend(fields.iter().filter_map(|(k, v)| string_issue(Some(v), false, json!(["fields", k]))));
+        }
+        v => issues.extend(kind_issue(v, "object", false, at("fields"))),
+    }
+    issues.extend(r.input("source").and_then(|v| enum_issue(Some(v), &["api", "webview", "browser_extension"], at("source"))));
+    issues.extend(string_issue(r.input("lastURL"), true, at("lastURL")));
+    issues
+}
+
+/// Desktop's `ChatDraftInput`: the text, and the attachments keyed by attachment ID, each a `DraftAttachmentInput`.
+fn draft_issues(d: &Value) -> Vec<Issue> {
+    let Some(draft) = d.as_object() else { return kind_issue(Some(d), "object", false, json!(["draft"])).into_iter().collect() };
+    let mut issues: Vec<Issue> = string_issue(draft.get("text"), false, json!(["draft", "text"])).into_iter().collect();
+    match draft.get("attachments") {
+        None => {}
+        Some(Value::Object(all)) => {
+            for (id, a) in all {
+                let at = |k: &str| json!(["draft", "attachments", id, k]);
+                let Some(a) = a.as_object() else {
+                    issues.extend(kind_issue(Some(a), "object", false, json!(["draft", "attachments", id])));
+                    continue;
+                };
+                issues.extend(string_issue(a.get("uploadID"), false, at("uploadID")));
+                issues.extend(["mimeType", "fileName"].into_iter().filter_map(|k| string_issue(a.get(k), true, at(k))));
+                match a.get("size") {
+                    None => {}
+                    Some(Value::Object(size)) => issues.extend(
+                        ["width", "height"]
+                            .into_iter()
+                            .filter_map(|k| kind_issue(size.get(k), "number", false, json!(["draft", "attachments", id, "size", k]))),
+                    ),
+                    v => issues.extend(kind_issue(v, "object", false, at("size"))),
+                }
+                issues.extend(kind_issue(a.get("duration"), "number", true, at("duration")));
+                let kinds = ["image", "video", "audio", "file", "gif", "voice-note", "sticker"];
+                issues.extend(a.get("type").and_then(|v| enum_issue(Some(v), &kinds, at("type"))));
+                issues.extend(string_issue(a.get("id"), true, at("id")));
+            }
+        }
+        v => issues.extend(kind_issue(v, "object", false, json!(["draft", "attachments"]))),
+    }
+    issues
+}
+
 /// zod's checks of `number().int().nonnegative()`, after the type.
 fn whole_issues(n: f64, path: Value) -> Vec<Issue> {
     let mut issues = Vec::new();
@@ -964,17 +1016,22 @@ fn respond(store: &SharedStore, cloud: &Cloud, msg: HttpMessage) -> Reply {
     if let Some(reply) = auth::route(store, &method, &segs, &req, granted.as_ref()) {
         return reply;
     }
-    // The bridge routes' schemas take a bridge ID of `^[A-Za-z0-9_-]+$`.
-    if let ["v1", "bridges", id, ..] = &segs[..] {
+    // The bridge routes' schemas take a bridge ID of `^[A-Za-z0-9_-]+$`, and `submitLoginStep` its `SubmitLoginStepInput`.
+    if let ["v1", "bridges", id, rest @ ..] = &segs[..] {
+        let mut issues = Vec::new();
         if !id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-') {
             let message = "Bridge ID may only contain letters, numbers, underscores, and hyphens";
-            return Err(invalid_input(vec![Issue(vec![
+            issues.push(Issue(vec![
                 ("validation", json!("regex")),
                 ("code", json!("invalid_string")),
                 ("message", json!(message)),
                 ("path", json!(["bridgeID"])),
-            ])]));
+            ]));
         }
+        if let ("POST", ["login-sessions", _, "steps", _]) = (method.as_str(), rest) {
+            issues.extend(login_step_issues(&req));
+        }
+        checked(issues)?;
     }
     if let ("POST", ["v1", "app", "setup", step @ ("start" | "email" | "response" | "register")]) = (method.as_str(), &segs[..]) {
         auth::setup_origin(&req.msg)?;
@@ -1591,7 +1648,7 @@ fn bridge_call(store: &SharedStore, cloud: &Cloud, method: &str, id: &str, rest:
         }
         ("POST", ["login-sessions", sid, "steps", step_id]) => {
             let s = session(sid)?;
-            let kind = r.need("type")?;
+            let kind = r.str("type").expect("a checked step type");
             if s.view["currentStep"]["stepID"] != *step_id || s.view["currentStep"]["type"] != kind {
                 let message = "Login step does not match the current session state";
                 return Err(error(StatusCode::CONFLICT, message, "INVALID_LOGIN_STEP"));
@@ -2030,7 +2087,8 @@ fn chat_input(method: &str, rest: &[&str], r: &Req) -> Result<(), Response> {
     checked(match (method, rest) {
         ("PATCH", []) => {
             let nullable = |k: &'static str| r.input(k).filter(|v| !v.is_null()).and_then(|v| string_issue(Some(v), false, at(k)));
-            let mut issues: Vec<Issue> = ["title", "description", "imgURL"].into_iter().filter_map(nullable).collect();
+            let mut issues = r.input("draft").filter(|v| !v.is_null()).map_or_else(Vec::new, draft_issues);
+            issues.extend(["title", "description", "imgURL"].into_iter().filter_map(nullable));
             let flags = ["isArchived", "isLowPriority", "isPinned", "isMuted"];
             issues.extend(flags.into_iter().filter_map(|k| kind_issue(r.input(k), "boolean", true, at(k))));
             match r.input("messageExpirySeconds") {
@@ -2233,22 +2291,21 @@ fn chat_reply(st: &BeeperStore, idx: usize) -> Reply {
 
 /// Desktop's `ChatDraftInput`: the text, and the attachments keyed by upload ID.
 fn draft_input(st: &BeeperStore, v: &Value) -> Result<ChatDraft, Response> {
-    let text = match &v["text"] {
-        Value::Null => None,
-        Value::String(t) => Some(t.clone()),
-        _ => return Err(bad("draft.text must be a string")),
+    // `chat_input` checked the draft against Desktop's `ChatDraftInput`. Each attachment, keyed by its own ID, names
+    // its upload, whose name and type it can override (`resolveUploadedMessageAttachment`).
+    let text = v["text"].as_str().map(str::to_string);
+    let attachment = |(key, a): (&String, &Value)| {
+        let id = a["uploadID"].as_str().expect("a checked uploadID");
+        let up = st.assets.get(id).ok_or_else(|| upload_not_found(id))?;
+        let pick = |k: &str, cached: &String| Some(a[k].as_str().map_or_else(|| cached.clone(), str::to_string));
+        Ok(ChatDraftAttachment {
+            id: a["id"].as_str().unwrap_or(key).into(),
+            upload_id: id.into(),
+            file_name: pick("fileName", &up.file_name),
+            mime_type: pick("mimeType", &up.mime_type),
+        })
     };
-    let ids = match &v["attachments"] {
-        Value::Null => Vec::new(),
-        Value::Object(m) => m.keys().collect(),
-        _ => return Err(bad("draft.attachments must be an object keyed by upload ID")),
-    };
-    let attachment = |id: &String| {
-        let a = st.assets.get(id).ok_or_else(|| upload_not_found(id))?;
-        let (file_name, mime_type) = (Some(a.file_name.clone()), Some(a.mime_type.clone()));
-        Ok(ChatDraftAttachment { upload_id: id.clone(), file_name, mime_type })
-    };
-    let attachments = ids.into_iter().map(attachment).collect::<Result<_, Response>>()?;
+    let attachments = v["attachments"].as_object().into_iter().flatten().map(attachment).collect::<Result<_, Response>>()?;
     Ok(ChatDraft { text, attachments, ..ChatDraft::default() })
 }
 
@@ -2823,7 +2880,8 @@ fn focus(st: &mut BeeperStore, r: &Req) -> Reply {
         return Err(error_with(StatusCode(500), message, "TOOL_EXECUTION_ERROR", json!({})));
     }
     if let Some(idx) = idx.filter(|_| text.is_some() || path.is_some()) {
-        let attachments = path.into_iter().map(|p| ChatDraftAttachment { upload_id: p.clone(), file_name: Some(p), mime_type: None });
+        let attachments =
+            path.into_iter().map(|p| ChatDraftAttachment { id: String::new(), upload_id: p.clone(), file_name: Some(p), mime_type: None });
         let ts = Some(beeper_core::config::now_unix_millis());
         let draft = ChatDraft { text, attachments: attachments.collect(), ts, ..ChatDraft::default() };
         st.put_draft(idx, Some(draft));

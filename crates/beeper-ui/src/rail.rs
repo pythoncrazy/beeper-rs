@@ -337,12 +337,12 @@ impl BeeperGuiApp {
         }
         top.extend(hidden);
         top.push(menu_rule(p));
-        let mut h = (top.len() - rules) as f32 * menu_pitch() + rules as f32 * 11.0;
+        let mut h = (top.len() - rules) as f32 * menu_pitch() + rules as f32 * MENU_RULE;
         let entry = self.list().selected_account_filter.as_deref();
         let options = match entry.map(|e| (e, rail_label(&st, e))) {
             Some((_, Some(l))) => {
                 let items = self.label_items(l, 22.0);
-                h += items.len() as f32 * menu_pitch() + 11.0;
+                h += items.len() as f32 * menu_pitch() + MENU_RULE;
                 top.extend(items.into_iter().chain([menu_rule(p)]));
                 None
             }
@@ -370,7 +370,7 @@ impl BeeperGuiApp {
                     "",
                     Some(UiMessage::Settings(settings::Msg::Open(SettingsTab::Accounts))),
                 ));
-        h += 8.0 + f32::from(u8::from(options.is_some()) + 4 + u8::from(labels)) * menu_pitch() + 11.0;
+        h += 8.0 + f32::from(u8::from(options.is_some()) + 4 + u8::from(labels)) * menu_pitch() + MENU_RULE;
         let top = mouse_area(Column::with_children(top)).on_enter(UiMessage::CommandBar(commands::Msg::ChatSub(None)));
         let rest = mouse_area(rest).on_enter(UiMessage::CommandBar(commands::Msg::ChatSub(None)));
         let sheet = column![top].push(options_item).push(rest);

@@ -922,7 +922,7 @@ impl BeeperGuiApp {
                 .flatten()
                 .collect()
         };
-        let rules = if which == 0 && chats.iter().any(|c| c.reminder.is_some()) { 11.0 - menu_pitch() } else { 0.0 };
+        let rules = if which == 0 && chats.iter().any(|c| c.reminder.is_some()) { MENU_RULE - menu_pitch() } else { 0.0 };
         let h = 8.0 + items.len() as f32 * menu_pitch() + rules;
         let width = if which == 0 { SUB_MENU_W[1] } else { 233.0 };
         let menu = container(Column::with_children(items).padding([4, 0])).width(width).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0));
@@ -1192,7 +1192,7 @@ impl BeeperGuiApp {
             }
         };
         let labels = st.feature("labels-v2").on;
-        let h = 8.0 + items.len() as f32 * menu_pitch() - rules * (menu_pitch() - 11.0);
+        let h = 8.0 + items.len() as f32 * menu_pitch() - rules * (menu_pitch() - MENU_RULE);
         let top = match i {
             0 => 4.0 * menu_pitch(),
             1 if labels => 8.0 * menu_pitch() + 22.0,
@@ -1580,9 +1580,11 @@ impl BeeperGuiApp {
         let item = row![]
             .push(dot)
             .push(container(face).width(l.av + 10.0))
-            .push(column![top, preview].width(Fill))
+            // Desktop's 10 px padding, but iced draws a 14 px title 1 px lower than Chromium, so the regular row moves
+            // its title up and keeps the preview in place.
+            .push(column![top, preview].spacing(if l.compact { 0 } else { 1 }).width(Fill))
             .align_y(Center)
-            .padding(Padding::new(8.0).top(9.0).bottom(11.0).left(if l.selecting { 0.0 } else { 8.0 }));
+            .padding(Padding::new(8.0).top(if l.compact { 10.0 } else { 9.0 }).bottom(10.0).left(if l.selecting { 0.0 } else { 8.0 }));
         // Desktop's Play button takes the place of the hover actions.
         let plays = st.resolve_chat_idx(&key).is_some_and(|i| self.plays(&st.chats[i]));
         let hover = !l.selecting && !plays;
@@ -1654,7 +1656,8 @@ impl BeeperGuiApp {
             (false, None) => (p.accent, Color::WHITE),
         };
         let count = match l.counts {
-            true => unread.then(|| count_badge(c, dot_bg, dot_fg, 12.0)),
+            // `.unreadCount` is `1lh` of 14 px, or 12 px in the compact list.
+            true => unread.then(|| count_badge(c, dot_bg, dot_fg, if l.compact { 12.0 } else { 14.0 })),
             false => (c.unread_mentions > 0).then(|| ic(icon::AT_SIGN, 12.0).color(p.accent).into()),
         };
         // Desktop's `indicators`: the unread dot, and a red dot while a send of the chat waits for Retry.
@@ -1719,7 +1722,13 @@ impl BeeperGuiApp {
             .push(Space::new().width(Fill))
             .push(later.then(|| tinted(&COMPOSER_ICONS[6], 12.0, p.strong.scale_alpha(0.7))))
             .push(
-                txt(ts, l.ts_size).color(p.strong.scale_alpha(0.7)).font(crate::style::redact(iced::Font { style, ..fw(Weight::Normal) })),
+                container(
+                    txt(ts, l.ts_size)
+                        .color(p.strong.scale_alpha(0.7))
+                        .font(crate::style::redact(iced::Font { style, ..fw(Weight::Normal) })),
+                )
+                .height(Fill)
+                .padding(Padding::ZERO.top(2.0)),
             )
             .height(rem(16.0))
             .align_y(Center)
@@ -1834,7 +1843,8 @@ impl BeeperGuiApp {
                 .width(width)
             }))
             .push(Space::new().width(Fill))
-            .push(count)
+            // `.actions` has a 2 px top margin.
+            .push(count.map(|c| container(c).padding(Padding::ZERO.top(if l.compact { 0.0 } else { 2.0 }))))
             .spacing(4)
             .align_y(if l.compact { Center } else { iced::Alignment::Start });
         column![preview].push(second.map(|r| txt(r.to_string(), 13.0).font(font).color(fg)))

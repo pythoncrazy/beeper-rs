@@ -278,7 +278,7 @@ impl BeeperGuiApp {
             ]),
             ms.iter().all(|m| deletable(&st, m)).then(|| {
                 let delete = UiMessage::Message(message::Msg::AskDelete(ids.clone()));
-                vec![(menu_rule(p), 11.0), item(tr("Delete…").into(), "", delete)]
+                vec![(menu_rule(p), MENU_RULE), item(tr("Delete…").into(), "", delete)]
             }),
         ]
         .into_iter()

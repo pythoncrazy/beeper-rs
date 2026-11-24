@@ -271,7 +271,7 @@ impl BeeperGuiApp {
             "",
             Some(close(UiMessage::Info(info::Msg::HowItWorks(true)))),
         );
-        rows.extend([(menu_rule(p), 11.0), (how, menu_pitch())]);
+        rows.extend([(menu_rule(p), MENU_RULE), (how, menu_pitch())]);
         (rows, width.clamp(160.0, 360.0))
     }
 

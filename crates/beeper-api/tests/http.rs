@@ -1432,6 +1432,22 @@ async fn tool_inputs_are_checked_like_desktop() {
                 { "code": "too_small", "minimum": 0, "type": "number", "inclusive": true, "exact": false, "message": "Number must be greater than or equal to 0", "path": ["messageExpirySeconds"] },
             ]),
         ),
+        (
+            "PATCH",
+            chat.to_string(),
+            r#"{"draft":{"text":5,"attachments":{"a1":{"fileName":2,"type":"doc"}}},"isMuted":true}"#,
+            json!([
+                wrong(json!(["draft", "text"]), "string", "number"),
+                required(json!(["draft", "attachments", "a1", "uploadID"]), "string"),
+                wrong(json!(["draft", "attachments", "a1", "fileName"]), "string", "number"),
+                {
+                    "received": "doc", "code": "invalid_enum_value",
+                    "options": ["image", "video", "audio", "file", "gif", "voice-note", "sticker"],
+                    "path": ["draft", "attachments", "a1", "type"],
+                    "message": "Invalid enum value. Expected 'image' | 'video' | 'audio' | 'file' | 'gif' | 'voice-note' | 'sticker', received 'doc'",
+                },
+            ]),
+        ),
         ("DELETE", format!("{chat}/messages/msg_1001?forEveryone=yes"), "", json!([wrong(json!(["forEveryone"]), "boolean", "string")])),
         (
             "POST",
@@ -1445,6 +1461,19 @@ async fn tool_inputs_are_checked_like_desktop() {
             "/v1/bridges/bad!id".to_string(),
             "",
             json!([{ "validation": "regex", "code": "invalid_string", "message": "Bridge ID may only contain letters, numbers, underscores, and hyphens", "path": ["bridgeID"] }]),
+        ),
+        (
+            "POST",
+            "/v1/bridges/whatsapp/login-sessions/s1/steps/st1".to_string(),
+            r#"{"fields":{"phone":5},"source":"cli"}"#,
+            json!([
+                { "expected": "'user_input' | 'cookies' | 'display_and_wait'", "received": "undefined", "code": "invalid_type", "path": ["type"], "message": "Required" },
+                wrong(json!(["fields", "phone"]), "string", "number"),
+                {
+                    "received": "cli", "code": "invalid_enum_value", "options": ["api", "webview", "browser_extension"], "path": ["source"],
+                    "message": "Invalid enum value. Expected 'api' | 'webview' | 'browser_extension', received 'cli'",
+                },
+            ]),
         ),
         ("GET", format!("{chat}?maxParticipantCount=x"), "", json!([wrong(json!(["maxParticipantCount"]), "number", "nan")])),
         ("GET", "/v1/search?query=".to_string(), "", json!([short(json!(["query"]))])),
