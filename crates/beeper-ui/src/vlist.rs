@@ -128,8 +128,8 @@ impl VList {
         let starts = &inner.starts.3;
         let y = starts[n];
         let (mut at, len) = inner.seen.unwrap_or((0.0, FIRST_SPAN));
-        if let Some(t) = target {
-            let k = (0..n).find(|&k| keys[index(k)] == t).expect("the revealed row is in the list");
+        // Like [`Self::nearest`], a row that the list does not have keeps the list where it is.
+        if let Some(k) = target.and_then(|t| (0..n).find(|&k| keys[index(k)] == t)) {
             at = starts[k] - (len - (starts[k + 1] - starts[k])) / 2.0;
         }
         let at = at.clamp(0.0, (y - len).max(0.0));
@@ -198,10 +198,7 @@ impl VList {
         let inner = self.0.borrow();
         let (keys, end, _, starts) = &inner.starts;
         assert!(!end, "a list anchored at its top");
-        let k = match key {
-            Some(key) => keys.iter().position(|&k| k == key)?,
-            None => 0,
-        };
+        let k = if let Some(key) = key { keys.iter().position(|&k| k == key)? } else { 0 };
         let (top, bottom) = (*starts.get(k)?, *starts.get(k + 1)?);
         let (at, len) = inner.seen?;
         let at = at.clamp(0.0, (starts[keys.len()] - len).max(0.0));
@@ -419,6 +416,9 @@ mod tests {
         assert_eq!(list.nearest(Some(2)), Some(100.0), "row 2 comes to the top");
         assert_eq!(list.nearest(None), Some(0.0), "the first row comes to the top");
         assert_eq!(list.nearest(Some(10)), None);
+        list.reveal(99);
+        drop(list.view(&keys, false, 50.0, (), |_| iced::widget::Space::new().height(50).into()));
+        assert_eq!(list.nearest(Some(2)), Some(100.0), "a reveal of a row that the list does not have keeps its place");
     }
 
     /// Like Desktop's dates, which all are `sticky-date-container`s, the label of a section that starts above the

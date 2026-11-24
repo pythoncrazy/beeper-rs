@@ -402,10 +402,7 @@ impl BeeperGuiApp {
         let st = self.store.read();
         // Desktop's `${SWITCH_FIRST_9_ACCOUNTS.key}+${n}` of the first nine spaces.
         let modifier = st.settings.hotkey_keys("Switch First 9 Spaces Modifier");
-        let hotkey = |n: usize| match n < 9 {
-            true => hotkey_caps(&format!("{modifier}+{}", n + 1)),
-            false => vec![],
-        };
+        let hotkey = |n: usize| if n < 9 { hotkey_caps(&format!("{modifier}+{}", n + 1)) } else { vec![] };
         let numbers = st.settings.on("showUnreadCount");
         // A dark rich theme's `AccountBadge` dot is white with the text in `--color-from`.
         let (dot_bg, dot_fg) = p.badge.map_or((p.accent, Color::WHITE), |from| (Color::WHITE, from));
@@ -454,10 +451,7 @@ impl BeeperGuiApp {
             // Desktop's `iR`: the space name, with the account's nickname.
             let label = space_name(&st, &acc);
             let error = space_error(&st, &acc);
-            let label = match error {
-                Some(s) => format!("{label} ({s})"),
-                None => label,
-            };
+            let label = if let Some(s) = error { format!("{label} ({s})") } else { label };
             let select = UiMessage::Rail(rail::Msg::Select((!on).then_some(acc.clone())));
             let btn = rail_btn(format!("rail-{acc}-button"), logo, on, select);
             let btn = match error {
@@ -839,26 +833,11 @@ impl BeeperGuiApp {
         let p = &self.pal;
         let st = self.store.read();
         let edit = UiMessage::Spaces;
-        let search = text_input(tr("Search Spaces"), &d.search)
-            .id("spaces-search")
-            .on_input(move |q| edit(SpacesEdit::Search(q)))
-            .size(rem(13.0))
-            .line_height(lh(16.0))
-            .padding([14, 0])
-            .style(input_style(CLEAR, p.strong, p.sub, p.accent, 0.0));
+        let search = self.sheet_search(d.id, "spaces-search", tr("Search Spaces"), &d.search, move |q| edit(SpacesEdit::Search(q)));
         // Desktop's controls of the sheet: plain `<button>`s whose focus does not show, and the `dnd-kit` handles,
         // which show Chromium's ring, and whose Enter and Space pick the space up for the arrows (see `sortable`).
         let window = Some(d.id);
         let plain = |key: String, b: El<'a>, msg: UiMessage| self.target(window, key, b, Keys::press(msg), Look::Hidden);
-        let clear = (!d.search.trim().is_empty()).then(|| {
-            let empty = edit(SpacesEdit::Search(String::new()));
-            plain("clear".into(), icon_btn(p, icon::CLOSE, 16.0, 28.0, p.sub, empty.clone()), empty)
-        });
-        let search = row![ic(icon::SEARCH, 16.0).color(p.sub), search]
-            .push(clear)
-            .spacing(10)
-            .align_y(Center)
-            .padding(Padding::ZERO.left(16.0).right(8.0));
         let q = d.search.trim().to_lowercase();
         // The shown and the hidden spaces that the search finds.
         let found = |order: &[String]| -> (Vec<String>, Vec<String>) {
@@ -913,7 +892,7 @@ impl BeeperGuiApp {
                         .spacing(10)
                         .align_y(Center)
                         .padding([6, 12]);
-                    let fill = p.received;
+                    let fill = p.chip;
                     let body = container(body).style(move |_: &Theme| container::Style {
                         background: Some(fill.into()),
                         border: iced::Border {
@@ -934,11 +913,11 @@ impl BeeperGuiApp {
         };
         let header = |label: &'static str| container(txt(label, 12.0).color(p.sub)).padding([8, 0]);
         let empty = none_hidden.then(|| {
-            let fill = if dragged.is_some() { CLEAR } else { p.received };
+            let fill = if dragged.is_some() { CLEAR } else { p.chip };
             let msg = container(txt(tr("No Hidden Spaces"), 13.0).color(p.sub)).center_x(Fill).center_y(56).style(move |_: &Theme| {
                 container::Style {
                     background: Some(fill.into()),
-                    border: iced::Border { color: p.received, width: if fill == CLEAR { 1.0 } else { 0.0 }, radius: 12.0.into() },
+                    border: iced::Border { color: p.chip, width: if fill == CLEAR { 1.0 } else { 0.0 }, radius: 12.0.into() },
                     ..Default::default()
                 }
             });

@@ -406,7 +406,7 @@ impl BeeperGuiApp {
         let ring = if self.wallpaper_fg(st, chat, false).is_some() { CLEAR } else { p.card };
         let b = button(line)
             .padding([6, 7])
-            .style(bordered_btn([p.received, p.selected, p.selected], [p.fg; 3], ring, 2.0, 14.0))
+            .style(bordered_btn([p.chip, p.selected, p.selected], [p.fg; 3], ring, 2.0, 14.0))
             .on_press(UiMessage::Thread(Msg::Show(root.into())));
         Some(b.into())
     }

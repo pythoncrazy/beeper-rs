@@ -126,7 +126,7 @@ impl BeeperGuiApp {
         if self.verify.window.is_some() || self.main_window.is_none() {
             return Task::none();
         }
-        let (id, open) = self.open_child(SIZE);
+        let (id, open) = self.open_child(SIZE, false);
         self.verify.window = Some(id);
         open.chain(window::set_level(id, window::Level::AlwaysOnTop))
     }

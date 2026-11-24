@@ -150,7 +150,7 @@ use rail::{all_spaces, RailDrag, LABEL_NUDGE, RAIL_MENU};
 use rail::{SpacesDraft, SpacesEdit, SPACES_DIVIDER, SPACES_SIZE};
 use reminders::{remind_label, reminder_day};
 use scheduled::next_send;
-use time::{clock, day_label, day_num, day_of, locale_string, today, WEEKDAYS};
+use time::{clock, day_label, day_of, locale_string, today, WEEKDAYS};
 use toasts::{Toast, TOAST_TICK};
 use units::human_size;
 use user_card::UserHover;
@@ -847,7 +847,7 @@ fn has_flag(c: &Chat, flag: ChatFlag) -> bool {
 }
 
 fn checkbox<'a>(p: &Palette, on: bool) -> El<'a> {
-    let (bg, ring) = if on { (p.toggle_on, CLEAR) } else { (CLEAR, p.toggle_off) };
+    let (bg, ring) = if on { (p.main, CLEAR) } else { (CLEAR, p.toggle_off) };
     let check = on.then(|| ic(icon::CHECK, 12.0).color(Color::WHITE));
     container(check).center(16).style(bordered_box(bg, ring, 1.5, 8.0)).into()
 }
@@ -1360,7 +1360,7 @@ fn toggle<'a>(p: &Palette, on: bool, msg: Option<UiMessage>) -> El<'a> {
 }
 
 fn toggle_faded<'a>(p: &Palette, on: bool, msg: Option<UiMessage>, alpha: f32) -> El<'a> {
-    let colors = [p.toggle_off, p.toggle_on, p.toggle_off].map(|c| c.scale_alpha(alpha));
+    let colors = [p.toggle_off, p.main, p.toggle_off].map(|c| c.scale_alpha(alpha));
     button(toggle::toggle(on, colors)).bare(p.text).on_press_maybe(msg).into()
 }
 
@@ -2933,6 +2933,8 @@ pub struct BeeperGuiApp {
     pub list: chat_list::ListState,
     /// The requests that the Requests view last marked as seen.
     seen_requests: Vec<String>,
+    /// The chat of the main window, since when it is selected, and whether its dwell counted.
+    dwell: Option<(String, std::time::Instant, bool)>,
     /// The Picture in Picture window and the message of its video, and a video that should go there.
     pip: Option<(window::Id, String)>,
     pip_wanted: bool,
@@ -3352,7 +3354,7 @@ impl BeeperGuiApp {
             screen_scale: 2.0,
         }, default: chat_windows, space_windows, carousel_windows, drawing, drawing_thread, open_threads, thread_area,
             thread_drag, unread_view, unread_menu, hidden, unmapped, opened, unmapped_focus, activation_token,
-            system_dark, zoom_drag, maximize_when_placed, seen_requests, pip, pip_wanted, pip_manual, pip_menu,
+            system_dark, zoom_drag, maximize_when_placed, seen_requests, dwell, pip, pip_wanted, pip_manual, pip_menu,
             hotkey_query, hotkey_rec, profile, modals, hotkeys_modal, dropping, drop_send, dropped, hotkeys_scrolled, chat_sub,
             reminded, search_room, search_filters, search_select, native_select, cursor, image_clipboard, pressing, forward,
             media_window, in_media, emoji_gen, emoji_hovered, focused, idle, notified, retried, slow_sends, notifications,
@@ -3453,13 +3455,7 @@ impl BeeperGuiApp {
 
     /// [`Self::face`] at the opacity `alpha`.
     fn face_alpha<'a>(&self, url: Option<&str>, name: &str, size: f32, ls: f32, alpha: f32) -> El<'a> {
-        let loaded = url.and_then(|u| match self.avatars.get(u) {
-            Some(frames) => frames.as_ref(),
-            None => {
-                self.wants.ask(&self.wants.avatars, u);
-                None
-            }
-        });
+        let loaded = url.and_then(|u| self.wants.get(&self.wants.avatars, u, self.avatars.get(u)));
         match loaded {
             // `.redacted .redacted-region img`: `filter: brightness(0)` on a black background.
             Some(_) if crate::style::redacting() => {
@@ -4335,10 +4331,7 @@ impl BeeperGuiApp {
         let st = self.store.read();
         let list: Vec<&String> = st.recent_chat_ids.iter().filter(|c| st.resolve_chat_idx(c).is_some()).collect();
         let at = self.pane.selected_chat_id.as_ref().map(|s| list.iter().position(|c| *c == s));
-        let to = match at {
-            Some(at) => (at.map_or(-1, |a| a as isize) + by).rem_euclid(list.len().max(1) as isize) as usize,
-            None => 0,
-        };
+        let to = if let Some(at) = at { (at.map_or(-1, |a| a as isize) + by).rem_euclid(list.len().max(1) as isize) as usize } else { 0 };
         let Some(id) = list.get(to).map(|c| c.to_string()) else { return Task::none() };
         drop(st);
         let cycling = std::mem::replace(&mut self.cycling, true);
@@ -4380,6 +4373,7 @@ impl BeeperGuiApp {
         let task = self.handle(msg);
         self.link_drafts();
         let reveal = pointed.map_or_else(Task::none, |p| self.reveal_pointed(p));
+        self.dwell();
         let task = Task::batch([task, reveal, self.view_requests(), self.pip()]);
         self.keep_shown();
         // A toast with the same text replaces the shown one, unless Desktop's toast ID tells them apart, and so does
@@ -4543,9 +4537,7 @@ impl BeeperGuiApp {
             UiMessage::Voice(msg) => return self.voice(msg),
             UiMessage::Window(msg) => return self.windows(msg),
             UiMessage::Zoom(msg) => return self.set_zoom(msg),
-            UiMessage::SelectChat(_) if self.recorder.is_some() => {
-                self.status_banner = tr("Stop recording to switch chats").into();
-            }
+            UiMessage::SelectChat(_) if self.recorder.is_some() => self.status_banner = tr("Stop recording to switch chats").into(),
             // Desktop's composer `autofocus = "end"` when a chat opens.
             UiMessage::SelectChat(id) => {
                 self.select_chat(&id);
@@ -4624,9 +4616,7 @@ impl BeeperGuiApp {
             | UiMessage::DismissRecoveryReminder
             | UiMessage::DismissTrialOver) => return self.handle_sync(msg),
             UiMessage::OpenModal(m, from) => return self.open_modal(m, from),
-            UiMessage::OpenQuickLook(title, detail) => {
-                self.quick_look_target = Some((title, detail));
-            }
+            UiMessage::OpenQuickLook(title, detail) => self.quick_look_target = Some((title, detail)),
             UiMessage::CloseModals => return self.close_modals(),
             UiMessage::Noop => {}
             UiMessage::Relist => {
@@ -4692,10 +4682,7 @@ impl BeeperGuiApp {
                 let pane = &mut self.chat_windows.iter_mut().find(|w| w.0 == id).expect("an open chat window").1;
                 // A chat window closes when it leaves its chat, and a "Media in %s" window when its carousel closes;
                 // a space window stays on its space.
-                let close = match opener {
-                    Some(_) => pane.carousel.is_none(),
-                    None => pane.selected_chat_id.is_none() && !space,
-                };
+                let close = if opener.is_some() { pane.carousel.is_none() } else { pane.selected_chat_id.is_none() && !space };
                 if close {
                     return Task::batch([task, self.close_window(id)]);
                 }
@@ -4759,10 +4746,7 @@ impl BeeperGuiApp {
                 let task = self.update_login(m);
                 // Desktop's recovery key fields take the keyboard when their screen opens (`autoFocus`).
                 let keyed = matches!(self.login.screen, login::Screen::RecoveryKey | login::Screen::ConfirmKey);
-                return match keyed && self.login.screen != screen {
-                    true => Task::batch([task, operation::focus(verify::KEY_INPUT)]),
-                    false => task,
-                };
+                return if keyed && self.login.screen != screen { Task::batch([task, operation::focus(verify::KEY_INPUT)]) } else { task };
             }
             UiMessage::Verify(m) => return self.update_verify(m),
             UiMessage::Reauth(m) => return self.update_reauth(m),
@@ -4779,9 +4763,7 @@ impl BeeperGuiApp {
     /// Opening links, mentions, spoilers and files.
     fn handle_links(&mut self, msg: UiMessage) -> Task<UiMessage> {
         match msg {
-            UiMessage::OpenUrl(url) if url.starts_with(SPOILER) => {
-                self.pane.spoilers.insert(url[SPOILER.len()..].to_string());
-            }
+            UiMessage::OpenUrl(url) if url.starts_with(SPOILER) => _ = self.pane.spoilers.insert(url[SPOILER.len()..].to_string()),
             // Desktop's `b2t`: a click on a mention opens its menu.
             UiMessage::OpenUrl(url) if url.starts_with(MENTION) => {
                 self.list.chat_menu = Some((format!("mention:{}", &url[MENTION.len()..]), self.cursor.get()));
@@ -4938,7 +4920,7 @@ impl BeeperGuiApp {
                 if let Some(d) = self.poll_windows.iter().find(|d| d.chat == chat) {
                     return self.raise(d.id);
                 }
-                let (id, open) = self.open_child(Size::new(400.0, 620.0));
+                let (id, open) = self.open_child(Size::new(400.0, 620.0), false);
                 let question = format!("poll-{chat}");
                 self.poll_windows.push(PollDraft::new(id, chat));
                 open.chain(operation::focus(question))
@@ -4949,7 +4931,7 @@ impl BeeperGuiApp {
                 if let Some(d) = &self.spaces_window {
                     return self.raise(d.id);
                 }
-                let (id, open) = self.open_resizable_child(SPACES_SIZE);
+                let (id, open) = self.open_child(SPACES_SIZE, true);
                 let st = self.store.read();
                 let order = rail_spaces(&st).into_iter().chain([SPACES_DIVIDER.into()]).chain(hidden_spaces(&st));
                 let order = order.collect();
@@ -4963,7 +4945,7 @@ impl BeeperGuiApp {
                 if let Some(d) = &self.group_window {
                     return self.raise(d.id);
                 }
-                let (id, open) = self.open_child(GROUP_SIZE);
+                let (id, open) = self.open_child(GROUP_SIZE, false);
                 let st = self.store.read();
                 let c = &st.chats[st.resolve_chat_idx(&chat).expect("an edited group")];
                 let (title, topic) = (c.room_title().to_string(), composer_with(c.description.as_deref().unwrap_or_default()));
@@ -5469,10 +5451,7 @@ impl BeeperGuiApp {
                 crate::ui_theme::window_bg(body, self.pal.backdrop, self.pal.window).into()
             }
         };
-        let (base, menu_drop) = match in_main {
-            true => self.with_menu_bar(base),
-            false => (base, None),
-        };
+        let (base, menu_drop) = if in_main { self.with_menu_bar(base) } else { (base, None) };
         let modal = match (&self.quick_look_target, self.show_command_palette) {
             (Some((title, detail)), _) => Some(self.view_quick_look(title, detail)),
             (None, true) => Some(self.view_command_palette()),
@@ -5698,10 +5677,7 @@ impl BeeperGuiApp {
                 }
             };
             let left = sub.is_some() && x + MESSAGE_MENU_W + sub_w > self.pane().size.width;
-            let (x, menu) = match left {
-                true => (x - sub_w, row![].push(sub).push(menu).into()),
-                false => (x, row![menu].push(sub).into()),
-            };
+            let (x, menu) = if left { (x - sub_w, row![].push(sub).push(menu).into()) } else { (x, row![menu].push(sub).into()) };
             (menu, x, y)
         });
         let edit_menu = self.pane().edit_menu.as_ref().map(|(at, word)| {
@@ -5846,7 +5822,7 @@ impl BeeperGuiApp {
         let open = self.pane.selected_chat_id.as_deref().expect("an open chat");
         let chat = &st.chats[st.resolve_chat_idx(open).expect("chat exists")];
         let targets = switch_targets(&st, chat).expect("a chat with switch targets");
-        let line = || container(Space::new().width(Fill).height(1)).style(fill_box(p.received, 0.0));
+        let line = || container(Space::new().width(Fill).height(1)).style(fill_box(p.chip, 0.0));
         let header = container(semi(tr("Switch Chat"), 13.0).color(p.strong)).padding(Padding::new(12.0).left(27.0).right(8.0));
         // Desktop's card is as wide as its rows, up to 300 px.
         let wide = |c: &Chat| {
@@ -6392,6 +6368,23 @@ impl BeeperGuiApp {
         });
         self.pip = Some((id, v.mid.clone()));
         open.map(|a0| UiMessage::Window(windows::Msg::Opened(a0)))
+    }
+
+    /// Desktop's `recordDwell` of `setSelectedThread`: the chat of the main window that stays selected 3 seconds
+    /// counts once, at the first message after them.
+    fn dwell(&mut self) {
+        if self.swapped.is_some() {
+            return;
+        }
+        if let Some((id, since, counted @ false)) = &mut self.dwell {
+            if since.elapsed() >= std::time::Duration::from_secs(3) {
+                *counted = true;
+                self.store.write().record_activity(id, beeper_core::store::Activity::DWELL, beeper_core::config::now_unix_millis());
+            }
+        }
+        if self.pane.selected_chat_id.as_deref() != self.dwell.as_ref().map(|d| d.0.as_str()) {
+            self.dwell = self.pane.selected_chat_id.clone().map(|id| (id, std::time::Instant::now(), false));
+        }
     }
 
     /// Desktop's `updateLastViewedRequestsAt` when the Requests view shows, and when its requests change while it

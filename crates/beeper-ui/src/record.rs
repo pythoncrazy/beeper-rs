@@ -330,7 +330,7 @@ impl BeeperGuiApp {
     }
 
     pub(crate) fn record_events(&self) -> Option<Subscription<UiMessage>> {
-        use iced::keyboard::{Event::KeyPressed, Key};
+        use iced::keyboard::Event::KeyPressed;
         let space = iced::event::listen_with(|e, _, _| match e {
             Event::Keyboard(KeyPressed { key: Key::Named(Named::Space), .. }) => Some(UiMessage::Record(Msg::Key(Named::Space))),
             _ => None,

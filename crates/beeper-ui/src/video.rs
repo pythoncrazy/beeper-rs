@@ -4,7 +4,6 @@ use crate::i18n::{tr, trx};
 use crate::media_view;
 use crate::message;
 use crate::prelude::*;
-use crate::{ic, icon};
 use iced::widget::column;
 use iced::window;
 use std::io::Read;
@@ -623,10 +622,7 @@ impl BeeperGuiApp {
         if place == Place::Carousel {
             return surface.into();
         }
-        let menu = match place {
-            Place::Pip => Msg::PipMenu(true),
-            _ => Msg::Menu(mid.into()),
-        };
+        let menu = if matches!(place, Place::Pip) { Msg::PipMenu(true) } else { Msg::Menu(mid.into()) };
         let surface = mouse_area(surface).on_right_press(UiMessage::Video(menu.clone()));
         let on = |glyph: &svg::Handle, msg: UiMessage| -> El<'a> { self.video_button(v, glyph, msg) };
         let skips = self.video_skips(v);
@@ -681,10 +677,7 @@ impl BeeperGuiApp {
     /// The video that fills the screen, like Desktop's `screenfull` toggle on the `<video>`, if it is the video of the
     /// carousel (`in_carousel`) or of the timeline, which the Media window viewer does not fill.
     pub(crate) fn view_full_video(&self, in_carousel: bool) -> Option<El<'_>> {
-        let shown = match in_carousel {
-            true => self.carousel_shows_video(),
-            false => !self.carousel_shows_video() && !self.viewer_shows_video(),
-        };
+        let shown = if in_carousel { self.carousel_shows_video() } else { !self.carousel_shows_video() && !self.viewer_shows_video() };
         let v = self.video.as_ref().filter(|v| v.full.is_some() && shown)?;
         let area = match self.carousel().filter(|c| in_carousel && c.in_media) {
             Some(_) => self.media_window.as_ref().expect("the Media window is open").size,

@@ -100,6 +100,21 @@ fn grid_move(at: usize, key: Named, width: f32) -> usize {
 }
 
 /// Desktop's `intro-avatar` faces of the New Label intro.
+/// The faces of a sheet's intro, `faces` or three sample ones, in 4 px rings 33 px apart, `drop` px under `tile` in a
+/// 2 px ring over the top right.
+pub(crate) fn intro_faces<'a>(p: &Palette, mut faces: Vec<El<'a>>, tile: impl Into<El<'a>>, drop: f32) -> El<'a> {
+    if faces.is_empty() {
+        faces = LABEL_INTRO_FACES.iter().map(|h| image(h.clone()).width(48).height(48).into()).collect();
+    }
+    let width = 56.0 + (faces.len() - 1) as f32 * 33.0;
+    let faces = faces.into_iter().enumerate().fold(Stack::new(), |s, (i, face)| {
+        let ring = container(face).padding(4).style(fill_box(p.card, 28.0));
+        s.push(container(ring).padding(Padding::ZERO.left(i as f32 * 33.0)))
+    });
+    let tile = container(tile).padding(2).style(fill_box(p.card, 15.0));
+    stack![container(faces).padding(Padding::ZERO.top(drop)), container(tile).align_right(width + drop)].into()
+}
+
 pub(crate) static LABEL_INTRO_FACES: std::sync::LazyLock<[image::Handle; 3]> = std::sync::LazyLock::new(|| {
     [
         include_bytes!("../assets/label_intro/1.png").as_slice(),
@@ -309,23 +324,12 @@ impl PollDraft {
 impl BeeperGuiApp {
     pub(crate) fn view_confirm(&self, dialog: u8) -> El<'_> {
         let (title, body, actions) = match dialog {
-            ASK_LOGOUT => {
-                let name = self.devices.iter().flatten().flatten().find(|d| d.current).map(|d| d.name.clone());
-                let title = trf("Logout of %s?", &[&name.as_deref().unwrap_or(tr("this device"))]);
-                (
-                    title,
-                    tr("This will disconnect all chat accounts on this device.").into(),
-                    vec![(tr("Logout"), UiMessage::Logout)],
-                )
-            }
-            ASK_LOGOUT_DEVICE => {
-                let id = self.delete_target.clone().expect("a device to log out");
-                let name = self.devices.iter().flatten().flatten().find(|d| d.id == id).map(|d| d.name.clone());
-                (
-                    trf("Logout of %s?", &[&name.as_deref().unwrap_or(tr("this device"))]),
-                    tr("This will disconnect all chat accounts on this device.").into(),
-                    vec![(tr("Logout"), UiMessage::Settings(settings::Msg::LogoutDevice(id)))],
-                )
+            ASK_LOGOUT | ASK_LOGOUT_DEVICE => {
+                let id = (dialog == ASK_LOGOUT_DEVICE).then(|| self.delete_target.clone().expect("a device to log out"));
+                let device = self.devices.iter().flatten().flatten().find(|d| id.as_ref().map_or(d.current, |id| d.id == *id));
+                let title = trf("Logout of %s?", &[&device.map_or(tr("this device"), |d| d.name.as_str())]);
+                let logout = id.map_or(UiMessage::Logout, |id| UiMessage::Settings(settings::Msg::LogoutDevice(id)));
+                (title, tr("This will disconnect all chat accounts on this device.").into(), vec![(tr("Logout"), logout)])
             }
             ASK_DISMISS_REMINDERS => (
                 tr("Dismiss All Reminders?").into(),
@@ -358,10 +362,7 @@ impl BeeperGuiApp {
                         vec![delete(tr("Delete for Me"), false), delete(tr("Delete for Everyone"), true)],
                     ),
                 };
-                let title = match &chats[..] {
-                    [one] => trf("Delete %s", &[&one.combined_title()]),
-                    _ => tr("Delete Chats").into(),
-                };
+                let title = if let [one] = &chats[..] { trf("Delete %s", &[&one.combined_title()]) } else { tr("Delete Chats").into() };
                 (title, body.into(), actions)
             }
             ASK_LEAVE_CHAT => {
@@ -772,7 +773,7 @@ impl BeeperGuiApp {
         let pane = |e| UiMessage::Labels(labels::Msg::Pane(w.id, e));
         // The `:focus-visible` outlines of Label Settings: Desktop's `Button`s, and `--app-focus-ring` rings inside
         // the rows of `.LabelSettings-module__group` and `__settingRow`, and on `__menuPill`.
-        let ring = |offset, radius| Look::Outline { color: p.focus_ring, width: 2.0, offset, radius };
+        let ring = |offset, radius| Look::Outline { color: p.main, width: 2.0, offset, radius };
         let target = |key: &str, b: El<'a>, keys, look| self.target(Some(w.id), key, b, keys, look);
         let link = btn_style([CLEAR; 3], [p.accent; 3], 0.0);
         let edit = trx("Edit", "edit a label name, icon and color");
@@ -790,10 +791,7 @@ impl BeeperGuiApp {
         let title = |s: &str| container(med(s.to_string(), 13.0).color(p.sub)).padding([8, 12]);
         let chats: Vec<&Chat> = l.rooms.iter().filter_map(|r| st.resolve_chat_idx(r).map(|i| &st.chats[i])).collect();
         let fit = 1 + ((LABEL_SETTINGS_SIZE.width - 16.0 - 32.0 - 20.0 - 24.0 - 36.0) / 28.0) as usize;
-        let shown = match l.rooms.len() <= fit && chats.len() >= l.rooms.len() {
-            true => chats.len(),
-            false => chats.len().min(fit - 1),
-        };
+        let shown = if l.rooms.len() <= fit && chats.len() >= l.rooms.len() { chats.len() } else { chats.len().min(fit - 1) };
         let more = l.rooms.len() - shown;
         let faces = chats[..shown].iter().map(|c| self.chat_avatar(c, 36.0, 1.25)).chain((more > 0).then(|| {
             // Desktop translates "+%d" ("count of avatars not shown in a pile") in no language.
@@ -935,19 +933,9 @@ impl BeeperGuiApp {
         let p = &self.pal;
         let st = self.store.read();
         let picked = d.chats.iter().filter_map(|c| st.resolve_chat_idx(c)).take(5);
-        let mut faces: Vec<El> = picked.map(|i| self.chat_avatar(&st.chats[i], 48.0, 1.25)).collect();
-        if faces.is_empty() {
-            faces = LABEL_INTRO_FACES.iter().map(|h| image(h.clone()).width(48).height(48).into()).collect();
-        }
-        let n = faces.len();
-        let faces = faces.into_iter().enumerate().fold(Stack::new(), |s, (i, face)| {
-            let ring = container(face).padding(4).style(fill_box(p.card, 28.0));
-            s.push(container(ring).padding(Padding::ZERO.left(i as f32 * 33.0)))
-        });
+        let faces = picked.map(|i| self.chat_avatar(&st.chats[i], 48.0, 1.25)).collect();
         let tile = Label { color: Some(LABEL_COLORS.len() as u8 - 1), icon: Some(DEFAULT_LABEL_ICON.into()), ..Label::default() };
-        let tile = container(label_tile(&tile, 26.0, 18.0, 13.0, p.strong)).padding(2).style(fill_box(p.card, 15.0));
-        let width = 56.0 + (n - 1) as f32 * 33.0;
-        let stack = stack![container(faces).padding(Padding::ZERO.top(13.0)), container(tile).align_right(width + 13.0),];
+        let stack = intro_faces(p, faces, label_tile(&tile, 26.0, 18.0, 13.0, p.strong), 13.0);
         let headline =
             t(tr("Organize chats in custom spaces."), 13.0, spaced(Weight::Semibold, 0.1 / rem(13.0))).color(p.strong).align_x(Center);
         let intro = column![stack, headline].spacing(16).align_x(Center);
@@ -976,28 +964,30 @@ impl BeeperGuiApp {
         scrollable(container(body).padding(16)).direction(Direction::Vertical(Scrollbar::hidden())).into()
     }
 
+    /// The search row of a sheet's chat or space picker: the search icon, the field `id` with `query`, and a clear
+    /// button while it has text, which takes no visible focus.
+    pub(crate) fn sheet_search<'a>(
+        &self, window: window::Id, id: &'static str, hint: &str, query: &str, on: impl Fn(String) -> UiMessage + 'a,
+    ) -> El<'a> {
+        let p = &self.pal;
+        let empty = on(String::new());
+        let clear = (!query.trim().is_empty()).then(|| {
+            let clear = icon_btn(p, icon::CLOSE, 16.0, 28.0, p.sub, empty.clone());
+            self.target(Some(window), "clear", clear, Keys::press(empty), Look::Hidden)
+        });
+        let search = text_input(hint, query).id(id).on_input(on).size(rem(13.0)).line_height(lh(16.0)).padding([14, 0]);
+        let search = search.style(input_style(CLEAR, p.strong, p.sub, p.accent, 0.0));
+        let search = row![ic(icon::SEARCH, 16.0).color(p.sub), search].push(clear).spacing(10).align_y(Center);
+        search.padding(Padding::ZERO.left(16.0).right(8.0)).into()
+    }
+
     /// Desktop's `LabelChatPicker` (`_de`): the search row, then the selected, recent and other chats.
     fn view_label_pick<'a>(&'a self, d: &'a LabelDraft) -> El<'a> {
         let p = &self.pal;
         let st = self.store.read();
         let edit = |a0| UiMessage::Labels(labels::Msg::Change(a0));
-        let search = text_input(tr("Search name, @, number, or network"), &d.search)
-            .id("label-search")
-            .on_input(move |q| edit(LabelEdit::Search(q)))
-            .size(rem(13.0))
-            .line_height(lh(16.0))
-            .padding([14, 0])
-            .style(input_style(CLEAR, p.strong, p.sub, p.accent, 0.0));
-        let clear = (!d.search.trim().is_empty()).then(|| {
-            let empty = edit(LabelEdit::Search(String::new()));
-            let clear = icon_btn(p, icon::CLOSE, 16.0, 28.0, p.sub, empty.clone());
-            self.target(Some(d.id), "clear", clear, Keys::press(empty), Look::Hidden)
-        });
-        let search = row![ic(icon::SEARCH, 16.0).color(p.sub), search]
-            .push(clear)
-            .spacing(10)
-            .align_y(Center)
-            .padding(Padding::ZERO.left(16.0).right(8.0));
+        let search = tr("Search name, @, number, or network");
+        let search = self.sheet_search(d.id, "label-search", search, &d.search, move |q| edit(LabelEdit::Search(q)));
         let rows = self.label_rows(&st, d).into_iter().map(|r| -> El<'a> {
             match r {
                 LabelRow::Note => txt(tr("Clear search to show all selected chats"), 12.0).color(p.sub).align_x(Center).width(Fill).into(),
@@ -1026,7 +1016,7 @@ impl BeeperGuiApp {
                         .padding([0, 5])
                         .height(44)
                         .width(Fill)
-                        .style(btn_style([CLEAR, p.received, p.received], [p.text; 3], 6.0))
+                        .style(btn_style([CLEAR, p.chip, p.chip], [p.text; 3], 6.0))
                         .on_press(edit(LabelEdit::Toggle(c.id.clone())));
                     container(line).padding([0, 8]).into()
                 }
@@ -1045,7 +1035,7 @@ impl BeeperGuiApp {
         let held = self.key_held(Some(d.id), "grid");
         let cell = d.cell.filter(|_| held);
         let focused = move |i: usize, b: El<'a>, radius: f32| -> El<'a> {
-            crate::ring::ring(b, if cell == Some(i) { p.focus_ring } else { CLEAR }, 2.0, radius).into()
+            crate::ring::ring(b, if cell == Some(i) { p.main } else { CLEAR }, 2.0, radius).into()
         };
         // A color is a 24 px dot with a 0.5 px `--shadow-color-15` ring, on `--color-backing-shade` while picked, and
         // an icon is in `--semantic-colors-text-primary`, on `--semantic-colors-bg-fill-primary` while picked.
@@ -1146,7 +1136,7 @@ impl BeeperGuiApp {
         if let Some(d) = &self.group_window {
             return self.raise(d.id);
         }
-        let (id, open) = self.open_child(PERSONAL_SIZE);
+        let (id, open) = self.open_child(PERSONAL_SIZE, false);
         let st = self.store.read();
         let c = &st.chats[st.resolve_chat_idx(&chat).expect("a chat to edit for me")];
         let title = c.personal_parts().0.unwrap_or_default();
@@ -1174,10 +1164,7 @@ impl BeeperGuiApp {
         };
         st.set_personal(&chat, Some(name.clone()), None);
         drop(st);
-        let text = match &name {
-            Some(n) => trf("Renamed to %s for you", &[n]),
-            None => tr("Removed your name for this chat").into(),
-        };
+        let text = if let Some(n) = &name { trf("Renamed to %s for you", &[n]) } else { tr("Removed your name for this chat").into() };
         self.act(what, UiMessage::Info(info::Msg::SetPersonalName(chat, old)), Some((text, None)));
     }
 
@@ -1192,10 +1179,7 @@ impl BeeperGuiApp {
                 let st = self.store.read();
                 let edits = d.personal || st.chats[st.resolve_chat_idx(&d.chat).expect("an edited group")].edits & 2 != 0;
                 drop(st);
-                return match edits && !d.saving {
-                    true => self.group_edit(GroupEdit::Picked(Ok(vec![path]))),
-                    false => Task::none(),
-                };
+                return if edits && !d.saving { self.group_edit(GroupEdit::Picked(Ok(vec![path]))) } else { Task::none() };
             }
             GroupEdit::Picked(Ok(paths)) => {
                 let Some(path) = paths.into_iter().next() else { return Task::none() };
@@ -1316,10 +1300,7 @@ impl BeeperGuiApp {
             let label = txt(tr("Remove Photo"), 11.0).color(p.accent);
             container(button(label).bare(p.accent).on_press(edit(GroupEdit::Remove))).center_x(Fill)
         });
-        let hint = match d.personal {
-            true => Some(c.room_title()).filter(|t| !t.is_empty()).unwrap_or(tr("Chat Name")),
-            false => tr("Group Title"),
-        };
+        let hint = if d.personal { Some(c.room_title()).filter(|t| !t.is_empty()).unwrap_or(tr("Chat Name")) } else { tr("Group Title") };
         let title = text_input(hint, &d.title)
             .id(PERSONAL_INPUT)
             .on_input_maybe(can(0).then_some(move |t| edit(GroupEdit::Title(t))))
@@ -1391,7 +1372,7 @@ impl BeeperGuiApp {
         if let Some(id) = self.blocked_window {
             return self.raise(id);
         }
-        let (id, open) = self.open_child(BLOCKED_SIZE);
+        let (id, open) = self.open_child(BLOCKED_SIZE, false);
         self.blocked_window = Some(id);
         open
     }
@@ -1574,7 +1555,7 @@ impl BeeperGuiApp {
                 let rule = container(Space::new()).width(Fill).height(1).style(fill_box(weak, 0.0));
                 section = section.push(Space::new().height(6)).push(rule).push(container(voters).padding([0, 8]));
             }
-            body = body.push(container(section).width(Fill).padding(8).style(fill_box(p.received, 12.0)));
+            body = body.push(container(section).width(Fill).padding(8).style(fill_box(p.chip, 12.0)));
         }
         let card = scrollable(body).direction(bar()).height(Fill).style(scroll_style(p.scroll));
         let card = container(card).style(fill_box(p.card, 12.0));
@@ -1596,7 +1577,7 @@ impl BeeperGuiApp {
         // The labels, placeholders, drag handles and hint are `--color-on-surface-variant`, the rules
         // `--color-border-translucent-weak`.
         let rule = || container(Space::new()).width(Fill).height(1).style(fill_box(p.border_weak, 0.0));
-        let card = |c: Column<'a, UiMessage>| container(c).width(Fill).clip(true).style(fill_box(p.received, 12.0));
+        let card = |c: Column<'a, UiMessage>| container(c).width(Fill).clip(true).style(fill_box(p.chip, 12.0));
         let section = |label: &'static str, items: Vec<El<'a>>| column![semi(tr(label), 12.0).color(p.muted)].extend(items).spacing(8);
         let question = text_input(tr("Ask a question…"), &d.question)
             .id(format!("poll-{}", d.chat))
@@ -1604,7 +1585,7 @@ impl BeeperGuiApp {
             .size(rem(15.0))
             .line_height(lh(20.0))
             .padding([10, 11])
-            .style(input_style(p.received, p.strong, p.muted, p.accent, 10.0));
+            .style(input_style(p.chip, p.strong, p.muted, p.accent, 10.0));
         let repeats = d.repeats(rules);
         let length = usize::from(rules.max_length);
         let mut options = Column::new();
@@ -1663,7 +1644,7 @@ impl BeeperGuiApp {
                 .spacing(10)
                 .align_y(Center)
                 .padding([10, 12]);
-            let look = Look::Outline { color: p.focus_ring, width: 2.0, offset: -2.0, radius: 0.0 };
+            let look = Look::Outline { color: p.main, width: 2.0, offset: -2.0, radius: 0.0 };
             let line = mouse_area(line).on_press(edit(msg(!on)));
             self.target(Some(id), label, line, Keys::checkbox(edit(msg(!on))), look)
         };

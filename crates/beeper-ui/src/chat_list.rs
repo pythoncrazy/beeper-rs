@@ -1726,10 +1726,7 @@ impl BeeperGuiApp {
             .as_ref()
             .zip(c.last_activity.as_deref())
             .is_some_and(|(r, t)| millis_from_rfc3339(t).expect("RFC 3339 timestamp") <= r.remind_at_ms);
-        let style = match self.expired(c) && reminded_last {
-            true => iced::font::Style::Italic,
-            false => iced::font::Style::Normal,
-        };
+        let style = if self.expired(c) && reminded_last { iced::font::Style::Italic } else { iced::font::Style::Normal };
         let title = c.network_name.as_ref().map_or_else(|| c.title.clone(), |n| format!("{} • {n}", c.title));
         let weight = if l.counts && !c.is_unread() { Weight::Medium } else { Weight::Semibold };
         let bell = if muted { 16.0 } else { 0.0 } + if snoozed.is_some() { 16.0 } else { 0.0 };
@@ -1790,10 +1787,7 @@ impl BeeperGuiApp {
             (false, _) => body,
             (true, false) => body.or_else(|| Some(tr("Message Request").into())),
             (true, true) => {
-                let head = match c.inviter() {
-                    Some(u) => trs("Invited by %s", &[&member_name(u)]),
-                    None => tr("Group Invitation").into(),
-                };
+                let head = if let Some(u) = c.inviter() { trs("Invited by %s", &[&member_name(u)]) } else { tr("Group Invitation").into() };
                 Some(body.map_or(head.clone(), |b| format!("{head}\n{b}")))
             }
         };

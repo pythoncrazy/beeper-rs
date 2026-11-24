@@ -12,7 +12,6 @@ use crate::reply_line::{reply_line, Segment, Shape};
 use crate::style::pane_card;
 use crate::time::{clock, day_label, day_of, locale_string};
 use crate::timeline;
-use crate::toasts::Toast;
 use crate::windows;
 use crate::{
     anim, badged, brightness, can_thread, chat_theme, copy_text, edit_open, editable, enter_key, file_icon, gallery, handle, has_older,
@@ -445,10 +444,7 @@ pub(crate) fn media_box(window_w: f32, size: Option<(f32, f32)>, share: f32) -> 
     const STRIP: f32 = 80.0;
     let Some((w, h)) = size.filter(|s| s.0 > 0.0 && s.1 > 0.0) else { return (share * window_w, HIGH, true) };
     let (o, r) = ((share * window_w).min(w), w / h);
-    let fitted = match w / o > h / HIGH {
-        true => (o, (o / r).min(HIGH), false),
-        false => ((HIGH * r).min(o), HIGH, false),
-    };
+    let fitted = if w / o > h / HIGH { (o, (o / r).min(HIGH), false) } else { ((HIGH * r).min(o), HIGH, false) };
     match r {
         _ if r > o / STRIP => (o, STRIP, true),
         _ if r > TALL_W / HIGH => fitted,
@@ -931,8 +927,7 @@ impl BeeperGuiApp {
         // second, with the CSS `ease` in each half.
         let ink = p.strong.scale_alpha(v);
         let dot = |delay| anim::dot(6.0, ink, self.started, delay, typing_pulse);
-        let bubble =
-            container(row![dot(0), dot(340), dot(670)].spacing(4)).padding([12, 11]).style(fill_box(p.received.scale_alpha(v), 16.0));
+        let bubble = container(row![dot(0), dot(340), dot(670)].spacing(4)).padding([12, 11]).style(fill_box(p.chip.scale_alpha(v), 16.0));
         let users: Vec<&User> = ids.iter().filter_map(|id| chat.participants.items.iter().find(|u| u.id == *id)).collect();
         let names: Vec<String> = users.iter().map(|u| member_name(u)).collect();
         let bubble: El<'a> = match names.is_empty() {
@@ -1186,10 +1181,7 @@ impl BeeperGuiApp {
         .flatten()
         .collect();
         let head: Vec<(El, f32)> = before.into_iter().chain(remind).chain(after).collect();
-        let top = match self.pane().remind_sub {
-            true => remind_top,
-            false => head.iter().map(|r| r.1).sum::<f32>() + 11.0,
-        };
+        let top = if self.pane().remind_sub { remind_top } else { head.iter().map(|r| r.1).sum::<f32>() + 11.0 };
         // Desktop's `Zit`: no Delete… for the message that you edit.
         let delete = (!editing && delete_dialog(&st, &[m]).is_some())
             .then(|| item(tr("Delete…").into(), "", Some(UiMessage::Message(Msg::AskDelete(vec![mid.clone()])))));
@@ -1480,10 +1472,7 @@ impl BeeperGuiApp {
         let reminder = reminder.map(|(remind_at_ms, if_no_reply)| {
             let (day, time) = (reminder_day(remind_at_ms), clock(remind_at_ms, st.settings.pref("timeFormat") == 1));
             let at = if day_of(remind_at_ms) == today() { time.clone() } else { format!("{time} {day}") };
-            let tip = match if_no_reply {
-                true => trf("Set to remind at %s if no reply", &[&at]),
-                false => trf("Set to remind at %s", &[&at]),
-            };
+            let tip = if if_no_reply { trf("Set to remind at %s if no reply", &[&at]) } else { trf("Set to remind at %s", &[&at]) };
             let label = row![ic(icon::SCHEDULE, 16.0).color(ORANGE), semi(format!("{day} {time}"), 11.0).color(ORANGE)];
             let pill = container(label.spacing(4).align_y(Center))
                 .padding(pad(2.0, 8.0, 2.0, 4.0))
@@ -1757,10 +1746,7 @@ impl BeeperGuiApp {
     fn view_scroll_to_bottom<'a>(&'a self, st: &BeeperStore, chat: &Chat) -> Option<El<'a>> {
         let p = &self.pal;
         let (shown, t) = scroll_fade(self.pane())?;
-        let alpha = match shown {
-            true => ((t - SCROLL_WAIT) / SCROLL_FADE).clamp(0.0, 1.0),
-            false => 1.0 - (t / SCROLL_FADE).clamp(0.0, 1.0),
-        };
+        let alpha = if shown { ((t - SCROLL_WAIT) / SCROLL_FADE).clamp(0.0, 1.0) } else { 1.0 - (t / SCROLL_FADE).clamp(0.0, 1.0) };
         if alpha == 0.0 {
             return None;
         }
@@ -1970,11 +1956,8 @@ impl BeeperGuiApp {
             // Desktop's `showSeenIcon`: never on an action; in a group on an own message or the last one, and in a
             // DM on an own message after the last received one.
             let own = tail.is_sender == Some(true);
-            let seen_icon = !membership(tail)
-                && match group {
-                    true => own || end == msgs.len(),
-                    false => own && last_received.is_none_or(|r| end - 1 > r),
-                };
+            let seen_icon =
+                !membership(tail) && if group { own || end == msgs.len() } else { own && last_received.is_none_or(|r| end - 1 > r) };
             let mut viewers: Vec<(&str, &str)> =
                 (last_seen.iter()).filter(|(_, (at, _))| seen_icon && *at == end - 1).map(|(u, (_, ts))| (&u[..], &ts[..])).collect();
             viewers.sort_by_key(|&(_, ts)| ts);
@@ -2036,10 +2019,7 @@ impl BeeperGuiApp {
             let flags = (first, last, chain, thread, hide_time);
             // Desktop's `message-main` is a `.negate-redacted-region` of the redacted timeline.
             let view = crate::style::region(false, || self.view_message(st, chat, ms, flags, (status, replies), head));
-            let view = match send_rise(st, m) {
-                Some(t) => lift::lift(view, 14.0 * (1.0 - t), 0.97 + 0.03 * t).into(),
-                None => view,
-            };
+            let view = if let Some(t) = send_rise(st, m) { lift::lift(view, 14.0 * (1.0 - t), 0.97 + 0.03 * t).into() } else { view };
             let flash = self.flash.as_ref().filter(|(id, _)| *id == m.id).map(|(_, at)| {
                 let t = (at.elapsed().as_secs_f32() / 1.5).min(1.0);
                 let a = if t < 0.2 { ease_out(t / 0.2) } else { 1.0 - ease_out((t - 0.2) / 0.8) };
@@ -2147,9 +2127,9 @@ impl BeeperGuiApp {
         // Desktop's `isErrored` bubble takes the secondary container colors.
         let failed = m.send_error.as_ref().filter(|_| mine);
         let (bg, fg) = match (mine, failed) {
-            (true, Some(_)) => (dim(p.received), dim(p.on_secondary)),
+            (true, Some(_)) => (dim(p.chip), dim(p.on_secondary)),
             (true, None) => (dim(sent), dim(sent_fg)),
-            (false, _) => (dim(p.received), dim(p.strong)),
+            (false, _) => (dim(p.chip), dim(p.strong)),
         };
         // Desktop's `is-edit-history` bubble: the sent color at half, or `--color-base-gray-40` at half.
         let history = m.id.contains(EDIT_HISTORY);
@@ -2406,7 +2386,7 @@ impl BeeperGuiApp {
                 group,
                 own: p.highlight,
                 own_bg: p.backdrop.filter(|b| !b.rich),
-                other: p.received,
+                other: p.chip,
                 hover: Some(p.selected),
                 fg: (p.text, p.on_secondary),
                 ring: (if on_wall.is_some() { CLEAR } else { p.card }, 2.0),
@@ -2431,7 +2411,7 @@ impl BeeperGuiApp {
             let action = |label: String, msg: Option<UiMessage>| {
                 button(txt(label, 12.0).line_height(lh(16.0)))
                     .padding([4, 8])
-                    .style(btn_style([p.received; 3], [p.text; 3], 9999.0))
+                    .style(btn_style([p.chip; 3], [p.text; 3], 9999.0))
                     .on_press_maybe(msg)
             };
             let retry = pending.then(|| match e.retrying {
@@ -2558,10 +2538,7 @@ impl BeeperGuiApp {
                 None => emoji(r.text),
             })
             .collect();
-        let line: El<'a> = match glyphs.is_empty() {
-            true => emoji(text.to_string()),
-            false => Row::with_children(glyphs).align_y(Bottom).into(),
-        };
+        let line: El<'a> = if glyphs.is_empty() { emoji(text.to_string()) } else { Row::with_children(glyphs).align_y(Bottom).into() };
         // Desktop's `title` of the `message-text` of an emoji message: its time.
         let time = format_short_ts(&m.timestamp, st.settings.pref("timeFormat") == 1);
         let line = self.tip(line, time, vec![], tooltip::Position::Top);
@@ -2595,7 +2572,7 @@ impl BeeperGuiApp {
                 container(txt(label, 14.0).line_height(1.0).color(Color::WHITE))
                     .center_y(36)
                     .padding([0, 17])
-                    .style(fill_box(p.toggle_on, 18.0)),
+                    .style(fill_box(p.main, 18.0)),
             )
             .center_x(w)
             .center_y(h)
@@ -2642,10 +2619,7 @@ impl BeeperGuiApp {
         };
         let (slot, press): (El<'_>, _) = if let Some(raw) = m.unresolved_media.as_ref().filter(|_| !is_video) {
             let failed = self.resolving_media.get(&m.id) == Some(&false);
-            let (label, alpha) = match failed {
-                true => (tr("Could not load. Click to try again"), 0.45),
-                false => (tr("Click to load"), 0.25),
-            };
+            let (label, alpha) = if failed { (tr("Could not load. Click to try again"), 0.45) } else { (tr("Click to load"), 0.25) };
             (
                 stack![base, pill(label, alpha)].into(),
                 UiMessage::Loaded(loads::Msg::ResolveMedia(m.account_id.clone(), m.id.clone(), raw.clone())),
@@ -2986,11 +2960,7 @@ impl BeeperGuiApp {
         // Desktop's flyover buttons: a 20 px Material icon, drawn at its 1.2 scale, in 6 px of padding.
         let b = |c: char, msg: UiMessage, v: f32| -> El<'a> {
             let style = move |_: &Theme, s| button::Style {
-                text_color: match s {
-                    button::Status::Hovered => brightness(muted, 0.8),
-                    _ => muted,
-                }
-                .scale_alpha(v),
+                text_color: if matches!(s, button::Status::Hovered) { brightness(muted, 0.8) } else { muted }.scale_alpha(v),
                 ..Default::default()
             };
             let glyph = ic(c, 20.0 * 1.2 * (0.85 + 0.15 * v));
@@ -3055,10 +3025,7 @@ impl BeeperGuiApp {
         let room = if self.conversation_width() - 8.0 <= 384.0 { 2 } else { usize::MAX };
         let flyover: Vec<El<'a>> = flyover.into_iter().chain(quick).take(room).collect();
         let flyover = (!flyover.is_empty()).then(|| -> El<'a> {
-            let row = match mine {
-                true => Row::with_children(flyover.into_iter().rev()),
-                false => Row::with_children(flyover),
-            };
+            let row = if mine { Row::with_children(flyover.into_iter().rev()) } else { Row::with_children(flyover) };
             mouse_area(row).on_enter(UiMessage::Message(Msg::ShowQuickReactions)).into()
         });
         // Desktop's download button beside an attachment, and the time of a message without text in its flyover.
@@ -3162,7 +3129,7 @@ impl BeeperGuiApp {
                     None => (sent, fill, fg),
                 }
             }
-            false => (p.received, p.card, p.text),
+            false => (p.chip, p.card, p.text),
         };
         let name_fg = if q_mine { fg } else { p.strong };
         let max = 0.45 * self.pane().size.width;
@@ -3622,7 +3589,7 @@ impl BeeperGuiApp {
                 if let Some(w) = self.vote_windows.iter().find(|w| w.2 == mid) {
                     return self.raise(w.0);
                 }
-                let (id, open) = self.open_child(Size::new(342.0, 563.0));
+                let (id, open) = self.open_child(Size::new(342.0, 563.0), false);
                 self.vote_windows.push((id, chat, mid));
                 return open;
             }
@@ -3744,10 +3711,7 @@ impl BeeperGuiApp {
             Msg::ImageFetched(r) => {
                 let copy = |(width, height, px): (usize, usize, Vec<u8>), c: &mut Option<arboard::Clipboard>| {
                     let img = arboard::ImageData { width, height, bytes: px.into() };
-                    let c = match c {
-                        Some(c) => c,
-                        None => c.insert(arboard::Clipboard::new().map_err(|e| e.to_string())?),
-                    };
+                    let c = if let Some(c) = c { c } else { c.insert(arboard::Clipboard::new().map_err(|e| e.to_string())?) };
                     c.set_image(img).map_err(|e| e.to_string())
                 };
                 if let Err(e) = r.and_then(|b| copy(b, &mut self.image_clipboard)) {
@@ -4069,10 +4033,7 @@ impl BeeperGuiApp {
         let token = st.beeper_state.access_token.clone();
         drop(st);
         if let Some(link) = link {
-            return match link.starts_with(crate::deeplink::SCHEME) {
-                true => self.open_link(&link),
-                false => self.update(UiMessage::OpenUrl(link)),
-            };
+            return if link.starts_with(crate::deeplink::SCHEME) { self.open_link(&link) } else { self.update(UiMessage::OpenUrl(link)) };
         }
         let Some(url) = url else { return Task::none() };
         if !self.pressing.insert((mid.clone(), id.clone())) {
@@ -4266,8 +4227,9 @@ pub(crate) mod tests {
         let mut app = crate::fuzz::demo_app("reply-fade");
         let _ = app.update(UiMessage::SelectChat("!note_self:beeper.com".into()));
         let mid = app.timeline(&app.store.read()).0.last().expect("a message").id.clone();
+        let before = std::time::Instant::now();
         let _ = app.update(UiMessage::Message(Msg::ShowReplies(mid)));
-        assert!(app.pane.reply_opened.is_some_and(|t| t.elapsed() < REPLIES_RISE), "it starts to fade in");
+        assert!(app.pane.reply_opened.is_some_and(|t| t >= before), "it starts to fade in");
         let size = iced::Size::new(1000.0, 720.0);
         let mut sim = iced_test::simulator::Simulator::with_size(Default::default(), size, app.view_main());
         sim.point_at(Point::new(700.0, 250.0));
@@ -4730,7 +4692,7 @@ pub(crate) mod tests {
         let rightmost = |hit: &dyn Fn([u8; 4]) -> bool| {
             (0..shot.width()).rev().find(|&x| (0..shot.height()).any(|y| hit(shot.get_pixel(x, y).0))).expect("pixels")
         };
-        let bubble = rightmost(&|px| near(px, app.pal.received));
+        let bubble = rightmost(&|px| near(px, app.pal.chip));
         let ink = rightmost(&|px| px[..3].iter().map(|&c| u32::from(c)).sum::<u32>() < 200);
         assert!(bubble - ink <= 2 * (BUBBLE_PAD_X as u32 + 2), "the lines end at the padding: {bubble} {ink}");
     }
@@ -4944,7 +4906,7 @@ pub(crate) mod tests {
         };
         let see_through = mix(Color::WHITE, app.pal.link_card, 0.5);
         assert!(close((6, 16), see_through) && close((6, 50), see_through), "Desktop's half gray-40 bubbles");
-        assert!(close((6, 84), app.pal.received));
+        assert!(close((6, 84), app.pal.chip));
     }
 
     /// Desktop's `object-fit: cover` of a very tall GIF (`kf`): the 160 by 400 box is full, and the GIF plays. A worker
@@ -5484,7 +5446,7 @@ pub(crate) mod tests {
             group: true,
             own: p.card,
             own_bg: None,
-            other: p.received,
+            other: p.chip,
             hover: None,
             fg: (p.text, p.on_secondary),
             ring: (p.card, 2.0),
@@ -5887,7 +5849,7 @@ pub(crate) mod tests {
         let shot = pixels(&mut alone(&app, "msg_1003"));
         let count = |c: Color| shot.pixels().filter(|px| px.0 == c.into_rgba8()).count();
         assert!(count(app.pal.link_card) > 20_000, "the voice note and the file row: {}", count(app.pal.link_card));
-        assert_eq!(count(app.pal.received), 0, "no text bubble color");
+        assert_eq!(count(app.pal.chip), 0, "no text bubble color");
         // The name and icon of the row are `--color-text-neutrals`, its details `--color-text-neutrals-weak`.
         let mut sim = alone(&app, "msg_1003");
         let mut ink = |s: &str, c: Color| {

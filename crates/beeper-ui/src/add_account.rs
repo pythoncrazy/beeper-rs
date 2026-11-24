@@ -450,10 +450,7 @@ impl BeeperGuiApp {
             AddMsg::Emoji(_, r) => a.emoji = r.ok().map(image::Handle::from_bytes),
             // A phone field takes a new value in its country, like Desktop's `PhoneInput` with a new `value`.
             AddMsg::Field(f, v) => {
-                let v = match a.phones.get_mut(&f) {
-                    Some(field) => field.set(&v),
-                    None => v,
-                };
+                let v = if let Some(field) = a.phones.get_mut(&f) { field.set(&v) } else { v };
                 a.touched.insert(f.clone());
                 a.values.insert(f, v);
             }
@@ -817,10 +814,7 @@ impl BeeperGuiApp {
                         Browser::Open | Browser::Closed if hidden || a.busy => para(tr("Authenticating...").into()),
                         browser => {
                             let text = trf("Click the button below to open the browser and begin authentication with %s.", &[&name]);
-                            let error = match browser {
-                                Browser::Failed(e) => Some(error_line(e)),
-                                _ => None,
-                            };
+                            let error = if let Browser::Failed(e) = browser { Some(error_line(e)) } else { None };
                             let open = auth_button(trf("Open %s Login", &[&name]), go(AddMsg::OpenBrowser));
                             column![para(text), open].push(error).spacing(16).align_x(Center).into()
                         }
@@ -891,10 +885,7 @@ impl BeeperGuiApp {
             let items = options.into_iter().map(|f| {
                 let key = format!("{}/{}", a.bridge, f.id);
                 let label = FLOW_LABELS.iter().find(|l| l.0 == key).map(|l| tr(l.1).to_string());
-                let label = label.unwrap_or_else(|| match f.name.is_empty() {
-                    true => f.id.clone(),
-                    false => bridge_text("flowName", &key, &f.name),
-                });
+                let label = label.unwrap_or_else(|| if f.name.is_empty() { f.id.clone() } else { bridge_text("flowName", &key, &f.name) });
                 menu_item(p, None, label, "", (!a.busy).then(|| go(AddMsg::Flow(f.id.clone()))))
             });
             let list = crate::menu_card(p, Column::with_children(items), 200);
