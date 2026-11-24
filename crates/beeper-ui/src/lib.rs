@@ -1192,16 +1192,12 @@ async fn clipboard_paste() -> Result<Clip, String> {
     tokio::task::spawn_blocking(read).await.expect("clipboard task")
 }
 
+/// Desktop's `GroupAvatar` people: the `activeParticipants` (without the members that left) other than the user, in
+/// Desktop's order (`J_e`), all of them up to five, else the first four and the count of the rest. A direct chat
+/// shows the first one.
 fn faces_of(users: &[User], group: bool) -> (Vec<&User>, usize) {
-    let mut others: Vec<&User> = users.iter().filter(|u| u.is_self != Some(true)).collect();
-    let name = |u: &User| {
-        [&u.custom_nickname, &u.full_name, &u.username, &u.email, &u.phone_number]
-            .into_iter()
-            .find_map(|n| n.as_deref().filter(|n| !n.is_empty()))
-            .unwrap_or(&u.id)
-            .to_lowercase()
-    };
-    others.sort_by_cached_key(|u| (u.is_network_bot == Some(true), u.is_admin != Some(true), name(u)));
+    let mut others: Vec<&User> = users.iter().filter(|u| u.is_self != Some(true) && u.has_exited != Some(true)).collect();
+    others.sort_by(|a, b| member_order(a, b));
     let more = if group && others.len() > 5 { others.len() - 4 } else { 0 };
     let shown = if group { others.len() - more } else { others.len().min(1) };
     (others.into_iter().take(shown).collect(), more)
