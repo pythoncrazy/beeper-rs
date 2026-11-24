@@ -926,12 +926,12 @@ fn icon_btn<'a>(p: &Palette, c: char, size: f32, frame: f32, color: Color, msg: 
     button(container(ic(c, size).color(color)).center(frame)).padding(0).style(ghost(p, 8.0)).on_press(msg).into()
 }
 
-/// Desktop's `remove-btn`: a 20px round button over the top right corner of a composer attachment.
-fn removable<'a>(p: &Palette, item: impl Into<El<'a>>, msg: UiMessage) -> El<'a> {
-    let close = container(ic(icon::CLOSE, 12.0).color(p.strong)).center(20);
-    let close = button(close).padding(0).style(btn_style([p.elevated, p.hover, p.selected], [p.strong; 3], 10.0));
+/// Desktop's `remove-btn`: its `remove` icon, a gray disc with a white cross in both themes, 20 px over the top right
+/// corner of a composer attachment and 4 px past it.
+fn removable<'a>(item: impl Into<El<'a>>, msg: UiMessage) -> El<'a> {
+    let close = button(svg(REMOVE.clone()).width(20).height(20)).padding(0).style(btn_style([CLEAR; 3], [CLEAR; 3], 10.0));
     let item = container(item).padding(Padding::ZERO.top(5.0).right(5.0));
-    stack![item, row![Space::new().width(Fill), close.on_press(msg)]].width(Shrink).into()
+    stack![item, row![Space::new().width(Fill), close.on_press(msg)].padding(Padding::ZERO.top(1.0).right(1.0))].width(Shrink).into()
 }
 
 /// Desktop's `Ng`: an unread count, at most "999+".
@@ -1568,6 +1568,10 @@ static SENT: std::sync::LazyLock<[svg::Handle; 2]> = std::sync::LazyLock::new(||
 // Desktop's `MessagePendingIcon`.
 svg_static!(PENDING, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 12 12"><circle cx="6" cy="6" r="5.375" fill="none" stroke="#000" stroke-width="1.25"/><circle cx="3.3" cy="6" r=".9"/><circle cx="6" cy="6" r=".9"/><circle cx="8.7" cy="6" r=".9"/></svg>"##);
 
+// Desktop's `remove` system icon: a white disc under a gray one that the cross cuts out of.
+svg_static!(REMOVE, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path fill="#fff" d="M20 10c0 5.523-4.477 10-10 10S0 15.523 0 10 4.477 0 10 0s10 4.477 10 10"/><path fill="gray" d="M5.7 14.3a.95.95 0 0 0 .7.275.95.95 0 0 0 .7-.275l2.9-2.9 2.925 2.925q.275.274.688.262a.98.98 0 0 0 .687-.287.95.95 0 0 0 .275-.7.95.95 0 0 0-.275-.7L11.4 10l2.925-2.925a.9.9 0 0 0 .262-.688.98.98 0 0 0-.287-.687.95.95 0 0 0-.7-.275.95.95 0 0 0-.7.275L10 8.6 7.075 5.675a.9.9 0 0 0-.687-.263.98.98 0 0 0-.688.288.95.95 0 0 0-.275.7q0 .425.275.7L8.6 10l-2.925 2.925a.9.9 0 0 0-.262.687.98.98 0 0 0 .287.688M10 20a9.7 9.7 0 0 1-3.9-.788 10.1 10.1 0 0 1-3.175-2.137Q1.575 15.725.788 13.9A9.7 9.7 0 0 1 0 10q0-2.074.788-3.9a10.1 10.1 0 0 1 2.137-3.175Q4.275 1.575 6.1.787A9.7 9.7 0 0 1 10 0q2.075 0 3.9.787a10.1 10.1 0 0 1 3.175 2.138q1.35 1.35 2.137 3.175A9.7 9.7 0 0 1 20 10a9.7 9.7 0 0 1-.788 3.9 10.1 10.1 0 0 1-2.137 3.175q-1.35 1.35-3.175 2.137A9.7 9.7 0 0 1 10 20"/></svg>"##);
+// Desktop's `OutlineCheck` of the composer's Edit Message button.
+svg_static!(OUTLINE_CHECK, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path d="M17 5l-9.625 9.625L3 10.25" fill="none" stroke="#000" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>"##);
 svg_static!(SEND_ARROW, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path transform="rotate(90 10 10)" d="m6.52 10.833 4.668 4.667L10 16.666 3.333 10 10 3.333 11.188 4.5 6.52 9.166h10.146v1.667z"/></svg>"##);
 svg_static!(EYES, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 46 46" fill="#fff"><path d="M22.1197 25.5092C23.0085 30.1093 20.937 33.1 16.2324 34.009C11.5277 34.918 8.49126 32.9143 7.60244 28.3142L6.68822 23.5827C5.7994 18.9826 7.87085 15.9919 12.5755 15.0829C17.2802 14.1738 20.3166 16.1776 21.2054 20.7777L22.1197 25.5092ZM14.8746 30.5902C15.1743 32.1411 16.6446 33.1113 18.2307 32.8049C19.8168 32.4984 20.8199 31.0503 20.5202 29.4994C20.2205 27.9485 18.7503 26.9783 17.1641 27.2847C15.578 27.5912 14.575 29.0393 14.8746 30.5902Z"/><path d="M39.1455 22.1235C40.0344 26.7236 37.9629 29.7142 33.2583 30.6233C28.5536 31.5323 25.5171 29.5286 24.6283 24.9284L23.7141 20.1969C22.8253 15.5968 24.8967 12.6061 29.6014 11.6971C34.306 10.7881 37.3425 12.7918 38.2313 17.3919L39.1455 22.1235ZM31.9005 27.2045C32.2002 28.7554 33.6704 29.7256 35.2566 29.4191C36.8427 29.1126 37.8457 27.6645 37.5461 26.1136C37.2464 24.5627 35.7761 23.5925 34.19 23.899C32.6039 24.2055 31.6008 25.6536 31.9005 27.2045Z"/></svg>"##);
 

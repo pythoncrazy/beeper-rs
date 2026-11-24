@@ -11,7 +11,7 @@ use crate::vcard::parse_vcard;
 use crate::{
     account_display_name, account_user, anim, can_broadcast, clipboard_paste, contact_card, dashed, default_account_user, emoji, format,
     hotkey_key, images, portal, removable, several_accounts, switch_targets, text_urls, toasts, truncate, Clip, MenuEdit, Picker, Queued,
-    FILE_ICONS, SEND_ARROW,
+    FILE_ICONS, LINK_ICON, OUTLINE_CHECK, SEND_ARROW,
 };
 use beeper_core::models::*;
 use beeper_core::prefs;
@@ -975,9 +975,8 @@ impl BeeperGuiApp {
         let formats = if st.settings.on("formattingMenu") { chat.formatting } else { 0 };
         let input = self.with_formatting(input, formats);
         let line = row![net, input, inline].align_y(Bottom).padding(Padding::new(0.0).left(14.0).right(6.5));
-        // `.ComposerHiddenActions-module__toggle svg` is `--color-on-tertiary-container`, the same gray as the
-        // on-secondary-container of the emoji and voice buttons.
-        let plus_icon = tinted(&COMPOSER_ICONS[usize::from(self.pane().show_attach_menu)], 20.0, p.on_secondary);
+        // Desktop's `add` system icon fills its cross with `#828286` in both themes.
+        let plus_icon = tinted(&COMPOSER_ICONS[usize::from(self.pane().show_attach_menu)], 20.0, hex(0x828286));
         let toggle = button(container(plus_icon).center(36))
             .padding(0)
             .style(btn_style([p.input, p.hover, p.selected], [p.text; 3], 18.0))
@@ -1059,7 +1058,7 @@ impl BeeperGuiApp {
                 false => (p.chip, p.card),
             };
             let pill = container(body).max_width(self.pane().size.width / 2.0).padding(8);
-            removable(p, pill.style(bordered_box(fill, edge, 2.0, 17.0)), UiMessage::Composer(Msg::CancelMode))
+            removable(pill.style(bordered_box(fill, edge, 2.0, 17.0)), UiMessage::Composer(Msg::CancelMode))
         })
     }
 
@@ -1250,7 +1249,7 @@ impl BeeperGuiApp {
                 let ring = if self.pane().att_focus == Some(i) { p.accent } else { CLEAR };
                 let preview =
                     mouse_area(crate::ring::ring(preview, ring, 3.0, radius)).on_press(UiMessage::Composer(Msg::FocusAttachment(i)));
-                removable(p, preview, UiMessage::Composer(Msg::DiscardAttachment(i)))
+                removable(preview, UiMessage::Composer(Msg::DiscardAttachment(i)))
             });
             Row::with_children(items).spacing(8).align_y(iced::Bottom)
         })
@@ -1260,7 +1259,8 @@ impl BeeperGuiApp {
     fn view_send_button(&self) -> El<'_> {
         let p = &self.pal;
         if self.pane().editing_message_id.is_some() {
-            let edit = button(container(ic(icon::CHECK, 20.0).color(Color::WHITE)).center(36))
+            // Desktop's `OutlineCheck` at the 18 px of `button.btn-icon svg`.
+            let edit = button(container(tinted(&OUTLINE_CHECK, 18.0, Color::WHITE)).center(36))
                 .padding(0)
                 .style(btn_style([p.accent; 3], [Color::WHITE; 3], 18.0))
                 .on_press(UiMessage::Composer(Msg::Submit));
@@ -1291,7 +1291,7 @@ impl BeeperGuiApp {
                     let host = u.split("://").last().and_then(|u| u.split('/').next()).unwrap_or(u).to_string();
                     let img = img.as_ref().map(|(_, h)| image(h.clone()).width(180).height(101).content_fit(iced::ContentFit::Cover));
                     let wide = if img.is_some() { 158.0 } else { 338.0 };
-                    let link = row![ic(icon::LINK, 12.0).color(p.weak), txt(host, 11.0).color(p.weak)];
+                    let link = row![tinted(&LINK_ICON, 12.0, p.weak), txt(host, 11.0).color(p.weak)];
                     let text = column![
                         clamp(title, wide, 3, 13.0, Weight::Semibold).line_height(lh(16.0)).color(p.strong),
                         link.spacing(4).align_y(Center)
@@ -1303,7 +1303,7 @@ impl BeeperGuiApp {
                         .into()
                 }
             };
-            Some(removable(p, card, UiMessage::Composer(Msg::RemoveLinkPreview(u.clone()))))
+            Some(removable(card, UiMessage::Composer(Msg::RemoveLinkPreview(u.clone()))))
         });
         let links: Vec<El<'_>> = links.collect();
         (!links.is_empty()).then(|| Column::with_children(links).spacing(4))
@@ -1336,8 +1336,9 @@ impl BeeperGuiApp {
         };
         let when = send_day(at, st.settings.pref("timeFormat") == 1);
         let when = if no_reply { trf("%s if no reply", &[&when]) } else { when };
+        // Desktop's `future` icon has no size, so it takes the 24 px of its system icons.
         let details =
-            row![tinted(&COMPOSER_ICONS[6], 20.0, p.accent), semi(when, 11.0).color(p.accent), tinted(&CHEVRON_DOWN, 14.0, p.accent)];
+            row![tinted(&COMPOSER_ICONS[6], 24.0, p.accent), semi(when, 11.0).color(p.accent), tinted(&CHEVRON_DOWN, 14.0, p.accent)];
         let details = button(details.spacing(4).align_y(Center)).bare(p.accent).on_press(UiMessage::Scheduled(scheduled::Msg::Open));
         let close = icon_btn(p, icon::CLOSE, 14.0, 20.0, p.accent, UiMessage::Scheduled(scheduled::Msg::Set(None)));
         // `.SendLaterBanner-module__banner`: 14 % of `--color-primary`, 26 % in the dark theme.
@@ -2149,8 +2150,8 @@ impl BeeperGuiApp {
 mod tests {
     use super::*;
 
-    /// `.ComposerHiddenActions-module__toggle`: the + is the bluish gray `--color-on-tertiary-container`, like the
-    /// emoji button, not the neutral `--color-on-surface-variant`.
+    /// `.ComposerHiddenActions-module__toggle`: Desktop's `add` system icon fills its + with `#828286`, which is also
+    /// the light theme's `--color-on-tertiary-container`, so it stays that gray in the dark theme.
     #[test]
     fn the_add_button_like_desktop() {
         let mut app = crate::fuzz::demo_app("add-button");
@@ -2163,7 +2164,59 @@ mod tests {
         // The brightest pixel of the 20 px + in the 36 px button 8 px from the left, at the scale of 2 of the shot.
         let ink = (32..72).flat_map(|x| (32..72).map(move |y| (x, y))).map(|(x, y)| shot.get_pixel(x, y).0);
         let ink = ink.max_by_key(|px| px[0]).expect("the + pixels");
-        assert!(ink[0] > 120 && ink[2] > ink[0], "{ink:?}");
+        assert_eq!(ink[..3], [0x82, 0x82, 0x86]);
+    }
+
+    /// The icons of Desktop's composer at 1200x800: the `remove` buttons of the attachments (a 20 px gray disc whose
+    /// white cross is 9.2 px, 4 px past the corner), the `OutlineCheck` of Edit Message (a 1.5 stroke at 18 px), the
+    /// `future` icon of the Send Later banner at its default 24 px, and the 12 px `link` icon of a link preview.
+    #[test]
+    fn composer_icons_like_desktop() {
+        // The ink of windows at an offset from the text `at`, or from the window's corner.
+        let ink = |app: &BeeperGuiApp, at: Option<&str>, windows: &[[f32; 4]]| {
+            let mut sim = iced_test::Simulator::with_size(Default::default(), Size::new(1200.0, 800.0), app.view_main());
+            let (x, y) = at.map_or((0.0, 0.0), |t| sim.find(t).map(|f| (f.bounds().x, f.bounds().y)).expect(t));
+            let shot = crate::message::tests::pixels(&mut sim);
+            let at = |[a, b, w, h]: [f32; 4]| crate::focus::tests::ink(&shot, 1200.0, [x + a, y + b, w, h]);
+            windows.iter().map(|&w| at(w)).map(|(r, fg, area)| ([r[0] - x, r[1] - y, r[2], r[3]], fg, area)).collect::<Vec<_>>()
+        };
+        let near = |got: [f32; 4], want: [f32; 4]| (0..4).all(|i| (got[i] - want[i]).abs() <= 0.5);
+        let note = |name: &str| {
+            let mut app = crate::fuzz::demo_app(name);
+            let main = app.main_window.expect("a main window");
+            let _ = app.update(UiMessage::Settings(crate::settings::Msg::SetPref("compactChatList", 1)));
+            let _ = app.update(UiMessage::Window(crate::windows::Msg::Resized(main, Size::new(1200.0, 800.0))));
+            let _ = app.update(UiMessage::SelectChat(beeper_core::store::NOTE_CHAT_ID.into()));
+            app
+        };
+        let mut app = note("composer-remove");
+        let dir = std::env::temp_dir().join(format!("composer-remove-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("notes.txt"), b"hello").unwrap();
+        app.attach_files(vec![portal::load_file(&dir.join("notes.txt"))]);
+        std::fs::remove_dir_all(&dir).unwrap();
+        let [(disc, gray, _), (cross, white, _)] =
+            ink(&app, Some("notes.txt"), &[[123.0, -14.0, 24.0, 24.0], [128.0, -9.0, 14.0, 14.0]])[..]
+        else {
+            unreachable!()
+        };
+        assert!(near(disc, [125.0, -12.0, 20.0, 20.0]) && gray == [0x80; 3], "the disc: {disc:?} {gray:?}");
+        assert!(near(cross, [130.4, -6.6, 9.2, 9.2]) && white == [0xff; 3], "the cross: {cross:?} {white:?}");
+        let mut app = note("composer-edit");
+        let (_, own, _) = app.store.write().send_message(beeper_core::store::NOTE_CHAT_ID, Some("old".into()), None, None).unwrap();
+        let _ = app.update(UiMessage::Composer(Msg::StartEdit(own, "old".into())));
+        let (check, _, area) = ink(&app, None, &[[1156.0, 757.0, 22.0, 20.0]])[0];
+        assert!(near(check, [1159.0, 760.8, 13.95, 10.0]) && (24.0..27.5).contains(&area), "the check: {check:?} {area}");
+        let mut app = note("composer-later");
+        app.pane.send_later = Some((beeper_core::config::now_unix_millis() + 86_400_000, false));
+        let (future, _, _) = ink(&app, None, &[[388.5, 724.5, 20.0, 20.0]])[0];
+        assert!(near(future, [389.07, 725.07, 17.93, 17.93]), "the future icon: {future:?}");
+        let mut app = note("composer-link");
+        let _ = app.update(UiMessage::Composer(Msg::Changed("see https://example.com/a".into())));
+        let page = serde_json::json!({ "og:title": "Example Domain" });
+        app.pane.composer_links = vec![("https://example.com/a".into(), LinkState::Loaded(page, None))];
+        let (link, _, _) = ink(&app, None, &[[394.0, 721.0, 14.5, 16.0]])[0];
+        assert!(near(link, [396.73, 724.73, 8.54, 8.54]), "the link icon: {link:?}");
     }
 
     /// Desktop's `linkOnPaste`: a link pasted over selected text links the text, with `https` for a bare domain, in
