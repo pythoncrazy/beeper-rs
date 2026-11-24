@@ -10528,6 +10528,39 @@ fn the_chat_header_chevron_like_desktop() {
     assert!((4.5..=6.5).contains(&cols) && (7.5..=9.5).contains(&rows), "the chevron's ink: {cols} by {rows}");
 }
 
+/// Desktop's menu icons at 1200x800 (`PopupMenu`): the check column is 14 px with FontAwesome's check at 10 px in its
+/// middle (10 by 7.5), then a 9 px gap; the filter menu's `left-icon` is a 12 px Material icon at `scale(1.2)` 5 px
+/// before the label, so Inbox's path starts 16.4 px before it; a submenu's Feather `ChevronRight` is 1em of the 13 px
+/// row (4.3 by 7.6).
+#[test]
+fn menus_draw_desktop_icons() {
+    let mut app = demo_app("menu-icons");
+    let main = app.main_window.expect("a main window");
+    let _ = app.update(UiMessage::Window(windows::Msg::Resized(main, Size::new(1200.0, 800.0))));
+    let _ = app.update(UiMessage::ChatList(chat_list::Msg::PickFilter(1)));
+    let _ = app.update(UiMessage::ChatList(chat_list::Msg::ToggleFilterMenu));
+    let size = Size::new(1200.0, 800.0);
+    let (all, unread, shot) = {
+        let mut sim = Simulator::with_size(Default::default(), size, app.view_main());
+        let (all, unread) = (sim.find("All").expect("All").bounds(), sim.find("Unread (5)").expect("Unread").bounds());
+        (all, unread, crate::message::tests::pixels(&mut sim))
+    };
+    let ink = |w| crate::focus::tests::ink(&shot, size.width, w).0;
+    let near = |got: [f32; 4], want: [f32; 4]| (0..4).all(|i| (got[i] - want[i]).abs() <= 0.4);
+    let check = ink([unread.x - 42.0, unread.y, 20.0, 18.0]);
+    assert!(near(check, [unread.x - 38.0, unread.y + 5.4, 9.9, 7.4]), "the check: {check:?} by {unread:?}");
+    let inbox = ink([all.x - 20.0, all.y, 20.0, 18.0]);
+    assert!((inbox[0] - (all.x - 16.1)).abs() <= 0.4 && (inbox[2] - 10.1).abs() <= 0.4, "the Inbox icon: {inbox:?} by {all:?}");
+    let _ = app.update(UiMessage::ChatList(chat_list::Msg::ToggleFilterMenu));
+    let id = app.visible_chats(&app.store.read())[3].id.clone();
+    let _ = app.update(UiMessage::ChatList(chat_list::Msg::OpenMenu(id)));
+    let mut sim = Simulator::with_size(Default::default(), size, app.view_main());
+    let copy = sim.find("Copy").expect("the Copy submenu").bounds();
+    let shot = crate::message::tests::pixels(&mut sim);
+    let chevron = crate::focus::tests::ink(&shot, size.width, [copy.x + 193.0, copy.y, 16.0, 18.2]).0;
+    assert!((chevron[2] - 4.3).abs() <= 0.3 && (chevron[3] - 7.6).abs() <= 0.3, "the submenu chevron: {chevron:?}");
+}
+
 /// The pixels of the sign-in window at points of its 330x620 layout.
 fn login_pixels(app: &BeeperGuiApp, points: &[(u32, u32)]) -> Vec<Color> {
     let mut sim = Simulator::with_size(Default::default(), Size::new(330.0, 620.0), app.view_login());

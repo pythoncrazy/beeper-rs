@@ -62,9 +62,8 @@ impl BeeperGuiApp {
         let w = (widest + 2.0 * (5.0 + 8.0 + 1.0) + 14.0 + 9.0).clamp(160.0, 360.0);
         let rows = open.rows.iter().map(|r| match r {
             Row::Option(label, on, msg) => {
-                let check = container(container(on.then(|| ic(icon::CHECK, 10.0))).center_x(14)).padding(Padding::ZERO.right(9.0));
                 let pick = UiMessage::Select(Msg::Pick(msg.clone()));
-                (menu_item(p, Some(check.into()), label.clone(), "", Some(pick)), menu_pitch())
+                (menu_item(p, Some(crate::menu_check(*on)), label.clone(), "", Some(pick)), menu_pitch())
             }
             Row::Rule => (menu_rule(p), MENU_RULE),
         });

@@ -39,6 +39,8 @@ pub mod icon {
     pub const REPLY: char = '\u{f01b}';
     pub const MOOD: char = '\u{f01c}';
     pub const VIEW_SIDEBAR: char = '\u{f01d}';
+    /// FontAwesome's `FaCheck` of the check column of Desktop's menus.
+    pub const TICK: char = '\u{f01e}';
     /// Lucide's `chevron-right`, which is the Feather `ChevronRight` of Desktop's submenu rows.
     pub const CHEVRON: char = '\u{e06f}';
     pub const LINK: char = '\u{e102}';

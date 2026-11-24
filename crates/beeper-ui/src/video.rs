@@ -752,7 +752,7 @@ impl BeeperGuiApp {
     pub(crate) fn view_speed_menu(&self, mid: &str) -> Option<El<'_>> {
         let v = self.menu_video(mid).filter(|v| v.sub)?;
         let p = &self.pal;
-        let lead = |on: bool| Some(container(on.then(|| ic(icon::CHECK, 14.0))).width(22).into());
+        let lead = |on: bool| Some(crate::menu_check(on));
         let rates = crate::voice::RATES.map(|r| {
             let label = if r == 1.0 { tr("Normal").into() } else { format!("{r}x") };
             menu_item(p, lead(v.rate == r), label, "", Some(UiMessage::Video(Msg::Rate(r))))

@@ -938,10 +938,9 @@ impl BeeperGuiApp {
         let p = &self.pal;
         let st = self.store.read();
         let item = |checked: bool, glyph: char, label: String, hotkey: String, bit: u8| -> El<'_> {
-            let lead = row![
-                container(checked.then(|| ic(icon::CHECK, 14.0))).center_x(14),
-                container(ic(glyph, 14.0)).padding(Padding::ZERO.left(9.0).right(4.0)),
-            ];
+            // Desktop's `left-icon`: a 12 px Material icon at `scale(1.2)`, 5 px before the label.
+            let icon = container(crate::lift::shrink(ic(glyph, 12.0), 1.2)).padding(Padding::ZERO.right(5.0));
+            let lead = row![menu_check(checked), icon].align_y(Center);
             menu_item(p, Some(lead.into()), label, hotkey, Some(UiMessage::ChatList(chat_list::Msg::PickFilter(bit))))
         };
         let counted = (0..F_ARCHIVED).map(|i| {
@@ -978,10 +977,10 @@ impl BeeperGuiApp {
         let width = names.iter().map(|n| 104.0 + text_width(n, 13.0, Weight::Normal)).fold(233.0, f32::max);
         let accounts = accounts.into_iter().zip(names).map(|(id, name)| {
             let lead = row![
-                container((self.list().space_view_account.as_ref() == Some(&id)).then(|| ic(icon::CHECK, 14.0))).center_x(14),
-                container(svg(brand_svg(brand_key(&rail_owner(&st, &id)))).width(14).height(14))
-                    .padding(Padding::ZERO.left(9.0).right(4.0)),
-            ];
+                menu_check(self.list().space_view_account.as_ref() == Some(&id)),
+                container(svg(brand_svg(brand_key(&rail_owner(&st, &id)))).width(14).height(14)).padding(Padding::ZERO.right(4.0)),
+            ]
+            .align_y(Center);
             let msg = UiMessage::ChatList(chat_list::Msg::PickAccount(id.clone()));
             menu_item(p, Some(lead.into()), name, "", Some(msg))
         });
@@ -2168,9 +2167,8 @@ impl MenuChats<'_> {
         sorted.sort_by_cached_key(|l| l.name.to_lowercase());
         let rows = sorted.into_iter().map(|l| {
             let on = self.c.label_ids.contains(&l.id);
-            let lead = container(on.then(|| ic(icon::CHECK, 14.0))).width(22).into();
             let msg = UiMessage::Labels(labels::Msg::Toggle(l.id.clone(), targets.clone(), !on));
-            menu_item(p, Some(lead), l.name.clone(), "", Some(msg))
+            menu_item(p, Some(menu_check(on)), l.name.clone(), "", Some(msg))
         });
         let new = chat_item(p, tr("New Label…"), "", Some(UiMessage::Labels(labels::Msg::OpenCreate(targets.clone()))));
         (rows.chain([menu_rule(p), new]).collect(), 1.0)
