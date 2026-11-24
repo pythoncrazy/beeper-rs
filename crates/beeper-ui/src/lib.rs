@@ -30,6 +30,7 @@ mod gallery;
 mod gifs;
 #[cfg(target_os = "linux")]
 mod global_keys;
+mod hairline;
 pub mod hotkeys;
 mod i18n;
 mod idle;
@@ -1192,16 +1193,12 @@ async fn clipboard_paste() -> Result<Clip, String> {
     tokio::task::spawn_blocking(read).await.expect("clipboard task")
 }
 
+/// Desktop's `GroupAvatar` people: the `activeParticipants` (without the members that left) other than the user, in
+/// Desktop's order (`J_e`), all of them up to five, else the first four and the count of the rest. A direct chat
+/// shows the first one.
 fn faces_of(users: &[User], group: bool) -> (Vec<&User>, usize) {
-    let mut others: Vec<&User> = users.iter().filter(|u| u.is_self != Some(true)).collect();
-    let name = |u: &User| {
-        [&u.custom_nickname, &u.full_name, &u.username, &u.email, &u.phone_number]
-            .into_iter()
-            .find_map(|n| n.as_deref().filter(|n| !n.is_empty()))
-            .unwrap_or(&u.id)
-            .to_lowercase()
-    };
-    others.sort_by_cached_key(|u| (u.is_network_bot == Some(true), u.is_admin != Some(true), name(u)));
+    let mut others: Vec<&User> = users.iter().filter(|u| u.is_self != Some(true) && u.has_exited != Some(true)).collect();
+    others.sort_by(|a, b| member_order(a, b));
     let more = if group && others.len() > 5 { others.len() - 4 } else { 0 };
     let shown = if group { others.len() - more } else { others.len().min(1) };
     (others.into_iter().take(shown).collect(), more)
@@ -1398,6 +1395,8 @@ macro_rules! svg_static {
     };
 }
 
+// Desktop's `Link` icon (`be name="link"`) of a link preview's host.
+svg_static!(LINK_ICON, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path d="M12.357 13.536 10 15.893q-1.223 1.222-2.946 1.222t-2.947-1.222q-1.222-1.224-1.222-2.947T4.107 10l2.357-2.357 1.179 1.179-2.357 2.357a2.4 2.4 0 0 0-.737 1.767q0 1.032.737 1.768.736.737 1.768.737 1.03 0 1.767-.737l2.358-2.357zm-4.125-.59-1.178-1.178 4.714-4.714 1.178 1.178zm5.304-.589-1.179-1.178 2.357-2.357a2.4 2.4 0 0 0 .737-1.768 2.4 2.4 0 0 0-.737-1.768 2.4 2.4 0 0 0-1.768-.737q-1.03 0-1.767.737L8.82 7.643 7.643 6.464 10 4.107q1.223-1.222 2.946-1.222t2.947 1.222q1.222 1.224 1.222 2.947T15.893 10z"/></svg>"##);
 // Desktop's `ExternalLinkIcon`, after the network of Chat Info.
 svg_static!(EXTERNAL_LINK, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 8 8"><path d="M1 7L7 1M7 1V5.5M7 1H2.5" fill="none" stroke="#000" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>"##);
 svg_static!(CHEVRON_LEFT, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="m15 18-6-6 6-6" fill="none" stroke="#000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>"##);
@@ -3300,19 +3299,13 @@ impl BeeperGuiApp {
         let matrix = ("hungryserv".to_string(), beeper_core::matrix::matrix_capabilities());
         let resolve = resolve.chain([matrix]).collect();
         drop(st);
-        let sidebar_width = match std::fs::read_to_string(store.read().config.data_dir.join("sidebar-width")) {
-            Ok(w) => w.parse().expect("a numeric sidebar width"),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => SIDEBAR_WIDTH,
-            Err(e) => panic!("read the sidebar width: {e}"),
-        };
+        // A saved value that does not read or parse, like one edited by hand, gives the default instead of no start.
+        let saved = |name: &str| std::fs::read_to_string(store.read().config.data_dir.join(name)).ok();
+        let sidebar_width = saved("sidebar-width").and_then(|w| w.trim().parse().ok()).unwrap_or(SIDEBAR_WIDTH);
         let thread_fraction = threads::saved_thread_fraction(&store.read().config.data_dir);
         let filters = chat_list::saved_filters(&store.read().config.data_dir);
         let audio = voice::Player::new(&store.read().config.data_dir);
-        let sidebar_hidden = match std::fs::read_to_string(store.read().config.data_dir.join("sidebar-hidden")) {
-            Ok(h) => h.parse().expect("a boolean sidebar-hidden"),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
-            Err(e) => panic!("read sidebar-hidden: {e}"),
-        };
+        let sidebar_hidden = saved("sidebar-hidden").and_then(|h| h.trim().parse().ok()).unwrap_or(false);
         let quit_on_close = store.read().settings.on("quitOnClose");
         let mut app = with_defaults!(Self {
             pane: Pane { size: MAIN_SIZE, ..Pane::default() },

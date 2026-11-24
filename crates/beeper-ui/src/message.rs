@@ -2635,7 +2635,8 @@ impl BeeperGuiApp {
     ) -> El<'a> {
         let p = &self.pal;
         let ts = shows_time.then(|| format_short_ts(&m.timestamp, st.settings.pref("timeFormat") == 1));
-        let room = ts.as_deref().map_or(0.0, |t| crate::style::fixed_width(t, 11.0, Weight::Normal) + 4.0);
+        // `MessageReadableMetadata`: an inline-block 6 px (`--dimension-300`) after the text, its items 6 px apart.
+        let room = ts.as_deref().map_or(0.0, |t| crate::style::fixed_width(t, 11.0, Weight::Normal) + 6.0);
         // `.MessageReadableMetadata-module__readableMetadata`: `--color-on-surface-variant`, or the text color of a sent
         // bubble at 0.8.
         let time: Option<El<'a>> =
@@ -2670,8 +2671,8 @@ impl BeeperGuiApp {
                     0 => (room, time),
                     n => {
                         let meta = row![].push(bookmark).push(reminder).push(time).push(timer);
-                        let meta = meta.spacing(4).align_y(Center);
-                        (room + 14.0 * n as f32, Some(meta.into()))
+                        let meta = meta.spacing(6).align_y(Center);
+                        (room + 16.0 * n as f32, Some(meta.into()))
                     }
                 }
             }
@@ -2832,24 +2833,27 @@ impl BeeperGuiApp {
             _ => (blocks, None),
         };
         let (mut prev_item, last) = (None, blocks.len().saturating_sub(1));
-        let nbsp = crate::style::text_width("\u{a0}", 13.0, Weight::Normal);
-        let pad = "\u{a0}".repeat((room / nbsp).ceil() as usize);
         // Desktop's `message-text--balanced`: CSS `text-wrap: balance`, then the bubble shrinks to its widest line.
         // A message with block HTML wraps as usual. A wrapped message without balance takes the whole width.
-        // The layout lets trailing spaces hang past the width, so the room of the time is measured with digits.
-        let zero = crate::style::text_width("0", 13.0, Weight::Normal);
-        let padded = format!("{}\u{2060}{}", crate::style::chromium_breaks(text), "0".repeat((room / zero).ceil() as usize));
+        // The time's inline-block (`room`) has a break before it: it ends the last line when it fits there, and else
+        // takes a line of its own.
+        let flat = crate::style::chromium_breaks(text);
+        let trails = |w: f32| room > 0.0 && crate::style::trails(&flat, w, 13.0, room);
         let blocks_html = m.html.as_deref().is_some_and(|h| BLOCK_TAGS.iter().any(|t| h.contains(&format!("<{t}"))));
-        let width = match code_w > 0.0 || crate::style::wraps(&padded, max, 13.0) {
+        let width = match code_w > 0.0 || crate::style::wraps(&flat, max, 13.0) || trails(max) {
             _ if code_w > 0.0 => {
                 let lines = blocks.iter().filter(|b| !b.6).flat_map(|b| b.2.lines());
                 let text_w = lines.map(|l| crate::style::text_width(l, 13.0, Weight::Normal)).fold(0.0, f32::max);
                 Length::Fixed(code_w.max(text_w).min(max))
             }
             false => Length::Shrink,
-            true if st.settings.on("balanceText") && !blocks_html => Length::Fixed(crate::style::balanced_width(&padded, max, 13.0)),
+            true if st.settings.on("balanceText") && !blocks_html => Length::Fixed(crate::style::balanced_width(&flat, max, 13.0, room)),
             true => Length::Fixed(max),
         };
+        let own_line = trails(if let Length::Fixed(w) = width { w } else { max });
+        // The room of the time on the last line: a no-break space as wide as it.
+        let nbsp = crate::style::text_width("\u{a0}", 13.0, Weight::Normal);
+        let pad = (room > 0.0 && !own_line).then(|| span("\u{a0}").size(rem(13.0)).font(spaced(Weight::Normal, (room - nbsp) / rem(13.0))));
         // Desktop's `ol` indent: `max(1.8em, var(--ol-number-digits) * 1ch + 0.65em)`, with the digits of its
         // longest number.
         let digits = blocks.iter().filter_map(|b| b.0.as_deref()?.strip_suffix('.')).map(str::len).max().unwrap_or(1);
@@ -2862,8 +2866,8 @@ impl BeeperGuiApp {
                 if spans.last().is_some_and(|s| s.text.ends_with('\n')) {
                     spans.push(span("\u{200b}").size(rem(13.0)));
                 }
-                if i == last && room > 0.0 {
-                    spans.push(span(pad.clone()).size(rem(13.0)));
+                if i == last {
+                    spans.extend(pad.clone());
                 }
                 let id = m.id.clone();
                 let tipped = tipped_links(&spans, m.html.is_some());
@@ -2912,10 +2916,13 @@ impl BeeperGuiApp {
         let start = if rtl { Right } else { iced::Left };
         let body = Column::with_children(quotes(items, 0, p.strong)).width(width).align_x(start);
         let cut = cut.map(|(t, left)| txt(cut_lines(&t, max, left), 13.0).color(fg).wrapping(iced::widget::text::Wrapping::WordOrGlyph));
-        let body = stack![column![body].push(cut).align_x(start)].push(time.map(|t| match rtl {
-            true => container(t).align_left(Fill).align_bottom(Fill),
-            false => container(t).align_right(Fill).align_bottom(Fill),
-        }));
+        // The time at the end of the line where its box is: the last line, which it makes 18 px high
+        // (`--semantic-typo-line-height-body-md`) where the text's lines are 16, or a line of its own.
+        let side = |t: El<'a>| if rtl { container(t).align_left(Fill) } else { container(t).align_right(Fill) };
+        let (over, own) = if own_line { (None, time) } else { (time, None) };
+        let tall = Padding::ZERO.bottom(if over.is_some() { 2.0 } else { 0.0 });
+        let body = stack![column![body].push(cut).align_x(start)].push(over.map(|t| side(t).align_bottom(Fill)));
+        let body = column![container(body).padding(tall)].push(own.map(|t| side(t).center_y(18)));
         // Desktop's `read-more-button`: the primary color, white on a sent bubble, with the time at its end.
         let more = clamp.map(|_| {
             let label = semi(if open { tr("Show less") } else { tr("Show more") }, 14.0);
@@ -4727,7 +4734,8 @@ pub(crate) mod tests {
     }
 
     /// Desktop's bubble of a long URL in a window 1200 px wide: Chromium breaks it after its `-` and `?` and else at
-    /// the edge, into 7 lines that it does not balance, so the bubble is 540 px wide (measured in Desktop 4.3.308).
+    /// the edge, into 7 lines that it does not balance, so the bubble is 540 px wide and 130 px high (measured in
+    /// Desktop 4.3.308).
     #[test]
     fn long_url_bubbles_keep_chromiums_lines_like_desktop() {
         let mut app = crate::fuzz::demo_app("url-bubble");
@@ -4744,7 +4752,7 @@ pub(crate) mod tests {
             (bubble.iter().map(f).max().expect("a bubble") + 1 - bubble.iter().map(f).min().expect("a bubble")) / 2
         };
         assert_eq!(span(|p| p.0), 540, "the bubble's width");
-        assert_eq!(span(|p| p.1), 7 * 16 + 2 * 8, "7 lines of 16 px in the 8 px padding");
+        assert_eq!(span(|p| p.1), 6 * 16 + 18 + 2 * 8, "6 lines of 16 px and the time's line of 18 in the 8 px padding");
     }
 
     /// Desktop's quote of your own message in the light theme is a white box with the border of your bubbles and its
@@ -6049,5 +6057,50 @@ pub(crate) mod tests {
         pref(&mut app, 1);
         let _ = app.update(UiMessage::Message(Msg::DoubleClick(mid.clone())));
         assert!(app.pane.emoji.is_some(), "React opens the picker");
+    }
+
+    /// A sent text bubble with `text`, at a pane `pane` px wide, in a view wide enough for any bubble: the bounds of
+    /// its fill, and the bounds of its time.
+    fn sent_bubble(app: &mut BeeperGuiApp, text: &str, pane: f32) -> (Rectangle, Rectangle) {
+        let mid = app
+            .store
+            .read()
+            .messages
+            .iter()
+            .find(|m| m.is_sender == Some(true) && m.text.is_some() && m.attachments.is_empty())
+            .unwrap()
+            .id
+            .clone();
+        change(app, &mid, |m| (m.text, m.reactions, m.links, m.linked_message_id) = (Some(text.into()), Default::default(), vec![], None));
+        app.pane.size = Size::new(pane, 700.0);
+        let st = app.store.read();
+        let m = st.message(&mid);
+        let time = format_short_ts(&m.timestamp, false);
+        let view = app.view_message(&st, st.chat(&m.chat_id), &[m], (true, true, Chain::default(), false, false), (None, 0), Column::new());
+        let settings = iced::Settings { default_font: crate::style::fw(Weight::Normal), ..Default::default() };
+        let mut sim = iced_test::Simulator::with_size(settings, Size::new(1000.0, 300.0), view);
+        let at = sim.find(time.as_str()).expect("the time").bounds();
+        let shot = pixels(&mut sim);
+        let fill: Vec<(u32, u32)> = shot.enumerate_pixels().filter(|(_, _, p)| p[2] > 200 && p[0] < 90).map(|(x, y, _)| (x, y)).collect();
+        let (x0, y0) = (fill.iter().map(|f| f.0).min().unwrap(), fill.iter().map(|f| f.1).min().unwrap());
+        let (x1, y1) = (fill.iter().map(|f| f.0).max().unwrap() + 1, fill.iter().map(|f| f.1).max().unwrap() + 1);
+        (Rectangle::new(Point::new(x0 as f32 / 2.0, y0 as f32 / 2.0), Size::new((x1 - x0) as f32 / 2.0, (y1 - y0) as f32 / 2.0)), at)
+    }
+
+    /// Desktop's `MessageReadableMetadata`: an inline-block 6 px after the text, with a break before it, on a last
+    /// line 18 px high. In Desktop 4.3.308 "Sure thing!" is 66.484 px wide, so its bubble is 22 + 66.484 + 6 px
+    /// wider than its time, which starts 11 + 66.484 + 6 px in, on a bubble 34 px high. In a bubble 224.2 px wide,
+    /// "Sure thing, see you there" (154.02 px) still fits its line but the time does not: the time takes a line of
+    /// its own at the right, and the bubble is 50 px high.
+    #[test]
+    fn bubble_times_sit_where_desktop_puts_them() {
+        let mut app = crate::fuzz::demo_app("bubble-times");
+        let (bubble, time) = sent_bubble(&mut app, "Sure thing!", 1000.0);
+        let near = |a: f32, b: f32| (a - b).abs() <= 0.5;
+        assert!(near(bubble.width, 22.0 + 66.484 + 6.0 + time.width), "{bubble:?} {time:?}");
+        assert!(near(time.x - bubble.x, 11.0 + 66.484 + 6.0) && bubble.height == 34.0, "{bubble:?} {time:?}");
+        let (bubble, time) = sent_bubble(&mut app, "Sure thing, see you there", 224.2 / 0.45);
+        assert!(near(bubble.width, 224.2) && bubble.height == 50.0, "{bubble:?}");
+        assert!(near(bubble.x + bubble.width - 11.0, time.x + time.width) && time.y - bubble.y == 26.0, "{bubble:?} {time:?}");
     }
 }
