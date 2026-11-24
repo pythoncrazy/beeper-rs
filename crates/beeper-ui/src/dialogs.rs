@@ -18,6 +18,9 @@ use beeper_core::prefs;
 use iced::widget::{column, operation};
 use iced::{border, mouse, window};
 
+/// Desktop's Blocked users sheet, `q0e(342, 488)`.
+const BLOCKED_SIZE: Size = Size::new(342.0, 488.0);
+
 /// Desktop's `cR`: the icon of a new label.
 pub(crate) const DEFAULT_LABEL_ICON: &str = "3257-5964";
 
@@ -1390,16 +1393,40 @@ impl BeeperGuiApp {
         if let Some(id) = self.blocked_window {
             return self.raise(id);
         }
-        let (id, open) = self.open_child(Size::new(342.0, 488.0));
+        let (id, open) = self.open_child(BLOCKED_SIZE);
         self.blocked_window = Some(id);
         open
     }
 
-    /// A blocked person of the Blocked users window: their chat opens with its Chat Info in the main window.
+    /// Desktop's `DCt`: a blocked person of the Blocked users window opens a 346 by 548 sheet over the list, once for
+    /// each chat, with the Chat Info of their chat.
     pub(crate) fn open_blocked_user(&mut self, id: String) -> Task<UiMessage> {
-        self.show_right_panel = true;
-        let main = self.main_window.expect("the main window is open");
-        self.update(UiMessage::SelectChat(id)).chain(self.raise(main))
+        if let Some(&(w, _)) = self.chat_windows.iter().find(|w| w.1.blocked_sheet && w.1.selected_chat_id.as_ref() == Some(&id)) {
+            return self.raise(w);
+        }
+        self.store.write().load_chat(&id);
+        let size = Size::new(346.0, 548.0);
+        let settings = window::Settings { resizable: false, min_size: None, ..Self::window_settings(size) };
+        let list = self.blocked_window.map(|w| (w, BLOCKED_SIZE));
+        let (w, open) = self.open_over(settings, list);
+        let pane = Pane { selected_chat_id: Some(id), info: true, blocked_sheet: true, size, ..Pane::default() };
+        self.chat_windows.push((w, pane));
+        open
+    }
+
+    /// Desktop's `ACt` closes the sheet of a person who is no longer blocked.
+    pub(crate) fn close_unblocked_sheets(&self) -> Task<UiMessage> {
+        Task::batch(self.unblocked_sheets().into_iter().map(|w| self.close_window(w)))
+    }
+
+    /// The sheets of blocked people whose chat is gone or no longer blocked.
+    pub(crate) fn unblocked_sheets(&self) -> Vec<window::Id> {
+        let st = self.store.read();
+        let unblocked = |pane: &Pane| {
+            let chat = pane.selected_chat_id.as_deref().and_then(|c| st.resolve_chat_idx(c));
+            !chat.is_some_and(|i| st.user_blocked(&st.chats[i]))
+        };
+        self.chat_windows.iter().filter(|w| w.1.blocked_sheet && unblocked(&w.1)).map(|w| w.0).collect()
     }
 
     /// Desktop's `ICt`: the blocked people by name, or "No Blocked Users", and Done.

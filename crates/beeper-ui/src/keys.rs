@@ -155,6 +155,10 @@ impl BeeperGuiApp {
         if self.modal_at(id).is_some() {
             return self.modal_key(id, &key);
         }
+        // `DCt.onEscapePressed` closes the sheet of a blocked person.
+        if key == Key::Named(Named::Escape) && self.chat_windows.iter().any(|w| w.0 == id && w.1.blocked_sheet) {
+            return self.close_window(id);
+        }
         if self.enter_key.window == Some(id) {
             return self.enter_key_key(key);
         }

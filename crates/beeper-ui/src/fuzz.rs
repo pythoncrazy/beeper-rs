@@ -7610,7 +7610,30 @@ fn blocked_users_like_desktop() {
     let picked: Vec<UiMessage> = { clicks(app.view_blocked_users(), title.as_str()) };
     assert!(matches!(&picked[..], [UiMessage::Blocking(blocking::Msg::OpenUser(c))] if *c == id));
     let _ = app.update(UiMessage::Blocking(blocking::Msg::OpenUser(id.clone())));
-    assert!(app.pane.selected_chat_id.as_deref() == Some(id.as_str()) && app.show_right_panel);
+    // Desktop's `BlockedUserInfoBrowserWindow`: a sheet of its own with the chat's Chat Info, not the chat.
+    let sheet = |app: &BeeperGuiApp| app.chat_windows.iter().find(|w| w.1.blocked_sheet).map(|w| w.0);
+    let w = sheet(&app).expect("the sheet opens");
+    assert_ne!(app.pane.selected_chat_id.as_deref(), Some(id.as_str()), "the main window keeps its chat");
+    assert_eq!(app.title(w), title);
+    let _ = app.update(UiMessage::Blocking(blocking::Msg::OpenUser(id.clone())));
+    assert_eq!(app.chat_windows.iter().filter(|w| w.1.blocked_sheet).count(), 1, "a second click raises the sheet");
+    app.drawing.set(Some(w));
+    let done: Vec<UiMessage> = clicks(app.view_info(), "Done");
+    app.drawing.set(None);
+    assert!(matches!(&done[..], [UiMessage::Blocking(blocking::Msg::CloseUser(c))] if *c == id));
+    {
+        let mut st = app.store.write();
+        let i = st.resolve_chat_idx(&id).expect("the DM");
+        st.update_chat(i, |c| c.block = BLOCK_USER);
+    }
+    assert_eq!(app.unblocked_sheets(), [w], "an unblocked person's sheet closes");
+    let _ = app.update(UiMessage::Window(windows::Msg::Closed(w)));
+    assert!(sheet(&app).is_none());
+    {
+        let mut st = app.store.write();
+        let i = st.resolve_chat_idx(&id).expect("the DM");
+        st.update_chat(i, |c| c.block = BLOCK_USER | USER_BLOCKED);
+    }
     assert!(simulator(app.view_settings()).find("1").is_ok(), "the row counts the blocked people");
 }
 

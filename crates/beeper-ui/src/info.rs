@@ -284,6 +284,14 @@ impl BeeperGuiApp {
             .padding(Padding::new(8.0).top(0.0));
         let scroll = scrollable(body).direction(bar()).style(scroll_style(p.scroll)).height(Fill);
         let card = |body| container(body).height(Fill).style(fill_box(p.card, 10.0));
+        if self.pane().blocked_sheet {
+            // `ACt`: `Tj` without its actions (`showActions: false`) fills the sheet over a footer with Done.
+            let close = UiMessage::Blocking(blocking::Msg::CloseUser(cid.clone()));
+            let footer =
+                container(done_btn(p).on_press(close)).align_right(Fill).padding(Padding::new(10.0).left(12.0).right(12.0).bottom(12.0));
+            let info = container(scroll).width(Fill).height(Fill).style(fill_box(p.card, 10.0));
+            return container(column![info, footer]).width(Fill).height(Fill).style(fill_box(p.elevated, 0.0)).into();
+        }
         match self.pane().info {
             // Desktop's `thread-info--detached` fills its `--left-pane-bg` window inside 8 px: the rounded card is
             // `thread-info-inner`, and the toolbar, its sibling, is a square strip under it.
