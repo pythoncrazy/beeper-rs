@@ -985,7 +985,9 @@ impl BeeperGuiApp {
         let formats = if st.settings.on("formattingMenu") { chat.formatting } else { 0 };
         let input = self.with_formatting(input, formats);
         let line = row![net, input, inline].align_y(Bottom).padding(Padding::new(0.0).left(14.0).right(6.5));
-        let plus_icon = tinted(&COMPOSER_ICONS[usize::from(self.pane().show_attach_menu)], 20.0, p.muted);
+        // `.ComposerHiddenActions-module__toggle svg` is `--color-on-tertiary-container`, the same gray as the
+        // on-secondary-container of the emoji and voice buttons.
+        let plus_icon = tinted(&COMPOSER_ICONS[usize::from(self.pane().show_attach_menu)], 20.0, p.on_secondary);
         let toggle = button(container(plus_icon).center(36))
             .padding(0)
             .style(btn_style([p.input, p.hover, p.selected], [p.text; 3], 18.0))
@@ -2154,6 +2156,23 @@ impl BeeperGuiApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `.ComposerHiddenActions-module__toggle`: the + is the bluish gray `--color-on-tertiary-container`, like the
+    /// emoji button, not the neutral `--color-on-surface-variant`.
+    #[test]
+    fn the_add_button_like_desktop() {
+        let mut app = crate::fuzz::demo_app("add-button");
+        let _ = app.update(UiMessage::SelectChat(beeper_core::store::NOTE_CHAT_ID.into()));
+        (app.dark, app.pal) = (true, crate::style::palette(true, None, 0));
+        let st = app.store.read();
+        let view = app.view_composer(&st, st.chat(beeper_core::store::NOTE_CHAT_ID));
+        let mut sim = iced_test::Simulator::with_size(Default::default(), Size::new(600.0, 52.0), view);
+        let shot = crate::message::tests::pixels(&mut sim);
+        // The brightest pixel of the 20 px + in the 36 px button 8 px from the left, at the scale of 2 of the shot.
+        let ink = (32..72).flat_map(|x| (32..72).map(move |y| (x, y))).map(|(x, y)| shot.get_pixel(x, y).0);
+        let ink = ink.max_by_key(|px| px[0]).expect("the + pixels");
+        assert!(ink[0] > 120 && ink[2] > ink[0], "{ink:?}");
+    }
 
     /// Desktop's `linkOnPaste`: a link pasted over selected text links the text, with `https` for a bare domain, in
     /// a chat whose messages take links. Without a selection, or with more than a link, the text goes in as it is.

@@ -1004,8 +1004,8 @@ palette! {
     input_active: Color = hex(0xc7c7c7), hex(0x505050);
     /// `--bubble-out-bg`.
     sent: Color = hex(0x0d4ffb), hex(0x2561fb);
-    /// `--color-text-on-accent-weak`: the metadata of sent bubbles.
-    sent_meta: Color = hexa(0xffffff, 0.7), hexa(0xffffff, 0.7);
+    /// The metadata of sent bubbles: `--bubble-out-fg` at the 0.8 opacity of `MessageReadableMetadata-module__isSender`.
+    sent_meta: Color = hexa(0xffffff, 0.8), hexa(0xffffff, 0.8);
     /// `--bubble-out-fg`.
     sent_fg: Color = hex(0xffffff), hex(0xffffff);
     /// `--color-secondary-container`: received bubbles.
