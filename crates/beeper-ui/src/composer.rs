@@ -11,7 +11,7 @@ use crate::vcard::parse_vcard;
 use crate::{
     account_display_name, account_user, anim, can_broadcast, clipboard_paste, contact_card, dashed, default_account_user, emoji, format,
     hotkey_key, images, portal, removable, several_accounts, switch_targets, text_urls, toasts, truncate, Clip, MenuEdit, Picker, Queued,
-    FILE_ICONS, LINK_ICON, OUTLINE_CHECK, SEND_ARROW,
+    LINK_ICON, MATERIAL, OUTLINE_CHECK, SEND_ARROW,
 };
 use beeper_core::models::*;
 use beeper_core::prefs;
@@ -1518,7 +1518,7 @@ impl BeeperGuiApp {
             let meta = ext.into_iter().chain([human_size(pm.bytes.len() as u64)]).collect::<Vec<_>>();
             let name = clamp(&pm.name, 190.0, 2, 11.0, Weight::Semibold).line_height(lh(14.0));
             let info = column![name, txt(meta.join(" ・ "), 11.0)].spacing(4);
-            let icon = &FILE_ICONS[if pm.mime.starts_with("audio") { 3 } else { 0 }];
+            let icon = &MATERIAL[if pm.mime.starts_with("audio") { "audio_file" } else { "draft" }];
             let line = row![tinted(icon, 20.0, p.strong), info].spacing(8).align_y(Center);
             container(column![line, Space::new().width(158)]).max_width(240).padding([8, 11]).style(fill_box(p.chip, 17.0)).into()
         } else {

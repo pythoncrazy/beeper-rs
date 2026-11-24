@@ -407,7 +407,7 @@ impl BeeperGuiApp {
         let label = semi(trn("%d reply", "%d replies", n, &[&n]), 10.0).line_height(lh(12.0)).color(p.fg);
         let (unread, at) = if st.follows_thread(chat, root) { st.thread_unread(chat, root) } else { (0, 0) };
         let badge = thread_badge(p.accent, unread, at);
-        let chevron = container(tinted(&CHEVRON_FORWARD, 14.0, p.tertiary)).padding(Padding::ZERO.right(2.0));
+        let chevron = container(crate::material("chevron_forward", 14.0, p.tertiary)).padding(Padding::ZERO.right(2.0));
         let line = Row::with_children(faces).push(label).push(badge).push(chevron).spacing(4).align_y(Center);
         let ring = if self.wallpaper_fg(st, chat, false).is_some() { CLEAR } else { p.card };
         let b = button(line)

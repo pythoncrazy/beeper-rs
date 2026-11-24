@@ -432,7 +432,7 @@ fn action_button<'a>(p: &crate::style::Palette, b: &ActionButton, press: Option<
     let icon = b.icon.as_deref().and_then(|n| BUTTON_ICONS.get(n)).map(|h| tinted(h, 14.0, shown(p.main_text)));
     let label = semi(b.label.clone(), 13.0).line_height(1.0).color(shown(p.main_text));
     // Desktop's `chevron-compact-right`, the Material `chevron_forward` of 14 px.
-    let chevron = (b.action == ButtonAction::Link).then(|| tinted(&CHEVRON_FORWARD, 14.0, shown(p.tertiary)));
+    let chevron = (b.action == ButtonAction::Link).then(|| crate::material("chevron_forward", 14.0, shown(p.tertiary)));
     let content = row![].push(icon).push(label).push(chevron).spacing(6).align_y(Center);
     let (alpha, bg) = if loading { (0.5, p.main_muted) } else { (1.0, p.bg_secondary) };
     let spinner = loading.then(|| container(button_spinner(14.0, p.main_text.scale_alpha(alpha))).center(Fill));
@@ -1477,7 +1477,7 @@ impl BeeperGuiApp {
         // Desktop's `thread-header-left`, `thread-header-name` and `thread-header-status` are `.redacted-region`s.
         let name = crate::style::region(true, || semi(short_title(chat).to_string(), 13.0).line_height(lh(16.0)).color(p.fg));
         // Desktop's `thread-header-name-chevron`: the Material `chevron_forward` in a 14 px box, drawn at `scale(1.2)`.
-        let chevron = lift::shrink(tinted(&CHEVRON_FORWARD, 14.0, p.tertiary), 1.2);
+        let chevron = crate::material("chevron_forward", 14.0, p.tertiary);
         let name_row = row![name].push(timer).push(chevron).spacing(2).align_y(Center);
         // Desktop's `thread-header-status`: the activity of the other person of a 1:1 chat under the name.
         let typing = st.typing.get(cid).filter(|ids| chat.chat_type == "single" && ids.len() == 1);
@@ -3264,7 +3264,7 @@ impl BeeperGuiApp {
         let (text, sub) = (p.text.scale_alpha(0.6), p.sub.scale_alpha(0.6));
         let info =
             column![med(name.to_string(), 13.0).color(text)].push((!meta.is_empty()).then(|| txt(meta.join(" ・ "), 11.0).color(sub)));
-        row![tinted(file_icon(a), 20.0, text), info].spacing(8).align_y(Center).into()
+        row![tinted(&crate::MATERIAL[file_icon(a)], 20.0, text), info].spacing(8).align_y(Center).into()
     }
 
     /// Desktop's `TimelineNote`: a centered line of the timeline.
@@ -3329,11 +3329,11 @@ impl BeeperGuiApp {
             FileState::Fetching => (file_row_spinner(p.weak), None),
             FileState::Unfetched => {
                 let url = self.needs_download(a).expect("an unfetched attachment needs a download").clone();
-                (tinted(&crate::MAT_DOWNLOAD, 24.0, p.accent), Some(UiMessage::Loaded(loads::Msg::Fetch(url))))
+                (crate::material("download", 24.0, p.accent), Some(UiMessage::Loaded(loads::Msg::Fetch(url))))
             }
             // Desktop's `onOpenPreview`: a PDF opens in the carousel.
             FileState::Ready => (
-                tinted(file_icon(a), 24.0, p.text),
+                crate::material(file_icon(a), 24.0, p.text),
                 Some(match a.src_url.is_some() && crate::pdf::is_pdf(a) {
                     true => UiMessage::Media(media_view::Msg::OpenCarousel(m.id.clone(), ai, false)),
                     false => UiMessage::Message(Msg::Download(m.id.clone(), Some(ai))),
@@ -4524,6 +4524,67 @@ pub(crate) mod tests {
             st.update_message(i, |m| m.is_deleted = Some(true));
         }
         assert!(!shown(&app, "Label tips"), "a deleted message has no buttons");
+    }
+
+    /// Desktop's message icons at 1200x800: a file row's Material icon in its 24 px box at `scale(1.2)` (19.2 by 24
+    /// for a document), the `chevron-compact-right` of a link button and of a thread's replies button in their 14 px
+    /// box at `scale(1.2)` (5.2 by 8.4, less the antialiased tips), and the chat row's `MessageSentIcon` and
+    /// `MessageReadIcon` paths, whose covered areas set them apart from look-alike strokes.
+    #[test]
+    fn message_icons_like_desktop() {
+        let shot = |app: &BeeperGuiApp, at: &str| {
+            let mut sim = iced_test::Simulator::with_size(Default::default(), Size::new(1200.0, 800.0), app.view_main());
+            let b = sim.find(at).map(|f| f.bounds()).unwrap_or_else(|_| panic!("{at}"));
+            (pixels(&mut sim), b.x, b.y)
+        };
+        let ink = |shot: &::image::RgbaImage, w| crate::focus::tests::ink(shot, 1200.0, w);
+        let near = |got: f32, want: f32, by: f32| (got - want).abs() <= by;
+        let mut app = crate::fuzz::demo_app("message-icons");
+        let main = app.main_window.expect("a main window");
+        let _ = app.update(UiMessage::Window(crate::windows::Msg::Resized(main, Size::new(1200.0, 800.0))));
+        let _ = app.update(UiMessage::SelectChat("!tg_rust:beeper.com".into()));
+        let (s, x, y) = shot(&app, "beeper-v4-spec.pdf");
+        let (file, fg, _) = ink(&s, [x - 35.0, y - 1.0, 30.0, 30.0]);
+        assert!(near(file[2], 19.2, 0.5) && near(file[3], 24.0, 0.5) && fg == [0x17; 3], "the document icon: {file:?} {fg:?}");
+        app.select_chat("!sl_infra:beeper.com");
+        let (s, x, y) = shot(&app, "4 replies");
+        let (chevron, _, _) = ink(&s, [x + 65.0, y - 3.0, 14.0, 16.0]);
+        assert!(near(chevron[2], 5.2, 0.6) && near(chevron[3], 8.4, 0.6), "the replies chevron: {chevron:?}");
+        let chat = |app: &BeeperGuiApp, title: &str| {
+            app.visible_chats(&app.store.read()).iter().find(|c| c.title == title).expect(title).id.clone()
+        };
+        let family = chat(&app, "Family");
+        let _ = app.store.write().send_message(&family, Some("sent probe".into()), None, None).unwrap();
+        let twir = chat(&app, "This Week in Rust");
+        let (_, mid, _) = app.store.write().send_message(&twir, Some("read probe".into()), None, None).unwrap();
+        {
+            let mut st = app.store.write();
+            let i = st.loaded_idx(&mid).expect("the message");
+            st.update_message(i, |m| _ = m.seen.insert("@someone:beeper.com".into(), String::new()));
+        }
+        for (text, area) in [("sent probe", 34.2), ("read probe", 46.2)] {
+            let (s, x, y) = shot(&app, text);
+            let (receipt, _, got) = ink(&s, [x - 18.0, y, 16.0, 16.0]);
+            assert!(near(receipt[2], 12.0, 0.3) && near(got, area, 1.0), "the receipt of {text}: {receipt:?} {got}");
+        }
+        {
+            let mut st = app.store.write();
+            let m = st.messages[*st.timeline_indices(crate::NOTE_CHAT_ID).last().expect("a message")].clone();
+            let url = "beeper://tips/add-account".into();
+            let b = ActionButton { id: "tips".into(), label: "Label tips".into(), action: ButtonAction::Link, url, icon: None };
+            st.upsert_message(Message {
+                id: "$tip".into(),
+                sender_id: "@:beeper.local".into(),
+                is_sender: Some(false),
+                buttons: vec![b],
+                ..m
+            });
+        }
+        let _ = app.update(UiMessage::SelectChat(crate::NOTE_CHAT_ID.into()));
+        // The timeline's texts are not found where they draw, so the chevron's window is that of the snapshot.
+        let (s, _, _) = shot(&app, "Label tips");
+        let (chevron, _, _) = ink(&s, [404.0, 714.0, 14.0, 18.0]);
+        assert!(near(chevron[2], 5.2, 0.6) && near(chevron[3], 8.4, 0.6), "the link button's chevron: {chevron:?}");
     }
 
     /// HTML's `dir="auto"` takes the direction of the first strong character.
