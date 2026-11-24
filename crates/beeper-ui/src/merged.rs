@@ -33,7 +33,7 @@ impl BeeperGuiApp {
             }
             Msg::Ask(id) => {
                 self.list.chat_menu = None;
-                (self.confirm, self.delete_target) = (Some(ASK_UNMERGE), Some(id));
+                self.confirm = Some(Confirm::Unmerge(id));
                 Task::none()
             }
             Msg::Unmerge(id) => {

@@ -24,7 +24,7 @@ pub enum Msg {
     Revoke(String),
     /// The Remote Access toggle, which asks before it turns on.
     RemoteAccess(bool),
-    RevokeConfirmed,
+    RevokeConfirmed(String),
     /// The "+" of Approved connections opens the token dialog, and Escape closes it.
     Add(bool),
     AddName(String),
@@ -95,8 +95,8 @@ impl BeeperGuiApp {
                 return self.close_modal(Modal::TokenRequest);
             }
             Msg::Close => return self.close_modal(Modal::TokenRequest),
-            Msg::Revoke(id) => (self.integrations.revoke, self.confirm) = (Some(id), Some(ASK_REVOKE_CONNECTION)),
-            Msg::RemoteAccess(true) if self.confirm != Some(ASK_REMOTE_ACCESS) => self.confirm = Some(ASK_REMOTE_ACCESS),
+            Msg::Revoke(id) => self.confirm = Some(Confirm::RevokeConnection(id)),
+            Msg::RemoteAccess(true) if self.confirm != Some(Confirm::RemoteAccess) => self.confirm = Some(Confirm::RemoteAccess),
             Msg::RemoteAccess(on) => {
                 self.confirm = None;
                 self.patch_settings(|s| s.remote_access = on);
@@ -105,9 +105,9 @@ impl BeeperGuiApp {
                     false => "Remote Access will be disabled after relaunch",
                 });
             }
-            Msg::RevokeConfirmed => {
+            Msg::RevokeConfirmed(id) => {
                 self.confirm = None;
-                self.store.write().revoke_token(&self.integrations.revoke.take().expect("a connection to revoke"));
+                self.store.write().revoke_token(&id);
             }
             // Desktop's `setVisibleModal(ADD_BEEPER_CONNECT_TOKEN)` from Settings: its window over Settings.
             Msg::Add(true) => {

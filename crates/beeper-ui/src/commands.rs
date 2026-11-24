@@ -746,17 +746,17 @@ impl BeeperGuiApp {
             v.push(cmd("UI", title, Some(UiMessage::Settings(settings::Msg::SelectTheme(theme)))).keys(&["dark", "light", "color"]));
         }
         if self.selection.is_empty() {
-            v.push(cmd(CHATS, tr("Archive all chats"), Some(UiMessage::Ask(Some(ASK_ARCHIVE_ALL)))));
-            v.push(cmd(CHATS, tr("Archive all chats older than a week"), Some(UiMessage::Ask(Some(ASK_ARCHIVE_WEEK)))));
-            let read = cmd(CHATS, tr("Archive all read chats"), Some(UiMessage::Ask(Some(ASK_ARCHIVE_READ))));
+            v.push(cmd(CHATS, tr("Archive all chats"), Some(UiMessage::Ask(Some(Confirm::ArchiveAll(false))))));
+            v.push(cmd(CHATS, tr("Archive all chats older than a week"), Some(UiMessage::Ask(Some(Confirm::ArchiveWeek)))));
+            let read = cmd(CHATS, tr("Archive all read chats"), Some(UiMessage::Ask(Some(Confirm::ArchiveAll(true)))));
             v.push(read.hotkey("Chat: Archive All Read"));
-            v.push(cmd(CHATS, tr("Mark all chats as read"), Some(UiMessage::Ask(Some(ASK_MARK_ALL_READ)))));
+            v.push(cmd(CHATS, tr("Mark all chats as read"), Some(UiMessage::Ask(Some(Confirm::MarkAllRead)))));
         }
         let logout = match st.me().full_name.as_deref() {
             Some(name) => tr("Logout of your %1$s account (%2$s)").replacen("%1$s", "Beeper", 1).replacen("%2$s", name, 1),
             None => tr("Logout of your %s account").replacen("%s", "Beeper", 1),
         };
-        v.push(cmd("", logout, Some(UiMessage::Ask(Some(ASK_LOGOUT)))));
+        v.push(cmd("", logout, Some(UiMessage::Ask(Some(Confirm::Logout(None))))));
         let problem = cmd("", tr("Report a problem"), hot("Report a Problem"));
         v.push(problem.keys(&["bug", "issue", "feedback"]).hotkey("Report a Problem"));
         if let Some(c) = chat {

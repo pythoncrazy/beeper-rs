@@ -119,7 +119,7 @@ impl BeeperGuiApp {
                 let top = operation::scroll_to("settings-pane", operation::AbsoluteOffset { x: 0.0, y: 0.0 });
                 return top.chain(servers);
             }
-            Msg::AskRemove(id) => (self.list.chat_menu, self.delete_target, self.confirm) = (None, Some(id), Some(ASK_REMOVE_ACCOUNT)),
+            Msg::AskRemove(id) => (self.list.chat_menu, self.confirm) = (None, Some(Confirm::RemoveAccount(id))),
             Msg::Remove(id) => {
                 self.confirm = None;
                 let p = self.provision(&id);
@@ -180,7 +180,7 @@ impl BeeperGuiApp {
                 let discord = st.bridge_accounts.iter().any(|b| b.account_id == id && b.bridge_type == "discordgo");
                 drop(st);
                 if connected && discord {
-                    (self.server_target, self.confirm) = (Some((id, server)), Some(ASK_DISCONNECT_SERVER));
+                    self.confirm = Some(Confirm::DisconnectServer(id, server));
                     return self.settle();
                 }
                 return self.accounts(Msg::SetServer(id, server));

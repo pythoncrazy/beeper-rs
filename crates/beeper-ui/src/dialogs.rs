@@ -9,9 +9,8 @@ use crate::labels::label_fill;
 use crate::prelude::*;
 use crate::settings;
 use crate::{
-    chat_search_subtitle, checkbox_plus, grouped_rows, label_icon, label_tile, login, portal, spread, ASK_BLOCK, ASK_BLOCK_OFFLINE,
-    ASK_DELETE_CHAT, ASK_DELETE_LABEL, ASK_DISMISS_REMINDERS, ASK_LEAVE_CHAT, ASK_MAKE_ADMIN, ASK_REMOVE_MEMBER, ASK_ROOM_ENCRYPTION,
-    ASK_TRANSCRIBE, ASK_UNBLOCK, ASK_UNBLOCK_OFFLINE, ASK_UNMERGE, DELETE, DRAG_HANDLE, LABEL_COLORS, LABEL_ICONS, NEW_LABEL, STORAGE_DAYS,
+    chat_search_subtitle, checkbox_plus, grouped_rows, label_icon, label_tile, login, portal, spread, DELETE, DRAG_HANDLE, LABEL_COLORS,
+    LABEL_ICONS, NEW_LABEL, STORAGE_DAYS,
 };
 use beeper_core::models::*;
 use beeper_core::prefs;
@@ -322,28 +321,25 @@ impl PollDraft {
 }
 
 impl BeeperGuiApp {
-    pub(crate) fn view_confirm(&self, dialog: u8) -> El<'_> {
-        let (title, body, actions) = match dialog {
-            ASK_LOGOUT | ASK_LOGOUT_DEVICE => {
-                let id = (dialog == ASK_LOGOUT_DEVICE).then(|| self.delete_target.clone().expect("a device to log out"));
+    pub(crate) fn view_confirm(&self, dialog: &Confirm) -> El<'_> {
+        let (title, body, actions) = match dialog.clone() {
+            Confirm::Logout(id) => {
                 let device = self.devices.iter().flatten().flatten().find(|d| id.as_ref().map_or(d.current, |id| d.id == *id));
                 let title = trf("Logout of %s?", &[&device.map_or(tr("this device"), |d| d.name.as_str())]);
                 let logout = id.map_or(UiMessage::Logout, |id| UiMessage::Settings(settings::Msg::LogoutDevice(id)));
                 (title, tr("This will disconnect all chat accounts on this device.").into(), vec![(tr("Logout"), logout)])
             }
-            ASK_DISMISS_REMINDERS => (
+            Confirm::DismissReminders => (
                 tr("Dismiss All Reminders?").into(),
                 tr("This will remove Reminders from all of your chats.").into(),
                 vec![(tr("Yes"), UiMessage::Reminders(reminders::Msg::DismissAll))],
             ),
             // Desktop's `confirmDeleteThread`: the delete actions that all the chats take.
-            ASK_DELETE_CHAT => {
+            Confirm::DeleteChats(ids) => {
                 let st = self.store.read();
-                let chats: Vec<&Chat> =
-                    self.delete_chats.iter().filter_map(|c| st.resolve_chat_idx(c)).map(|i| &st.chats[i]).collect();
+                let chats: Vec<&Chat> = ids.iter().filter_map(|c| st.resolve_chat_idx(c)).map(|i| &st.chats[i]).collect();
                 let modes = chats.iter().fold(DELETE_FOR_ME | DELETE_FOR_EVERYONE, |all, c| all & c.delete_modes);
                 let many = chats.len() > 1;
-                let ids = self.delete_chats.clone();
                 let delete = |label, everyone| (label, UiMessage::ChatList(chat_list::Msg::DeleteAll(ids.clone(), everyone)));
                 let (body, actions) = match modes {
                     DELETE_FOR_ME => (
@@ -365,21 +361,18 @@ impl BeeperGuiApp {
                 let title = if let [one] = &chats[..] { trf("Delete %s", &[&one.combined_title()]) } else { tr("Delete Chats").into() };
                 (title, body.into(), actions)
             }
-            ASK_LEAVE_CHAT => {
-                let id = self.delete_target.clone().expect("a chat to leave");
+            Confirm::LeaveChat(id) => {
                 let st = self.store.read();
                 let title = &st.chats[st.resolve_chat_idx(&id).expect("the chat to leave exists")].title;
                 let body = trf("Are you sure you want to leave %s?", &[title]);
                 (tr("Leave chat").into(), body, vec![(tr("Leave"), UiMessage::ChatList(chat_list::Msg::Leave(id)))])
             }
-            ASK_MAKE_ADMIN | ASK_REMOVE_MEMBER => {
-                let target = self.delete_target.as_deref().expect("a member");
-                let (cid, uid) = target.split_once(' ').map(|(c, u)| (c.to_string(), u.to_string())).expect("chat and user");
+            Confirm::MakeAdmin(cid, uid) | Confirm::RemoveMember(cid, uid) => {
                 let st = self.store.read();
                 let c = st.chat(&cid);
                 let name = member_name(c.participants.items.iter().find(|u| u.id == uid).expect("a member of the chat"));
                 match dialog {
-                    ASK_MAKE_ADMIN => (
+                    Confirm::MakeAdmin(..) => (
                         tr("Make Group Admin").into(),
                         trf("Are you sure you want to make %s an admin of this group?", &[&name]),
                         vec![(trx("Confirm", "make group admin confirmation button"), UiMessage::Members(members::Msg::SetAdmin(cid, uid, true)))],
@@ -391,8 +384,7 @@ impl BeeperGuiApp {
                     ),
                 }
             }
-            ASK_DELETE_LABEL => {
-                let id = self.delete_target.clone().expect("a label to delete");
+            Confirm::DeleteLabel(id) => {
                 let st = self.store.read();
                 let name = st.labels.iter().find(|l| l.id == id).map(|l| l.name.clone()).unwrap_or_default();
                 let body = trf(
@@ -401,15 +393,13 @@ impl BeeperGuiApp {
                 );
                 (tr("Delete Label").into(), body, vec![(tr("Delete"), UiMessage::Labels(labels::Msg::Delete(id)))])
             }
-            ASK_DELETE_MESSAGE => {
+            Confirm::DeleteMessages(ids) => {
                 let st = self.store.read();
-                let ids = self.delete_target.as_deref().expect("messages to delete").split(' ');
-                let ms: Vec<Message> = ids.map(|id| stored(&st, id)).collect();
+                let ms: Vec<Message> = ids.iter().map(|id| stored(&st, id)).collect();
                 let (body, buttons) = delete_dialog(&st, &ms.iter().collect::<Vec<_>>()).expect("the menu checks");
                 (trn("Delete message?", "Delete messages?", ms.len(), &[]), body, buttons)
             }
-            d @ (ASK_ARCHIVE_READ | ASK_ARCHIVE_ALL) => {
-                let read = d == ASK_ARCHIVE_READ;
+            Confirm::ArchiveAll(read) => {
                 let mask = CHAT_ARCHIVED | CHAT_PINNED | if read { CHAT_UNREAD } else { 0 };
                 let st = self.store.read();
                 let n = self.visible_chats(&st).iter().filter(|c| c.flags & mask == 0).count();
@@ -422,19 +412,18 @@ impl BeeperGuiApp {
                 let archive = vec![(trx("Archive", "archive confirmation button"), UiMessage::ChatList(chat_list::Msg::ArchiveAll(read, 0)))];
                 (tr(if read { "Archive all read chats" } else { "Archive all chats" }).into(), body, archive)
             }
-            ASK_ARCHIVE_WEEK => (
+            Confirm::ArchiveWeek => (
                 tr("Archive all chats older than a week").into(),
                 tr("This will also archive any other older chats from a week ago").into(),
                 vec![(trx("Archive", "archive confirmation button"), UiMessage::ChatList(chat_list::Msg::ArchiveAll(false, 7)))],
             ),
-            ASK_MARK_ALL_READ => {
+            Confirm::MarkAllRead => {
                 let n = self.visible_chats(&self.store.read()).iter().filter(|c| c.flags & CHAT_UNREAD != 0).count();
                 let title = trn("Mark %d thread as read", "Mark %d threads as read", n, &[&n]);
                 let body = tr("Are you sure you want to mark all chats as read?").into();
                 (title, body, vec![(tr("Mark as Read"), UiMessage::ChatList(chat_list::Msg::MarkAllRead))])
             }
-            ASK_CLEAR_STORAGE | ASK_CLEAR_CACHE | ASK_CLEAR_CHAT => {
-                let which = dialog - ASK_CLEAR_STORAGE;
+            Confirm::Clear(which) => {
                 let size = human_size(self.storage_pick(which).iter().map(|e| e.bytes).sum());
                 let clear = |label| vec![(tr(label), UiMessage::Settings(settings::Msg::ClearStorage(which)))];
                 match which {
@@ -465,31 +454,27 @@ impl BeeperGuiApp {
                     }
                 }
             }
-            ASK_REVOKE_CONNECTION => (
+            Confirm::RevokeConnection(id) => (
                 tr("Are you sure you want to revoke this connection?").into(),
                 tr("Connected clients will lose access to Beeper Desktop API").into(),
-                vec![(tr("Revoke"), UiMessage::Integrations(integrations::Msg::RevokeConfirmed))],
+                vec![(tr("Revoke"), UiMessage::Integrations(integrations::Msg::RevokeConfirmed(id)))],
             ),
-            ASK_REMOVE_ACCOUNT => {
-                let id = self.delete_target.clone().expect("an account to remove");
-                (
-                    "Remove Account".into(),
-                    "Disconnect and remove the data from this account on Beeper".into(),
-                    vec![("Remove from All Devices", UiMessage::Accounts(accounts::Msg::Remove(id)))],
-                )
-            }
-            ASK_REMOTE_ACCESS => (
+            Confirm::RemoveAccount(id) => (
+                "Remove Account".into(),
+                "Disconnect and remove the data from this account on Beeper".into(),
+                vec![("Remove from All Devices", UiMessage::Accounts(accounts::Msg::Remove(id)))],
+            ),
+            Confirm::RemoteAccess => (
                 tr("Enable Remote Access?").into(),
                 tr("This can expose the Beeper Desktop API to the public internet based on your firewall settings. Only enable if you know what you are doing.").into(),
                 vec![(tr("Allow Remote Access"), UiMessage::Integrations(integrations::Msg::RemoteAccess(true)))],
             ),
-            ASK_BLOCK..=ASK_UNBLOCK_OFFLINE => {
-                let id = self.delete_target.clone().expect("a DM to block");
+            Confirm::Block(id, block) | Confirm::BlockOffline(id, block) => {
                 let st = self.store.read();
                 let c = st.chat(&id);
                 let network = network_name(&c.account_id);
-                match dialog {
-                    ASK_BLOCK => {
+                match (dialog, block) {
+                    (Confirm::Block(..), true) => {
                         let body = match c.block & NO_UNBLOCK {
                             0 => trf("They'll also be blocked on %s.", &[&network]),
                             _ => trf(
@@ -501,7 +486,7 @@ impl BeeperGuiApp {
                         let label = trx("Block", "action to block the other person in a DM");
                         (trf("Block %s?", &[&c.title]), body, vec![(label, block)])
                     }
-                    ASK_UNBLOCK => (
+                    (Confirm::Block(..), false) => (
                         trf("Unblock %s?", &[&c.title]),
                         trf("They'll also be unblocked on %s.", &[&network]),
                         vec![(
@@ -510,10 +495,7 @@ impl BeeperGuiApp {
                         )],
                     ),
                     _ => {
-                        let body = match dialog {
-                            ASK_BLOCK_OFFLINE => "Reconnect %1$s to block %2$s.",
-                            _ => "Reconnect %1$s to unblock %2$s.",
-                        };
+                        let body = if block { "Reconnect %1$s to block %2$s." } else { "Reconnect %1$s to unblock %2$s." };
                         let again = reconnect(&st, &c.account_id);
                         let again = again.unwrap_or_else(|| UiMessage::Accounts(accounts::Msg::OpenSettings(c.account_id.clone())));
                         let again = vec![(tr("Reconnect"), UiMessage::Commands(vec![UiMessage::Ask(None), again]))];
@@ -521,7 +503,7 @@ impl BeeperGuiApp {
                     }
                 }
             }
-            ASK_TRANSCRIBE => {
+            Confirm::Transcribe => {
                 let body = trf(
                     "%s works by sharing audio clips with OpenAI via our servers. You can always change this in Settings.",
                     &[&tr(if self.audio.asked.is_some() { "Transcribing voice notes" } else { "Talk to Type" })],
@@ -531,7 +513,7 @@ impl BeeperGuiApp {
                 return self.dialog_with(self.asking_in(), tr("Privacy notice").into(), body, None, allow, disable);
             }
             // Desktop's "Room encryption" `PrefsActionPrompt` of New Chat.
-            ASK_ROOM_ENCRYPTION => {
+            Confirm::RoomEncryption => {
                 let (p, on) = (&self.pal, self.group_encrypted);
                 let label = txt(trx("Encrypted", "new Matrix group encryption toggle label"), 13.0).color(p.strong);
                 // Desktop's `<label>`: a click anywhere on the row flips the toggle.
@@ -551,8 +533,7 @@ impl BeeperGuiApp {
                 let title = tr("Room encryption").into();
                 return self.dialog_with(self.asking_in(), title, String::new(), Some(extra.into()), start, cancel);
             }
-            ASK_DISCONNECT_SERVER => {
-                let (id, server) = self.server_target.clone().expect("a server to disconnect");
+            Confirm::DisconnectServer(id, server) => {
                 let body = "Turning this off will permanently remove your Discord server from Beeper, including all its channels and messages.";
                 (
                     tr("Disconnect Discord Server?").into(),
@@ -560,8 +541,7 @@ impl BeeperGuiApp {
                     vec![(tr("Disconnect"), UiMessage::Accounts(accounts::Msg::SetServer(id, server)))],
                 )
             }
-            ASK_REMOVE_PACK => {
-                let id = self.delete_target.clone().expect("a sticker pack to remove");
+            Confirm::RemovePack(id) => {
                 let pack = self.installed_packs.iter().flatten().find(|p| p.id == id);
                 let name = pack.map_or("", |p| p.name.as_str());
                 let name = if name.is_empty() { tr("Sticker pack").to_string() } else { name.to_string() };
@@ -571,8 +551,7 @@ impl BeeperGuiApp {
                     vec![(tr("Remove"), UiMessage::Settings(settings::Msg::RemovePack(id)))],
                 )
             }
-            ASK_UNMERGE => {
-                let id = self.delete_target.clone().expect("a merged chat to unmerge");
+            Confirm::Unmerge(id) => {
                 let unmerge = vec![(
                     trx("Unmerge", "merged chat unmerge confirm button"),
                     UiMessage::Merged(merged::Msg::Unmerge(id)),
@@ -581,16 +560,18 @@ impl BeeperGuiApp {
                 let keep = (tr("Keep chats merged"), UiMessage::Ask(None));
                 return self.dialog_with(self.asking_in(), tr("Unmerge Chat?").into(), body, None, unmerge, keep);
             }
-            _ => unreachable!("dialog {dialog}"),
         };
-        let spam = (dialog == ASK_BLOCK).then(|| self.report_spam_box()).flatten();
+        let spam = match dialog {
+            Confirm::Block(id, true) => self.report_spam_box(id),
+            _ => None,
+        };
         self.dialog_with(self.asking_in(), title, body, spam, actions, (tr("Cancel"), UiMessage::Ask(None)))
     }
 
     /// The "Report spam" checkbox of the Block dialog, when the bridge reports spam.
-    fn report_spam_box(&self) -> Option<El<'_>> {
+    fn report_spam_box(&self, id: &str) -> Option<El<'_>> {
         let st = self.store.read();
-        let c = st.chat(self.delete_target.as_deref().expect("a DM to block"));
+        let c = st.chat(id);
         (c.block & REPORT_SPAM != 0).then(|| {
             let label = txt(tr("Report spam"), 13.0).color(self.pal.text);
             let line = row![checkbox(&self.pal, self.report_spam), label].spacing(6).align_y(Center);
@@ -880,7 +861,7 @@ impl BeeperGuiApp {
             ]
         });
         drop(st);
-        let confirm = self.label_asking(w.id).then(|| self.view_confirm(ASK_DELETE_LABEL));
+        let confirm = self.confirm.as_ref().filter(|_| self.label_asking(w.id)).map(|d| self.view_confirm(d));
         stack![window].push(menu).push(confirm).into()
     }
 
@@ -1114,13 +1095,13 @@ impl BeeperGuiApp {
 
     /// Whether the open Delete Label confirm shows in the window `id`.
     pub(crate) fn label_asking(&self, id: window::Id) -> bool {
-        self.confirm == Some(ASK_DELETE_LABEL) && self.delete_in == Some(id)
+        matches!(self.confirm, Some(Confirm::DeleteLabel(_))) && self.delete_in == Some(id)
     }
 
     /// The window that shows the confirmation dialog, if one shows.
     fn asking_in(&self) -> Option<window::Id> {
-        match self.confirm? {
-            d if crate::SETTINGS_DIALOGS.contains(&d) => self.settings_window,
+        match self.confirm.as_ref()? {
+            d if d.in_settings() => self.settings_window,
             _ => self.delete_in.filter(|w| self.label_asking(*w)).or(self.main_window),
         }
     }

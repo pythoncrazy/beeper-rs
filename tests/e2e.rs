@@ -1421,7 +1421,7 @@ async fn lifecycle() {
         assert_eq!(order(&gui), [2, 1], "the display options change the order");
         assert_eq!(store.read().settings.reminders_order, 1);
         let _ = gui.update(UiMessage::Reminders(beeper_ui::reminders::Msg::Order(0)));
-        let _ = gui.update(UiMessage::Ask(Some(1)));
+        let _ = gui.update(UiMessage::Ask(Some(beeper_ui::Confirm::DismissReminders)));
         assert!(simulator(gui.view_main()).find("Dismiss All Reminders?").is_ok());
         let _ = gui.update(UiMessage::Reminders(beeper_ui::reminders::Msg::DismissAll));
         assert!(order(&gui).is_empty() && gui.confirm.is_none(), "dismiss all clears every reminder");

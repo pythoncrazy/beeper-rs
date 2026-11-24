@@ -51,7 +51,7 @@ impl BeeperGuiApp {
         // `logout` gets the menu item as its reason. Before sign-in, Desktop's `doLogout` only relaunches the app.
         let logout = || {
             let msg = match (self.main_window, signed_in) {
-                (Some(_), _) => UiMessage::Ask(Some(ASK_LOGOUT)),
+                (Some(_), _) => UiMessage::Ask(Some(Confirm::Logout(None))),
                 (None, true) => UiMessage::Logout,
                 (None, false) => UiMessage::Window(windows::Msg::Relaunch),
             };

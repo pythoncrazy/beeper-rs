@@ -283,7 +283,7 @@ impl BeeperGuiApp {
             // Desktop's `confirmDeleteThread`: the selected chats, which must share a delete action.
             Msg::AskDelete(id) => {
                 self.list.chat_menu = None;
-                let chats = if self.selection.is_empty() { vec![id.clone()] } else { self.selection.clone() };
+                let chats = if self.selection.is_empty() { vec![id] } else { self.selection.clone() };
                 let st = self.store.read();
                 let modes = chats.iter().filter_map(|c| st.resolve_chat_idx(c)).map(|i| st.chats[i].delete_modes);
                 let common = modes.fold(DELETE_FOR_ME | DELETE_FOR_EVERYONE, |all, m| all & m);
@@ -296,7 +296,7 @@ impl BeeperGuiApp {
                     .into();
                     return Task::none();
                 }
-                (self.confirm, self.delete_target, self.delete_chats) = (Some(ASK_DELETE_CHAT), Some(id), chats);
+                self.confirm = Some(Confirm::DeleteChats(chats));
             }
             msg @ (Msg::BeginSelecting(..)
             | Msg::ToggleSelectMode
@@ -304,7 +304,7 @@ impl BeeperGuiApp {
             | Msg::SelectionSet(..)
             | Msg::SelectionRemind(..)
             | Msg::SelectionMenu(..)) => return self.chat_list_selection(msg),
-            Msg::AskLeave(id) => (self.confirm, self.delete_target) = (Some(ASK_LEAVE_CHAT), Some(id)),
+            Msg::AskLeave(id) => self.confirm = Some(Confirm::LeaveChat(id)),
             Msg::Leave(id) => {
                 self.confirm = None;
                 self.store.write().leave_room(&id);
