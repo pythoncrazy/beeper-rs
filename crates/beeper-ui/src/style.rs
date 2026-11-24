@@ -5,6 +5,7 @@ use iced::border;
 use iced::font::{Family, Font};
 use iced::overlay::menu;
 use iced::widget::text;
+use std::borrow::Cow;
 use std::sync::Once;
 
 pub mod icon {
@@ -324,9 +325,16 @@ pub(crate) fn trim_shaped_words() {
 }
 
 fn shape<T>(s: &str, size: f32, face: impl Face, width: Option<f32>, f: impl FnOnce(&cosmic_text::Buffer) -> T) -> T {
+    shape_wrapped(s, size, face, width, cosmic_text::Wrap::WordOrGlyph, f)
+}
+
+fn shape_wrapped<T>(
+    s: &str, size: f32, face: impl Face, width: Option<f32>, wrap: cosmic_text::Wrap, f: impl FnOnce(&cosmic_text::Buffer) -> T,
+) -> T {
     ensure_fonts_loaded();
     let mut fs = font_system().write().expect("font system");
     let mut buf = cosmic_text::Buffer::new(fs.raw(), cosmic_text::Metrics::new(size, size * 1.2));
+    buf.set_wrap(fs.raw(), wrap);
     buf.set_size(fs.raw(), width, None);
     buf.set_text(fs.raw(), s, &to_attributes(face.font()), cosmic_text::Shaping::Advanced, None);
     f(&buf)
@@ -396,25 +404,62 @@ pub fn carets(s: &str, size: f32, width: f32, at: impl IntoIterator<Item = (usiz
     })
 }
 
-/// CSS `text-wrap: balance`: the narrowest width up to `max` that wraps `s` into as many lines as `max` does.
+/// CSS `text-wrap: balance`: the narrowest width up to `max` that wraps `s` into as many lines as `max` does. Chromium
+/// balances neither more than 6 lines nor a text with a word that breaks at the edge: those keep their lines, and the
+/// bubble shrinks to the widest.
 pub fn balanced_width(s: &str, max: f32, size: f32) -> f32 {
     let size = rem(size);
     thread_local!(static MEMO: Memo<(String, u32, u32), f32> = RefCell::default());
     memo(&MEMO, (s.to_owned(), max.to_bits(), size.to_bits()), || {
         let lines = |w: f32| shape(s, size, Weight::Normal, Some(w), |b| b.layout_runs().count());
         let n = lines(max);
-        let (mut lo, mut hi) = (0.0, max);
-        while hi - lo > 0.25 {
-            let mid = (lo + hi) / 2.0;
-            if lines(mid) > n {
-                lo = mid;
-            } else {
-                hi = mid;
+        let overflows =
+            || shape_wrapped(s, size, Weight::Normal, Some(max), cosmic_text::Wrap::Word, |b| b.layout_runs().any(|r| r.line_w > max));
+        let hi = match n > 6 || overflows() {
+            true => shape(s, size, Weight::Normal, Some(max), |b| b.layout_runs().map(|r| r.line_w).fold(0.0, f32::max)),
+            false => {
+                let (mut lo, mut hi) = (0.0, max);
+                while hi - lo > 0.25 {
+                    let mid = (lo + hi) / 2.0;
+                    if lines(mid) > n {
+                        lo = mid;
+                    } else {
+                        hi = mid;
+                    }
+                }
+                hi
             }
+        };
+        // A pixel of room, so that iced breaks the lines where the measure did, when that narrows the bubble by more
+        // than 2 px from the rounded width, like Desktop's `maxWidth`.
+        if hi.round() + 1.0 < max - 2.0 {
+            hi + 1.0
+        } else {
+            max
         }
-        // A pixel of room, so that iced breaks the lines where the measure did.
-        (hi + 1.0).min(max)
     })
+}
+
+/// Chromium's line breaks in ASCII text where they differ from the Unicode rules of cosmic-text, made with a word
+/// joiner or a zero-width space: none after `/`, `!`, `|` or `}` before more ASCII text, so that a URL breaks after its
+/// hyphens and `?` or else at the edge, and one between `-` and a digit after a letter or a digit (`ShouldBreakAfter`).
+pub fn chromium_breaks(s: &str) -> Cow<'_, str> {
+    let b = s.as_bytes();
+    let joins = |i: usize| matches!(b[i], b'/' | b'!' | b'|' | b'}') && b.get(i + 1).is_some_and(u8::is_ascii_graphic);
+    let splits = |i: usize| b[i] == b'-' && i > 0 && b[i - 1].is_ascii_alphanumeric() && b.get(i + 1).is_some_and(u8::is_ascii_digit);
+    if !(0..b.len()).any(|i| joins(i) || splits(i)) {
+        return Cow::Borrowed(s);
+    }
+    let mut out = String::with_capacity(s.len() + 16);
+    for (i, c) in s.char_indices() {
+        out.push(c);
+        if joins(i) {
+            out.push('\u{2060}');
+        } else if splits(i) {
+            out.push('\u{200b}');
+        }
+    }
+    Cow::Owned(out)
 }
 
 /// Whether `s` is one line that is surely narrower than `max` without shaping it: printable ASCII, whose glyphs in
@@ -1346,6 +1391,44 @@ mod tests {
         assert!(last.expect("a line") + room <= width + 0.5, "the time fits after the last line");
         let lines = shape(text, 13.0, Weight::Normal, Some(width), |b| b.layout_runs().count());
         assert_eq!(lines, 2, "and the lines stay balanced");
+    }
+
+    /// Chromium's lines of two long URLs in a bubble 518 px wide (measured in Desktop 4.3.308): no break after `/`,
+    /// breaks after `-`, `?` and between `-` and a digit, and a long word broken at the edge.
+    #[test]
+    fn urls_break_like_chromium() {
+        let lines = |s: &str| {
+            shape(s, 13.0, Weight::Normal, Some(518.0), |b| {
+                b.layout_runs()
+                    .map(|r| r.text[r.glyphs[0].start..r.glyphs.last().unwrap().end].replace(['\u{2060}', '\u{200b}'], ""))
+                    .collect::<Vec<_>>()
+            })
+        };
+        let chromium = [
+            vec![
+                "https://docs.example-",
+                "cloud.com/storage/buckets/project_alpha/releases/2026/v4_3_308/artifacts/linux_x",
+                "86_64/beeper_desktop_appimage_build_output/checksums_and_signatures/sha512_",
+                "manifest_for_the_release_candidate_number_seven.txt?",
+                "download_token=Zm9vYmFyYmF6cXV4X2xvbmdfdG9rZW5fdmFsdWVfaGVyZQ&ex",
+                "pires_at=1795524069&signature_v2=abcdef0123456789_abcdef0123456789",
+            ],
+            vec![
+                "https://www.example-domain.com/some/long_path/with-many-",
+                "segments/and_underscores/2026/11/24/a-very-long-article-title-that-keeps-going-",
+                "and-going_with_more_words/index.html?",
+                "utm_source=newsletter&utm_medium=email&utm_campaign=winter_sale-",
+                "2026&ref=abc_def-",
+                "ghi&session_id=0123456789abcdef0123456789abcdef&extra_param=some-more-",
+                "text_here",
+            ],
+        ];
+        for want in chromium {
+            let url = chromium_breaks(&want.concat()).into_owned();
+            assert_eq!(lines(&url), want);
+            // Desktop balances neither, and their widest lines (517 and 515 px) leave the bubble as wide as it can be.
+            assert_eq!(balanced_width(&url, 518.0, 13.0), 518.0);
+        }
     }
 
     #[test]
