@@ -1706,9 +1706,9 @@ impl BeeperGuiApp {
         let color = if hush { p.rule } else { p.accent };
         let line = || container(Space::new()).width(Fill).height(1).style(fill_box(color, 0.0));
         if !hush {
-            // `.unread-divider span`: label-sm at 0.8 opacity, 12 px above and below, 10 px from the primary lines.
+            // `.unread-divider span`: label-sm in full primary, 12 px above and below, 10 px from the primary lines.
             let label = txt(trx("New", "unread message divider label"), 11.0).line_height(lh(14.0));
-            return row![line(), label.color(p.accent.scale_alpha(0.8)), line()].spacing(10).align_y(Center).padding([12, 0]).into();
+            return row![line(), label.color(p.accent), line()].spacing(10).align_y(Center).padding([12, 0]).into();
         }
         let label = txt(format!("🫣 {}", tr("Unread until you reply")), 11.0);
         let days = st.features.trial_days_left().map(|n| {
@@ -4572,6 +4572,20 @@ pub(crate) mod tests {
         assert!(has(&app) && app.pane.menu_linked.as_deref() == Some(ids[1].as_str()));
         let _ = app.update(UiMessage::Message(Msg::OpenMenu(ids[0].clone())));
         assert!(!has(&app), "another right click forgets the quote");
+    }
+
+    /// Desktop's `.unread-divider span` draws "New" in full `--color-primary`: no rule of 4.3.308 sets an opacity on
+    /// it or on the timeline around it.
+    #[test]
+    fn the_unread_label_is_full_primary_like_desktop() {
+        let app = crate::fuzz::demo_app("unread-label");
+        let st = app.store.read();
+        let mut sim = iced_test::Simulator::with_size(Default::default(), Size::new(200.0, 40.0), app.unread_divider(&st));
+        let shot = pixels(&mut sim);
+        // The label sits between the lines, 12 px under the top; its most covered pixel is primary itself.
+        let label = (180..220).flat_map(|x| (24..52).map(move |y| (x, y)));
+        let darkest = label.map(|(x, y)| shot.get_pixel(x, y).0).min_by_key(|px| px[0]).expect("pixels");
+        assert!(near(darkest, app.pal.accent), "{darkest:?}");
     }
 
     /// The pixels of a frame of `sim`, at its scale of 2. The simulator does not find the text of overlays.
