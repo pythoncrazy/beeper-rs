@@ -1594,7 +1594,8 @@ static DEVICE_ICONS: std::sync::LazyLock<[svg::Handle; 3]> = std::sync::LazyLock
     ]
     .map(|(view, d)| path_svg(view, d))
 });
-svg_static!(QR_CODE, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="5" height="5" x="3" y="3" rx="1"/><rect width="5" height="5" x="16" y="3" rx="1"/><rect width="5" height="5" x="3" y="16" rx="1"/><path d="M21 16h-3a2 2 0 0 0-2 2v3"/><path d="M21 21v.01"/><path d="M12 7v3a2 2 0 0 1-2 2H7"/><path d="M3 12h.01"/><path d="M12 3h.01"/><path d="M12 16v.01"/><path d="M16 12h1"/><path d="M21 12v.01"/><path d="M12 21v-1"/></svg>"##);
+// Desktop's system `qr-code` of "Get the app" and of the Viber login steps.
+svg_static!(QR_CODE, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path d="M3.333 9.167V2.5H10v6.667zM5 7.5h3.333V4.167H5zm-1.667 10v-6.667H10V17.5zM5 15.833h3.333V12.5H5zm6.667-6.666V2.5h6.666v6.667zM13.333 7.5h3.334V4.167h-3.334zm3.334 10v-1.667h1.666V17.5zm-5-5v-1.667h1.666V12.5zm1.666 1.667V12.5H15v1.667zm-1.666 1.666v-1.666h1.666v1.666zm1.666 1.667v-1.667H15V17.5zM15 15.833v-1.666h1.667v1.666zm0-3.333v-1.667h1.667V12.5zm1.667 1.667V12.5h1.666v1.667z"/></svg>"##);
 // Desktop's `UnmuteIcon` (`Ase`) after the title of a muted chat row or pin.
 svg_static!(BELL_OFF, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 12 12"><path d="M1.99922 9.5V8.5H2.99922V5C2.99922 4.725 3.03464 4.45417 3.10547 4.1875C3.1763 3.92083 3.28255 3.66667 3.42422 3.425L4.17422 4.175C4.11589 4.30833 4.07214 4.44375 4.04297 4.58125C4.0138 4.71875 3.99922 4.85833 3.99922 5V8.5H7.09922L0.699219 2.1L1.39922 1.4L10.5992 10.6L9.89922 11.3L8.07422 9.5H1.99922ZM8.99922 7.575L7.99922 6.575V5C7.99922 4.45 7.80339 3.97917 7.41172 3.5875C7.02005 3.19583 6.54922 3 5.99922 3C5.78255 3 5.57422 3.03333 5.37422 3.1C5.17422 3.16667 4.99089 3.26667 4.82422 3.4L4.09922 2.675C4.26589 2.54167 4.44505 2.425 4.63672 2.325C4.82839 2.225 5.03255 2.15 5.24922 2.1V1.75C5.24922 1.54167 5.32213 1.36458 5.46797 1.21875C5.6138 1.07292 5.79089 1 5.99922 1C6.20755 1 6.38464 1.07292 6.53047 1.21875C6.6763 1.36458 6.74922 1.54167 6.74922 1.75V2.1C7.41589 2.26667 7.95755 2.61875 8.37422 3.15625C8.79088 3.69375 8.99922 4.30833 8.99922 5V7.575ZM5.99922 11C5.72422 11 5.4888 10.9021 5.29297 10.7063C5.09714 10.5104 4.99922 10.275 4.99922 10H6.99922C6.99922 10.275 6.9013 10.5104 6.70547 10.7063C6.50963 10.9021 6.27422 11 5.99922 11Z"/></svg>"##);
 
@@ -5254,6 +5255,7 @@ impl BeeperGuiApp {
             || (self.login_window.is_some() && (self.login.busy || self.login.animated()))
             || self.reauth.busy
             || self.enter_key.busy
+            || self.add_accounts.iter().any(add_account::AddAccount::spinning)
             || self.nickname_windows.iter().any(|d| d.saving)
             || !self.pressing.is_empty()
             || !self.fetching.is_empty()

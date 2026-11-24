@@ -54,26 +54,23 @@ const DONE_STEP: &str = "fi.mau.viber.login.complete";
 /// The text when no browser can open a cookie login. Desktop opens its own window, so it has no such text.
 const NO_BROWSER: &str = "To log in to %s, install Chrome, Chromium, Brave, Edge or Vivaldi.";
 
-/// A 24px stroke icon like the ones of Desktop's icon set.
-fn stroke(paths: &str) -> svg::Handle {
-    let svg = format!(
-        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">{paths}</svg>"#
-    );
-    svg::Handle::from_memory(svg.into_bytes())
-}
-
-static COPY: LazyLock<svg::Handle> = LazyLock::new(|| {
-    stroke(r#"<path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/><rect x="9" y="9" width="13" height="13" rx="2"/>"#)
+/// Desktop's system `eye` and `eye-off` of a password field, lines 1.4 px wide in a 20 px box, and its `cancel`.
+static FIELD_ICONS: LazyLock<[svg::Handle; 3]> = LazyLock::new(|| {
+    let eye = r#"<path d="M2 10s3.25-5 8-5 8 5 8 5-3.25 5-8 5-8-5-8-5" stroke-linejoin="round"/><circle cx="10" cy="10" r="2.25"/>"#;
+    let cancel = "M5.7 14.3a.95.95 0 0 0 .7.275.95.95 0 0 0 .7-.275l2.9-2.9 2.925 2.925q.275.274.688.262a.98.98 0 0 0 .687-.287.95.95 0 0 0 .275-.7.95.95 0 0 0-.275-.7L11.4 10l2.925-2.925a.9.9 0 0 0 .262-.688.98.98 0 0 0-.287-.687.95.95 0 0 0-.7-.275.95.95 0 0 0-.7.275L10 8.6 7.075 5.675a.9.9 0 0 0-.687-.263.98.98 0 0 0-.688.288.95.95 0 0 0-.275.7q0 .425.275.7L8.6 10l-2.925 2.925a.9.9 0 0 0-.262.687.98.98 0 0 0 .287.688M10 20a9.7 9.7 0 0 1-3.9-.788 10.1 10.1 0 0 1-3.175-2.137Q1.575 15.725.788 13.9A9.7 9.7 0 0 1 0 10q0-2.074.788-3.9a10.1 10.1 0 0 1 2.137-3.175Q4.275 1.575 6.1.787A9.7 9.7 0 0 1 10 0q2.075 0 3.9.787a10.1 10.1 0 0 1 3.175 2.138q1.35 1.35 2.137 3.175A9.7 9.7 0 0 1 20 10a9.7 9.7 0 0 1-.788 3.9 10.1 10.1 0 0 1-2.137 3.175q-1.35 1.35-3.175 2.137A9.7 9.7 0 0 1 10 20";
+    let lines = |body: &str| {
+        let svg = format!(
+            r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="none" stroke="#000" stroke-width="1.4" stroke-linecap="round">{body}</svg>"##
+        );
+        svg::Handle::from_memory(svg.into_bytes())
+    };
+    [lines(eye), lines(&format!(r#"{eye}<path d="m3.75 3.75 12.5 12.5"/>"#)), crate::path_svg("0 0 20 20", cancel)]
 });
-static EYE: LazyLock<svg::Handle> =
-    LazyLock::new(|| stroke(r#"<path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/>"#));
-static EYE_OFF: LazyLock<svg::Handle> = LazyLock::new(|| {
-    stroke(concat!(
-        r#"<path d="M9.9 4.2A10 10 0 0 1 12 4c6.4 0 10 8 10 8a17 17 0 0 1-2.2 3.2M6.6 6.6A17 17 0 0 0 2 12s3.6 8 10 8"#,
-        r#"a9.7 9.7 0 0 0 5.4-1.6"/><path d="M2 2l20 20"/><path d="M14.1 14.1a3 3 0 1 1-4.2-4.2"/>"#
-    ))
+/// Desktop's `OutlineSpinner` of a step that waits, which `.spin-icon` turns.
+static OUTLINE_SPINNER: LazyLock<svg::Handle> = LazyLock::new(|| {
+    let path = r##"<path d="M10 18.249a8.25 8.25 0 10-8.25-8.25" fill="none" stroke="#000" stroke-width="1.5" stroke-linecap="round"/>"##;
+    svg::Handle::from_memory(format!(r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20">{path}</svg>"#).into_bytes())
 });
-static CLEAR_FIELD: LazyLock<svg::Handle> = LazyLock::new(|| stroke(r#"<path d="M18 6 6 18M6 6l12 12"/>"#));
 /// Desktop's `ExternalLinkIcon` of the "Open %s Login" button.
 static EXTERNAL: LazyLock<svg::Handle> = LazyLock::new(|| {
     let path =
@@ -225,13 +222,13 @@ fn auth_button<'a>(label: String, msg: UiMessage) -> El<'a> {
     container(button).max_width(250).into()
 }
 
-/// The icons in Desktop's WeChat and Viber steps: its `add` and `scan` glyphs, and its `Dots` and `QrCode` icons.
-static STEP_ICONS: LazyLock<[svg::Handle; 4]> = LazyLock::new(|| {
+/// The icons in Desktop's WeChat and Viber steps: its `add` and `scan` glyphs and its `Dots` icon (its `QrCode` is
+/// `QR_CODE`).
+static STEP_ICONS: LazyLock<[svg::Handle; 3]> = LazyLock::new(|| {
     [
         ("0 0 72 72", "M34.2 34.2V21h3.6v13.2H51v3.6H37.8V51h-3.6V37.8H21v-3.6zM36 66C19.431 66 6 52.569 6 36S19.431 6 36 6s30 13.431 30 30-13.431 30-30 30m0-3.6c14.58 0 26.4-11.82 26.4-26.4S50.58 9.6 36 9.6 9.6 21.42 9.6 36 21.42 62.4 36 62.4"),
         ("0 0 96 96", "M71.47 79h-4.495c-4.326 0-9.105-1.616-14.298-14.036H40.99c-1.27 0-1.990-1.677-1.990-2.946v-2.866c0-1.262.725-2.212 1.990-2.212H69.2c2.366 0 3.780-2.127 3.780-4.828 0-.425-.062-.83-.15-1.223h.15v1.207c.095-.886.07-1.470-.371-3.008-.632-2.204 1.785-8.563 6.284-9.070 1.125-.128 2.493.423 2.300 1.979C79.760 53.490 84 55.655 84 67.990 84 73.724 79.570 79 71.470 79M28.810 39c-.2.037-4.864 2.190-4.864 4.888 0 .424.062.83.150 1.222h-.150v-1.205c-.094.885-.070 1.470.370 3.009.627 2.201-1.774 8.560-6.243 9.068-1.118.127-2.476-.423-2.284-1.978C17.210 42.509 13 40.344 13 28.009 13 22.276 17.401 17 25.447 17h4.464c4.299 0 9.234 2.531 14.392 14.951h11.423c1.260 0 2.274.744 2.274 2.012v2.750a2.280 2.280 0 0 1-2.274 2.286z"),
         ("0 0 181 38", "M19 38c10.493 0 19-8.507 19-19S29.493 0 19 0 0 8.507 0 19s8.507 19 19 19M90.25 38c10.493 0 19-8.507 19-19s-8.507-19-19-19-19 8.507-19 19 8.507 19 19 19M161.5 38c10.493 0 19-8.507 19-19s-8.507-19-19-19-19 8.507-19 19 8.507 19 19 19"),
-        ("0 0 20 20", "M3.333 9.167V2.5H10v6.667zM5 7.5h3.333V4.167H5zm-1.667 10v-6.667H10V17.5zM5 15.833h3.333V12.5H5zm6.667-6.666V2.5h6.666v6.667zM13.333 7.5h3.334V4.167h-3.334zm3.334 10v-1.667h1.666V17.5zm-5-5v-1.667h1.666V12.5zm1.666 1.667V12.5H15v1.667zm-1.666 1.666v-1.666h1.666v1.666zm1.666 1.667v-1.667H15V17.5zM15 15.833v-1.666h1.667v1.666zm0-3.333v-1.667h1.667V12.5zm1.667 1.667V12.5h1.666v1.667z"),
     ]
     .map(|(view, d)| {
         let svg = format!(r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="{view}"><path fill-rule="evenodd" d="{d}"/></svg>"#);
@@ -269,6 +266,12 @@ impl AddAccount {
     fn other_flows(&self) -> impl Iterator<Item = &Flow> {
         let allowed = MENU_FLOWS.iter().find(|m| m.0 == self.bridge).map(|m| m.1);
         self.flows.iter().filter(move |f| f.id != self.flow && allowed.is_none_or(|a| a.contains(&f.id.as_str())))
+    }
+
+    /// A `display_and_wait` step without a code to show, whose spinner turns.
+    pub(crate) fn spinning(&self) -> bool {
+        let step = self.step.as_ref().filter(|s| s.kind == "display_and_wait" && self.error.is_none() && self.failed.is_none());
+        step.and_then(|s| s.display_and_wait.as_ref()).is_some_and(|d| !["emoji", "code", "qr"].contains(&d.kind.as_str()))
     }
 }
 
@@ -592,20 +595,20 @@ impl BeeperGuiApp {
     fn login_steps<'a>(&'a self, a: &'a AddAccount, s: &'a Step) -> Option<El<'a>> {
         let p = &self.pal;
         let line = |t: &str| -> El<'a> { step_line(p, t.to_string()).into() };
-        let icon = |i: usize, height: f32| -> El<'a> {
+        let icon = |h: &svg::Handle, height: f32| -> El<'a> {
             let color = Some(p.strong);
-            svg(STEP_ICONS[i].clone()).width(18).height(height).style(move |_, _| svg::Style { color }).into()
+            svg(h.clone()).width(18).height(height).style(move |_, _| svg::Style { color }).into()
         };
         let (items, note): (Vec<El<'a>>, Option<&'static str>) = match s.step_id.as_str() {
             "fi.mau.WeChat.login.qr" => {
                 let tap = tr("Tap <add/> in the top-right corner, then <scan/> Scan");
-                let tap = inline(p, tap, vec![("<add/>", icon(0, 18.0)), ("<scan/>", icon(1, 18.0))]);
+                let tap = inline(p, tap, vec![("<add/>", icon(&STEP_ICONS[0], 18.0)), ("<scan/>", icon(&STEP_ICONS[1], 18.0))]);
                 let note = "If WeChat warns that another device is already logged in, continuing will sign out that device. On your phone, select “Import recent chat history from this phone”, then tap “Log In”.";
                 (vec![line(tr("Open WeChat on your phone")), tap, line(tr("Scan this QR code"))], Some(note))
             }
             "fi.mau.viber.login.qr" => {
-                let more = inline(p, tr("Open Viber and tap <icon/> More at the bottom"), vec![("<icon/>", icon(2, 12.0))]);
-                let qr = inline(p, tr("Tap <icon/> QR code"), vec![("<icon/>", icon(3, 18.0))]);
+                let more = inline(p, tr("Open Viber and tap <icon/> More at the bottom"), vec![("<icon/>", icon(&STEP_ICONS[2], 12.0))]);
+                let qr = inline(p, tr("Tap <icon/> QR code"), vec![("<icon/>", icon(&crate::QR_CODE, 18.0))]);
                 (vec![more, qr, line(tr("Scan the QR code shown here"))], None)
             }
             DONE_STEP => {
@@ -788,16 +791,18 @@ impl BeeperGuiApp {
                     let shown: Option<El<'a>> = match d.kind.as_str() {
                         "emoji" => a.emoji.clone().map(|h| image(h).width(100).height(100).into()),
                         "code" => Some({
-                            // `.login-pairing-code-value`: 28 px with a 0.12em letter spacing.
-                            let code = t(d.data.as_str(), 28.0, spaced(Weight::Semibold, 0.12)).color(p.strong);
-                            let copy = button(svg(COPY.clone()).width(16).height(16))
+                            // `.login-pairing-code-value`: 28 px with a 0.12em letter spacing in `--color-primary`, and
+                            // the 16 px system `copy` in `--color-primary`.
+                            let code = t(d.data.as_str(), 28.0, spaced(Weight::Semibold, 0.12)).color(p.accent);
+                            let copy = button(tinted(&crate::COPY_ICON, 16.0, p.accent))
                                 .padding(6)
-                                .style(btn_style([CLEAR, p.hover, p.hover], [p.strong; 3], 6.0))
+                                .style(btn_style([CLEAR, p.hover, p.hover], [p.accent; 3], 6.0))
                                 .on_press(go(AddMsg::Copy(d.data.clone())));
                             row![code, copy].spacing(8).align_y(Center).into()
                         }),
                         "qr" => None,
-                        _ => Some(ic(icon::HISTORY, 32.0).color(p.strong.scale_alpha(0.5)).into()),
+                        // Desktop's `OutlineSpinner` at `font-size: 32px` and `opacity: .5`.
+                        _ => Some(crate::verify::spun(&OUTLINE_SPINNER, 32.0, p.strong.scale_alpha(0.5))),
                     };
                     let shown = shown.filter(|_| a.error.is_none());
                     let label = if d.kind == "qr" || d.kind == "emoji" { "Reload QR Code" } else { "Start Over" };
@@ -933,15 +938,15 @@ impl BeeperGuiApp {
                         .size(rem(14.0))
                         .padding([8, 10])
                         .style(input_style(p.input, p.strong, p.tertiary, p.accent, 8.0));
-                    let accessory = |handle: svg::Handle, msg: AddMsg| {
-                        button(svg(handle).width(16).height(16))
+                    // `.login-field-accessory`: Desktop's 16 px system icons in `--color-on-surface-variant`.
+                    let accessory = |icon: usize, msg: AddMsg| {
+                        button(tinted(&FIELD_ICONS[icon], 16.0, p.muted))
                             .padding(4)
-                            .style(btn_style([CLEAR, p.hover, p.hover], [p.strong; 3], 6.0))
+                            .style(btn_style([CLEAR, p.hover, p.hover], [p.muted; 3], 6.0))
                             .on_press(go(msg))
                     };
-                    let eye = secret.then(|| accessory(if shown { EYE_OFF.clone() } else { EYE.clone() }, AddMsg::Reveal(f.id.clone())));
-                    let clear =
-                        (!secret && !value.is_empty()).then(|| accessory(CLEAR_FIELD.clone(), AddMsg::Field(f.id.clone(), String::new())));
+                    let eye = secret.then(|| accessory(usize::from(shown), AddMsg::Reveal(f.id.clone())));
+                    let clear = (!secret && !value.is_empty()).then(|| accessory(2, AddMsg::Field(f.id.clone(), String::new())));
                     row![input].push(eye).push(clear).spacing(4).align_y(Center).into()
                 }
             };
@@ -1064,6 +1069,52 @@ mod tests {
         let _ = sim.click("Done").expect("the Done button");
         let id = app.add_accounts[0].id;
         assert!(matches!(sim.into_messages().next(), Some(UiMessage::AddAccount(w, AddMsg::Close)) if w == id));
+    }
+
+    /// Desktop's icons of the add-account steps: the 16 px system `copy` (11.3 by 13.3) in `--color-primary` after a
+    /// pairing code in `--color-primary`, the turning `OutlineSpinner` (a 1.5 px arc of three quarters, 2.4 px at
+    /// 32 px) at half opacity while a step waits without a code, and the 16 px system `eye` (13.9 by 9.1 with its
+    /// 1.4 px lines) and `cancel` disc of the form's fields in `--color-on-surface-variant`.
+    #[test]
+    fn step_icons_like_desktop() {
+        let mut app = crate::fuzz::demo_app("step-icons");
+        let _ = app.open_add_account("whatsapp", None);
+        let display = |kind: &str| Step {
+            kind: "display_and_wait".into(),
+            step_id: "fi.mau.whatsapp.login.code".into(),
+            display_and_wait: Some(beeper_core::bridge_login::Display { kind: kind.into(), data: "ABCD1234".into(), ..Default::default() }),
+            ..Step::default()
+        };
+        let shot = |app: &BeeperGuiApp, at: &str| {
+            let mut sim = iced_test::Simulator::with_size(Default::default(), SIZE, app.view_add_account(&app.add_accounts[0]));
+            let b = sim.find(at).unwrap_or_else(|_| panic!("{at}")).bounds();
+            (crate::focus::tests::pixels(&mut sim, &iced::Theme::Light, "step-icons"), b)
+        };
+        let ink = |s: &::image::RgbaImage, w| crate::focus::tests::ink(s, SIZE.width, w);
+        let near = |got: [f32; 4], w: f32, h: f32| (got[2] - w).abs() <= 0.4 && (got[3] - h).abs() <= 0.4;
+        let (accent, muted) = (app.pal.accent.into_rgba8(), app.pal.muted.into_rgba8());
+        app.add_accounts[0].step = Some(display("code"));
+        let (s, code) = shot(&app, "ABCD1234");
+        let (copy, color, _) = ink(&s, [code.x + code.width + 8.0, code.y, 28.0, code.height]);
+        assert!(near(copy, 11.33, 13.33) && color == accent[..3], "the copy icon: {copy:?} {color:?}");
+        assert_eq!(ink(&s, [code.x, code.y, code.width, code.height]).1, accent[..3], "the code");
+        app.add_accounts[0].step = Some(display("nothing"));
+        assert!(app.add_accounts[0].spinning() && app.animated(), "the spinner turns");
+        let s = crate::focus::tests::shot(app.view_add_account(&app.add_accounts[0]), SIZE, "step-spinner");
+        let (_, color, area) = ink(&s, [180.0, 170.0, 40.0, 42.0]);
+        // #202124 at half opacity over the white card.
+        assert!((area - 149.0).abs() < 8.0 && color.iter().all(|&c| c.abs_diff(144) <= 2), "the spinner: {area} {color:?}");
+        let field = |kind: &str| Field { kind: kind.into(), id: kind.into(), name: kind.into(), ..Field::default() };
+        let fields = vec![field("password"), field("text")];
+        let form =
+            Step { kind: "user_input".into(), user_input: Some(bridge_login::UserInput { fields, can_cancel: true }), ..Step::default() };
+        app.add_accounts[0].step = Some(form);
+        app.add_accounts[0].values = [("password", ""), ("text", "x")].map(|(k, v)| (k.to_string(), v.to_string())).into();
+        let ((s, pw), (_, text)) = (shot(&app, "password"), shot(&app, "text"));
+        let ((eye, eye_color, _), (cancel, cancel_color, _)) =
+            (ink(&s, [334.0, pw.y + 23.0, 28.0, 26.0]), ink(&s, [334.0, text.y + 23.0, 28.0, 26.0]));
+        assert!(near(eye, 13.92, 9.12) && near(cancel, 16.0, 16.0), "the eye {eye:?} and the clear button {cancel:?}");
+        assert!(eye_color == muted[..3] && cancel_color == muted[..3], "{eye_color:?} {cancel_color:?}");
     }
 
     #[test]

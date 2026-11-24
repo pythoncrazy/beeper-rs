@@ -555,15 +555,16 @@ fn card_style(bg: Color) -> impl Fn(&Theme) -> container::Style {
     move |_| container::Style { background: Some(bg.into()), border: border::rounded(12), shadow, ..Default::default() }
 }
 
-/// Desktop's onboarding error toast: 300x32 at the top of the window, with an info icon and a close button.
+/// Desktop's onboarding error toast (`showErrorToast`): 300x32 at the top of the window, with the 20 px system `info`
+/// icon and the 14 px system `close` of its close button.
 /// Desktop's `showToast`: a neutral toast with centered text and no close button, which goes after 3 s.
 fn toast<'a>(p: &Palette, text: &'a str, error: bool) -> El<'a> {
     let (bg, fg) = if error { (ON_ERROR, Color::WHITE) } else { (p.card, p.strong) };
     let text = txt(text, 13.0).line_height(iced::Pixels(rem(16.0))).color(fg).width(Fill);
     let line: El<'a> = match error {
         true => {
-            let close = button(ic(icon::CLOSE, 14.0).color(fg)).bare(fg).padding(3).on_press(LoginMsg::CloseToast.into());
-            row![ic(icon::INFO, 20.0).color(fg), text, close].spacing(6).align_y(Center).into()
+            let close = button(tinted(&crate::ROW_ACTIONS[6], 14.0, fg)).bare(fg).padding(3).on_press(LoginMsg::CloseToast.into());
+            row![tinted(&crate::INFO_CIRCLE, 20.0, fg), text, close].spacing(6).align_y(Center).into()
         }
         false => text.center().into(),
     };
@@ -2057,6 +2058,25 @@ mod tests {
         assert!(app.main_window.is_some());
         assert_eq!(app.pane.selected_chat_id.as_deref(), Some(beeper_core::store::NOTE_CHAT_ID));
         assert!(task_messages(task).await.is_empty(), "no mobile apps toast");
+    }
+
+    /// Desktop's onboarding error toast draws the 20 px system `info` (16.7 px) and the 14 px system `close` (8.2 px,
+    /// square ends) in white.
+    #[test]
+    fn the_error_toast_draws_desktops_icons() {
+        let mut app = signed_out_app("error-toast-icons");
+        app.login.toast = Some("Something went wrong".into());
+        let size = iced::Size::new(330.0, 620.0);
+        let mut sim = iced_test::Simulator::with_size(Default::default(), size, app.view_login());
+        let text = sim.find("Something went wrong").expect("the toast").bounds();
+        let shot = crate::focus::tests::pixels(&mut sim, &app.iced_theme(), "error-toast");
+        let ink = |w| crate::focus::tests::ink(&shot, size.width, w);
+        let (info, color, _) = ink([text.x - 28.0, text.y - 6.0, 24.0, text.height + 12.0]);
+        let (close, _, _) = ink([text.x + text.width + 6.0, text.y - 6.0, 20.0, text.height + 12.0]);
+        let near = |got: [f32; 4], side: f32| (got[2] - side).abs() <= 0.4 && (got[3] - side).abs() <= 0.4;
+        assert!(near(info, 16.67) && color == [255; 3], "the info icon: {info:?} {color:?}");
+        // The tips of the cross lose about 0.3 px to the antialiasing.
+        assert!(near(close, 8.17), "the close icon: {close:?}");
     }
 
     /// Desktop's sign-in window becomes resizable on Connect Chat Accounts.

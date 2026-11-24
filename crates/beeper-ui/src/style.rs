@@ -45,8 +45,6 @@ pub mod icon {
     /// Lucide's `chevron-right`, which is the Feather `ChevronRight` of Desktop's submenu rows.
     pub const CHEVRON: char = '\u{e06f}';
     pub const AT_SIGN: char = '\u{e04e}';
-    pub const INFO: char = '\u{e0f9}';
-    pub const HISTORY: char = '\u{e1f5}';
 }
 
 macro_rules! font {
