@@ -603,10 +603,7 @@ fn message_text(m: &Value) -> Option<String> {
 fn participants_summary(p: &Value) -> Option<String> {
     let s = |n: u64| format!("{n} participant{}", if n == 1 { "" } else { "s" });
     match (p["total"].as_f64(), arr(&p["items"]).len()) {
-        (Some(total), _) => Some(match total.fract() == 0.0 {
-            true => s(total as u64),
-            false => format!("{total} participants"),
-        }),
+        (Some(total), _) => Some(if total.fract() == 0.0 { s(total as u64) } else { format!("{total} participants") }),
         (None, 0) => None,
         (None, n) => Some(s(n as u64)),
     }
@@ -934,10 +931,7 @@ fn bridge_row(b: &Value) -> El {
     let accounts_list = when(!accounts.is_empty(), || {
         let lines = accounts.iter().take(3).map(|a| {
             let id = if a["accountID"].is_null() { &a["id"] } else { &a["accountID"] };
-            let status = match truthy(&a["status"]) {
-                true => format!("  {}", js_string(&a["status"]).replace('_', " ")),
-                false => String::new(),
-            };
+            let status = if truthy(&a["status"]) { format!("  {}", js_string(&a["status"]).replace('_', " ")) } else { String::new() };
             t(format!("· {}{status}", js_string(id)), MUTED)
         });
         let more = when(accounts.len() > 3, || t(format!("  {} more", accounts.len() - 3), SUBTLE));

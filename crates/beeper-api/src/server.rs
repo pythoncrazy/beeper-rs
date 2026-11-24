@@ -1333,10 +1333,7 @@ fn base_url(cfg: &CentralConfig, msg: &HttpMessage) -> String {
         return bound;
     }
     if !cfg.remote {
-        return match auth::loopback_name(name) {
-            true => build_base_url("http", name, &port),
-            false => bound,
-        };
+        return if auth::loopback_name(name) { build_base_url("http", name, &port) } else { bound };
     }
     let scheme = if first("x-forwarded-proto") == Some("https") { "https" } else { "http" };
     let port = first("x-forwarded-port").or(msg.header("host").and_then(|h| h.split(':').nth(1)));
@@ -1354,10 +1351,7 @@ fn preferred<'a>(accept: Option<&str>, offers: &[&'a str]) -> Option<&'a str> {
             Some((t.trim(), s.trim(), q))
         })
         .collect();
-    let part = |a: &str, o: &str, bit| match a.eq_ignore_ascii_case(o) {
-        true => Some(bit),
-        false => (a == "*").then_some(0),
-    };
+    let part = |a: &str, o: &str, bit| if a.eq_ignore_ascii_case(o) { Some(bit) } else { (a == "*").then_some(0) };
     // The most specific entry of the header for the offer, then the highest quality, then the last one.
     let priority = |offer: &str| {
         let (t, s) = offer.split_once('/').expect("a media type");
@@ -2802,10 +2796,7 @@ fn asset_file(st: &BeeperStore, r: &Req) -> Result<std::path::PathBuf, Response>
 fn serve_asset(path: std::path::PathBuf, r: &Req) -> Reply {
     let read = |e: std::io::Error| {
         // Windows reports "Access is denied" for a directory.
-        let message = match path.is_dir() {
-            true => "EISDIR: illegal operation on a directory, read".into(),
-            false => e.to_string(),
-        };
+        let message = if path.is_dir() { "EISDIR: illegal operation on a directory, read".into() } else { e.to_string() };
         error(StatusCode(500), &message, "UNKNOWN_ERROR")
     };
     let bytes = std::fs::read(&path).map_err(read)?;

@@ -172,10 +172,7 @@ pub(crate) async fn once(homeserver: &Url, token: &str, source: &Source, interac
         trail.push(format!("{} to {}", resp.status().as_u16(), next.host_str().unwrap_or("?")));
         at = next;
     };
-    let via = match trail.is_empty() {
-        true => String::new(),
-        false => format!(" (after {})", trail.join(", ")),
-    };
+    let via = if trail.is_empty() { String::new() } else { format!(" (after {})", trail.join(", ")) };
     let status = resp.status();
     let broken = |e: reqwest::Error| {
         let f = network(e);

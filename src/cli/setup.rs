@@ -408,10 +408,7 @@ fn session_found(local: &Local, setup_cmd: &str) -> Value {
         action("desktop-oauth", format!("{setup_cmd} --oauth")),
         action("connect-remote", format!("{BIN} setup --remote <url>")),
     ];
-    let message = match ready {
-        true => "Beeper Desktop is signed in and ready.",
-        false => "Beeper Desktop is signed in, but setup is not finished.",
-    };
+    let message = if ready { "Beeper Desktop is signed in and ready." } else { "Beeper Desktop is signed in, but setup is not finished." };
     Value::Object(obj([
         ("state", json!(if ready { "desktop-ready" } else { "desktop-session-found" })),
         ("message", json!(message)),
@@ -630,10 +627,7 @@ fn setup_remote(c: &mut Ctx, url: &str) -> Res {
     }
     let target =
         obj([("id", json!(name)), ("name", json!(name)), ("type", json!("remote")), ("baseURL", json!(url)), ("managed", json!(false))]);
-    let result = match c.str("email").is_some() {
-        true => setup_email(c, &target)?,
-        false => setup_oauth(c, &target, Some("remote-oauth"))?,
-    };
+    let result = if c.str("email").is_some() { setup_email(c, &target)? } else { setup_oauth(c, &target, Some("remote-oauth"))? };
     write_target(&target)?;
     if c.str("target").is_none() {
         set_default_target(&name)?;

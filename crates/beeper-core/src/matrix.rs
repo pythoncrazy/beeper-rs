@@ -1920,10 +1920,7 @@ async fn sync_room_after(store: &SharedStore, room: &Room, mut events: Vec<Timel
         Some(t) if t != "com.beeper.local" && t != UNION => return,
         _ => {}
     }
-    let union = match create["type"] == UNION {
-        true => Some(union_rooms(room).await),
-        false => None,
-    };
+    let union = if create["type"] == UNION { Some(union_rooms(room).await) } else { None };
     // SQLite keeps the fresh reads and members of a joined room for the next start.
     let mut keep_reads = false;
     let mut reads = if let Some(r) = cached {
@@ -3141,10 +3138,7 @@ async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), Pu
         }
         Outgoing::Edit { target, text, mentions, caption } => {
             let target = event(target)?;
-            let attachment = match caption {
-                true => Some(caption_attachment(&room, &target).await?),
-                false => None,
-            };
+            let attachment = if caption { Some(caption_attachment(&room, &target).await?) } else { None };
             room.send_raw("m.room.message", origin(edit_content(&target, text, &mentions, attachment)?, now_unix_millis())).await?;
         }
         // Desktop's `getRedactionExtraContent`: a room with `delete_hide_placeholder` leaves no "deleted" placeholder.
@@ -3656,10 +3650,7 @@ pub fn logged(src: &str) -> String {
 async fn fetch(client: &Client, source: crate::download::Source, interactive: bool) -> Result<Vec<u8>, String> {
     let request = MediaRequestParameters { source: source.cache_key(), format: MediaFormat::File };
     let uri = source.uri().to_string();
-    let shown = match source.encrypted() {
-        true => format!("{uri} (encrypted)"),
-        false => uri,
-    };
+    let shown = if source.encrypted() { format!("{uri} (encrypted)") } else { uri };
     let cache = client.media_store();
     if let Ok(cache) = cache.lock().await {
         if let Ok(Some(bytes)) = cache.get_media_content(&request).await {
@@ -3757,10 +3748,7 @@ impl Provision {
     /// The homeserver URL of a request to the bridge at `path`, like the SDK's `CallBridgeAPI`.
     fn bridge_url(&self, path: &str) -> String {
         let enc = crate::codec::url_encode;
-        let login = match self.login_id.is_empty() {
-            true => String::new(),
-            false => format!("&login_id={}", enc(&self.login_id)),
-        };
+        let login = if self.login_id.is_empty() { String::new() } else { format!("&login_id={}", enc(&self.login_id)) };
         format!(
             "{}/_matrix/client/unstable/com.beeper.bridge/{}{path}?user_id={}{login}",
             self.homeserver.trim_end_matches('/'),
@@ -4217,10 +4205,7 @@ pub(crate) async fn connect(store: &SharedStore) -> Result<Client, String> {
     let builder = crate::net::matrix_client()?.homeserver_url(&s.homeserver).sqlite_store(dir, None);
     let builder = builder.with_encryption_settings(encryption);
     #[cfg(any(test, feature = "stub"))]
-    let builder = match STUB_CLIENTS.load(std::sync::atomic::Ordering::Relaxed) {
-        true => builder.request_config(stub_requests()),
-        false => builder,
-    };
+    let builder = if STUB_CLIENTS.load(std::sync::atomic::Ordering::Relaxed) { builder.request_config(stub_requests()) } else { builder };
     let client = builder.build().await.map_err(|e| e.to_string())?;
     let meta = SessionMeta {
         user_id: s.user_id.parse().map_err(|e| format!("bad Matrix user ID {}: {e}", s.user_id))?,
@@ -4722,10 +4707,7 @@ fn group_packs(events: &[PackEvent]) -> Vec<InstalledPack> {
         };
         let pack = &primary.3["pack"];
         let name = s(&pack["display_name"]).filter(|n| !n.is_empty());
-        let name = match is_whole {
-            true => name.map(|n| strip_part_one(&n)),
-            false => name,
-        };
+        let name = if is_whole { name.map(|n| strip_part_one(&n)) } else { name };
         let stickers: Vec<Sticker> = parts.iter().flat_map(|p| sticker_pack(&p.3, String::new(), "", None).stickers).collect();
         if stickers.is_empty() {
             continue;
@@ -5150,10 +5132,7 @@ pub async fn join_room(client: Client, room: String, via: String) -> Result<Stri
     let joined = if let Ok(id) = <&RoomId>::try_from(&*room) {
         client.join_room_by_id(id).await
     } else {
-        let vias = match via.is_empty() {
-            true => Vec::new(),
-            false => vec![OwnedServerName::try_from(via).map_err(|e| e.to_string())?],
-        };
+        let vias = if via.is_empty() { Vec::new() } else { vec![OwnedServerName::try_from(via).map_err(|e| e.to_string())?] };
         client.join_room_by_id_or_alias(&room, &vias).await
     };
     Ok(joined.map_err(|e| e.to_string())?.room_id().to_string())
@@ -5650,10 +5629,7 @@ async fn run_verification(store: &SharedStore, request: VerificationRequest, con
                     let emojis = their_methods.contains(&VerificationMethod::SasV1);
                     let scans = their_methods.contains(&VerificationMethod::QrCodeScanV1);
                     // Desktop's `qr_data`: the QR code for the other device to scan, when it can scan one.
-                    let qr = match scans {
-                        true => request.generate_qr_code().await.map_err(|x| e(&x))?,
-                        false => None,
-                    };
+                    let qr = if scans { request.generate_qr_code().await.map_err(|x| e(&x))? } else { None };
                     let qr = qr.map(|q| q.to_bytes()).transpose().map_err(|x| e(&x))?;
                     track(store, &id, |v| {
                         v.state = "ready";
@@ -5893,12 +5869,7 @@ pub async fn run(store: SharedStore) {
     client
         .sync_with_result_callback(settings, |r| {
             let (client, store) = (client2.clone(), store.clone());
-            async move {
-                Ok(match on_sync(&client, &store, r).await {
-                    true => LoopCtrl::Continue,
-                    false => LoopCtrl::Break,
-                })
-            }
+            async move { Ok(if on_sync(&client, &store, r).await { LoopCtrl::Continue } else { LoopCtrl::Break }) }
         })
         .await
         .expect("Matrix sync loop");

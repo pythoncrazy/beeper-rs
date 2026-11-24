@@ -2704,10 +2704,7 @@ impl BeeperStore {
 
     /// The users who type in `chat`, other than you, from its `m.typing`.
     pub fn set_typing(&mut self, chat: &str, ids: Vec<String>) {
-        let old = match ids.is_empty() {
-            true => self.typing.remove(chat),
-            false => self.typing.insert(chat.to_string(), ids.clone()),
-        };
+        let old = if ids.is_empty() { self.typing.remove(chat) } else { self.typing.insert(chat.to_string(), ids.clone()) };
         if old.unwrap_or_default() != ids {
             self.emit_ws("chat.typing", chat, None, None, None);
         }

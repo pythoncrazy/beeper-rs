@@ -25,10 +25,7 @@ pub fn offline() -> bool {
 /// lookup, the proxy and the TCP connection of reqwest's connector.
 fn gated(builder: reqwest::ClientBuilder, closed: &'static AtomicBool) -> reqwest::Client {
     crate::cloud::install_tls();
-    let gate = move |dst| match closed.load(Ordering::SeqCst) {
-        true => Err(tower::BoxError::from(OFFLINE_ERROR)),
-        false => Ok(dst),
-    };
+    let gate = move |dst| if closed.load(Ordering::SeqCst) { Err(tower::BoxError::from(OFFLINE_ERROR)) } else { Ok(dst) };
     builder.connector_layer(tower::filter::FilterLayer::new(gate)).build().expect("build the HTTP client")
 }
 

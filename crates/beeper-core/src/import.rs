@@ -112,10 +112,7 @@ fn read_snapshot(dir: &Path, src_dir: &Path) -> Result<BeeperData, String> {
         .query_row("SELECT threadID FROM threads WHERE json_extract(CAST(thread AS TEXT), '$.extra.isNoteToSelf') = 1", [], |r| r.get(0))
         .optional()
         .map_err(e)?;
-    let remap = |s: &str| match note_id.as_deref() == Some(s) {
-        true => crate::store::NOTE_CHAT_ID.to_string(),
-        false => s.to_string(),
-    };
+    let remap = |s: &str| if note_id.as_deref() == Some(s) { crate::store::NOTE_CHAT_ID.to_string() } else { s.to_string() };
     let rules = read_kv_json(&db, "ad:com.beeper.chat_list_rules")?;
     let pins = read_kv_json(&db, "ad:com.beeper.favourites_order")?;
     let pin_rank = pins["Inbox"].as_array().into_iter().flatten().enumerate().filter_map(|(i, v)| Some((remap(v.as_str()?), i))).collect();
@@ -255,10 +252,7 @@ fn read_reaction_preview(t: &Value, id: &str, account_id: &str, group: bool, ite
     let sender_id = str_field(plm, "senderID")?;
     let is_sender = flag(plm, "isSender");
     let sender_name = items.iter().find(|u| u.id == sender_id).map(|u| display_name(u).to_string());
-    let who = match is_sender {
-        true => Some("You"),
-        false => group.then(|| sender_name.as_deref().unwrap_or(sender_id.as_str())),
-    };
+    let who = if is_sender { Some("You") } else { group.then(|| sender_name.as_deref().unwrap_or(sender_id.as_str())) };
     let target = plm.get("linkedMessage").map(|l| Message {
         attachments: l.get("attachments").and_then(Value::as_array).map_or_else(Vec::new, |a| a.iter().map(read_attachment).collect()),
         is_sender: Some(flag(l, "isSender")),
@@ -488,10 +482,7 @@ fn read_messages(db: &Connection, chats: &[Chat]) -> Result<Vec<Message>, String
         let q = "SELECT 1 FROM pragma_table_info('mx_room_messages') WHERE name = ?1";
         db.query_row(q, [col], |_| Ok(())).optional().map(|o| o.is_some())
     };
-    let root = match has("threadRootEventID").map_err(|e| e.to_string())? {
-        true => "threadRootEventID",
-        false => "replyThreadRootID",
-    };
+    let root = if has("threadRootEventID").map_err(|e| e.to_string())? { "threadRootEventID" } else { "replyThreadRootID" };
     let mut stmt = db
         .prepare(&format!(
             "SELECT messageID, threadID, timestamp, CAST(message AS TEXT), NULL, 0, NULL FROM messages
