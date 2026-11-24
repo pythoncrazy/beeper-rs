@@ -2668,6 +2668,9 @@ async fn flush(store: SharedStore) -> Result<(), PushError> {
         }
         let pending = matches!(out, Outgoing::RemoveFromBeeper { .. });
         let flag = if let Outgoing::Flag(f, on) = out { Some((chat.clone(), f, on)) } else { None };
+        // Desktop's `recordSend` when the homeserver takes a message.
+        let sent = matches!(out, Outgoing::Send { .. } | Outgoing::Poll { .. } | Outgoing::Forward { .. } | Outgoing::Media { .. })
+            .then(|| chat.clone());
         // Desktop's `sendQueuedMessages` gives up on a message five times its slow wait after its push began.
         let wait = message.as_ref().filter(|_| retry).and_then(|id| store.read().send_wait(id));
         let left = wait.map_or(std::time::Duration::MAX, |(start, wait)| {
@@ -2687,6 +2690,9 @@ async fn flush(store: SharedStore) -> Result<(), PushError> {
             (Ok(()), message) => {
                 if let Some((chat, f, on)) = flag {
                     st.flag_sent(chat, f, on);
+                }
+                if let Some(chat) = sent {
+                    st.record_activity(&chat, crate::store::Activity::SEND, now_unix_millis());
                 }
                 st.pushed(row, message.as_deref(), None);
             }

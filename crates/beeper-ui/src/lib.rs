@@ -2933,6 +2933,8 @@ pub struct BeeperGuiApp {
     pub list: chat_list::ListState,
     /// The requests that the Requests view last marked as seen.
     seen_requests: Vec<String>,
+    /// The chat of the main window, since when it is selected, and whether its dwell counted.
+    dwell: Option<(String, std::time::Instant, bool)>,
     /// The Picture in Picture window and the message of its video, and a video that should go there.
     pip: Option<(window::Id, String)>,
     pip_wanted: bool,
@@ -3352,7 +3354,7 @@ impl BeeperGuiApp {
             screen_scale: 2.0,
         }, default: chat_windows, space_windows, carousel_windows, drawing, drawing_thread, open_threads, thread_area,
             thread_drag, unread_view, unread_menu, hidden, unmapped, opened, unmapped_focus, activation_token,
-            system_dark, zoom_drag, maximize_when_placed, seen_requests, pip, pip_wanted, pip_manual, pip_menu,
+            system_dark, zoom_drag, maximize_when_placed, seen_requests, dwell, pip, pip_wanted, pip_manual, pip_menu,
             hotkey_query, hotkey_rec, profile, modals, hotkeys_modal, dropping, drop_send, dropped, hotkeys_scrolled, chat_sub,
             reminded, search_room, search_filters, search_select, native_select, cursor, image_clipboard, pressing, forward,
             media_window, in_media, emoji_gen, emoji_hovered, focused, idle, notified, retried, slow_sends, notifications,
@@ -4371,6 +4373,7 @@ impl BeeperGuiApp {
         let task = self.handle(msg);
         self.link_drafts();
         let reveal = pointed.map_or_else(Task::none, |p| self.reveal_pointed(p));
+        self.dwell();
         let task = Task::batch([task, reveal, self.view_requests(), self.pip()]);
         self.keep_shown();
         // A toast with the same text replaces the shown one, unless Desktop's toast ID tells them apart, and so does
@@ -6365,6 +6368,23 @@ impl BeeperGuiApp {
         });
         self.pip = Some((id, v.mid.clone()));
         open.map(|a0| UiMessage::Window(windows::Msg::Opened(a0)))
+    }
+
+    /// Desktop's `recordDwell` of `setSelectedThread`: the chat of the main window that stays selected 3 seconds
+    /// counts once, at the first message after them.
+    fn dwell(&mut self) {
+        if self.swapped.is_some() {
+            return;
+        }
+        if let Some((id, since, counted @ false)) = &mut self.dwell {
+            if since.elapsed() >= std::time::Duration::from_secs(3) {
+                *counted = true;
+                self.store.write().record_activity(id, beeper_core::store::Activity::DWELL, beeper_core::config::now_unix_millis());
+            }
+        }
+        if self.pane.selected_chat_id.as_deref() != self.dwell.as_ref().map(|d| d.0.as_str()) {
+            self.dwell = self.pane.selected_chat_id.clone().map(|id| (id, std::time::Instant::now(), false));
+        }
     }
 
     /// Desktop's `updateLastViewedRequestsAt` when the Requests view shows, and when its requests change while it
