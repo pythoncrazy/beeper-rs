@@ -2697,6 +2697,8 @@ pub struct Pane {
     pub(crate) carousel: Option<Carousel>,
     /// Desktop's detached `ThreadInfoBrowserWindow`: the window shows only the Chat Info of its chat.
     pub(crate) info: bool,
+    /// Desktop's `BlockedUserInfoBrowserWindow` (`DCt`) of an `info` window: Chat Info without its actions, and Done.
+    pub(crate) blocked_sheet: bool,
     pub top: TopOfThread,
     timeline: vlist::VList,
     thread_list: vlist::VList,
@@ -3695,6 +3697,10 @@ impl BeeperGuiApp {
                     let st = self.store.read();
                     let chat = pane.selected_chat_id.as_deref().and_then(|c| st.resolve_chat_idx(c));
                     let title = chat.map_or("Beeper".into(), |i| st.chats[i].title.clone());
+                    // `DCt.title`: the chat's title, else "Chat Info".
+                    if pane.blocked_sheet {
+                        return chat.map_or_else(|| tr("Chat Info").into(), |i| st.chats[i].title.clone());
+                    }
                     return match (pane.info, pane.thread_root.is_some()) {
                         (true, _) => trf("%s — Chat Info", &[&title]),
                         (false, true) => trf("Thread in %s", &[&title]),
@@ -4988,7 +4994,7 @@ impl BeeperGuiApp {
         if self.store.read().matrix_error.is_some() {
             self.status_banner = self.store.write().matrix_error.take().expect("a Matrix error");
         }
-        Task::batch([self.load_avatars(), self.load_media()])
+        Task::batch([self.load_avatars(), self.load_media(), self.close_unblocked_sheets()])
     }
 
     /// Desktop's `hydrateMissingBookmarks` while Chat Info is open: fetches the bookmarked messages of the open chat
