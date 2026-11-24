@@ -4,9 +4,9 @@ use iced::advanced::widget::{self};
 use iced::advanced::{mouse, renderer, Renderer as _};
 
 /// Draws `content` lowered by `dy` and scaled by `scale` from its bottom right corner, like Desktop's
-/// `message-send-insert` keyframes. The layout does not change, except that a `tight` lift gives `content`
-/// its full size as the minimum size, and a `spill` lift lets it grow taller than its room. A `press` lift draws `content` at `scale` from its center while the left
-/// button that went down on it stays down, like a CSS `:active` transform.
+/// `message-send-insert` keyframes. The layout does not change, except that a `tight` lift gives `content` its full
+/// size as the minimum size, and a `spill` lift lets it grow taller than its room. A `press` lift draws `content` at
+/// `scale` from its center while the left button that went down on it stays down, like a CSS `:active` transform.
 pub struct Lift<'a, Message> {
     content: Element<'a, Message>,
     dx: f32,
