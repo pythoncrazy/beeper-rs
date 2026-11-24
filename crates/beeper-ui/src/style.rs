@@ -1783,4 +1783,17 @@ mod tests {
         let word = || text("x").size(20);
         assert_eq!(middle(word, 4.0), middle(word, 4.125), "text keeps whole pixels");
     }
+
+    /// Chromium paints the box of an image on whole pixels, each edge on the nearest one. An 8.4 px icon 1.4 px in
+    /// covers the pixels 3 to 20 of the snapshot at twice the size (2.8 to 19.6), not the 16 px from 2.
+    #[test]
+    fn icons_fill_the_nearest_whole_pixels_of_their_box() {
+        let square = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><rect width="10" height="10"/></svg>"#;
+        let icon = iced::widget::svg(iced::widget::svg::Handle::from_memory(square.as_slice())).width(8.4).height(8.4);
+        let view = iced::widget::container(icon).padding(iced::Padding::ZERO.left(1.4).top(1.4));
+        let shot = crate::focus::tests::shot(view.into(), iced::Size::new(20.0, 20.0), "icon-box");
+        let dark: Vec<(u32, u32)> = shot.enumerate_pixels().filter(|(_, _, p)| p[0] < 128).map(|(x, y, _)| (x, y)).collect();
+        let span = |of: fn(&(u32, u32)) -> u32| (dark.iter().map(of).min().unwrap(), dark.iter().map(of).max().unwrap() + 1);
+        assert_eq!((span(|p| p.0), span(|p| p.1)), ((3, 20), (3, 20)));
+    }
 }
