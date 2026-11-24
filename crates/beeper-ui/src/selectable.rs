@@ -15,6 +15,7 @@ use iced::advanced::image::{self as core_image, Renderer as _};
 use iced::advanced::layout::{self};
 use iced::advanced::overlay;
 use iced::advanced::renderer::{self, Renderer as _};
+use iced::advanced::svg::Renderer as _;
 use iced::advanced::text::{self as core_text, Paragraph as _, Renderer as _, Span};
 use iced::alignment;
 use iced::mouse;
@@ -38,6 +39,17 @@ const SAME_PRESS: Duration = Duration::from_millis(100);
 /// The text of a span that holds the place of an inline image: an em space, which is 1em wide like Desktop's custom
 /// emoji, and a zero-width no-break space that no message text has after it.
 pub const IMAGE_SLOT: &str = "\u{2003}\u{feff}";
+/// The text of a span that holds the place of Desktop's `.ext-link-with-icon:after` arrow at the end of a link: an
+/// em space, as wide as the span's size (Desktop's 8 px box and 2 px margins), and a word joiner.
+pub const ARROW_SLOT: &str = "\u{2003}\u{2060}";
+/// Inter's descender, the bottom of the content area of an inline box under the baseline: `.message-contents a`'s
+/// `border-bottom` sits under it.
+const DESCENT: f32 = 0.2421875;
+
+/// The baseline of the paragraph's line whose top is `top`.
+fn baseline(buffer: &Buffer, top: f32) -> f32 {
+    buffer.layout_runs().find(|r| (r.line_top - top).abs() < 0.5).map_or(top, |r| r.line_y)
+}
 
 /// The selection, shared by every selectable text so it can run across them. Each text derives its part when it
 /// needs it, so a text the view rebuilt mid-drag still shows its part.
@@ -307,21 +319,29 @@ impl<Link: Clone + 'static, Message> Widget<Message, Theme, Renderer> for Select
                     renderer.fill_quad(quad, highlight.background);
                 }
             }
-            let size = span.size.unwrap_or(size);
+            // An arrow is 12 px of a 13 px link.
+            let size = span.size.unwrap_or(size) * if span.text == ARROW_SLOT { 13.0 / 12.0 } else { 1.0 };
             let line_height = span.line_height.unwrap_or(self.line_height).to_absolute(size);
             let ink = span.color.unwrap_or(color);
-            let baseline = translation + Vector::new(0.0, size.0 + (line_height.0 - size.0) / 2.0);
-            let mut line = |offset: f32| {
-                for region in &regions {
-                    let bounds = Rectangle::new(region.position() + baseline - Vector::new(0.0, offset), Size::new(region.width, 1.0));
+            // `text-decoration` from the bottom of the em box, and Desktop's `border-bottom` of a link under the
+            // content area of the text, so it also runs under the arrow. Both snap to whole pixels like Chromium's.
+            let em_bottom = size.0 + (line_height.0 - size.0) / 2.0;
+            let buffer = state.paragraph.buffer();
+            let mut line = |y: &dyn Fn(Rectangle) -> f32| {
+                for &region in &regions {
+                    let (left, right) = ((region.x + translation.x).round(), (region.x + region.width + translation.x).round());
+                    let top = (y(region) + translation.y).round();
+                    let bounds = Rectangle::new(Point::new(left, top), Size::new(right - left, 1.0));
                     renderer.fill_quad(Quad { bounds, ..Quad::default() }, ink);
                 }
             };
-            if span.underline || hovered_link {
-                line(size.0 * 0.08);
+            match span.link.is_some() && span.underline {
+                true => line(&|r| baseline(buffer, r.y) + size.0 * DESCENT),
+                false if span.underline || hovered_link => line(&|r| r.y + em_bottom - size.0 * 0.08),
+                false => {}
             }
             if span.strikethrough {
-                line(size.0 / 2.0);
+                line(&|r| r.y + em_bottom - size.0 / 2.0);
             }
         }
 
@@ -336,6 +356,17 @@ impl<Link: Clone + 'static, Message> Widget<Message, Theme, Renderer> for Select
                     renderer.fill_paragraph(white, bounds.position(), SELECTED_TEXT, clip);
                 }
             }
+        }
+        // Desktop's arrow: an 8 px mask of `currentColor` at 0.7 opacity, 2 px into its slot, on the baseline.
+        for (index, span) in self.spans().iter().enumerate().filter(|(_, s)| s.text == ARROW_SLOT) {
+            let Some(region) = state.paragraph.span_bounds(index).first().copied() else { continue };
+            let k = span.size.unwrap_or(size).0 / 12.0;
+            // On the baseline that the glyphs snap to, at a whole pixel like Chromium's inline box.
+            let bottom = (baseline(state.paragraph.buffer(), region.y) + translation.y).round();
+            let left = (region.x + translation.x + 2.0 * k).round();
+            let arrow = Rectangle::new(Point::new(left, bottom - 8.0 * k), Size::new(8.0 * k, 8.0 * k));
+            let ink = span.color.unwrap_or(color).scale_alpha(0.7);
+            renderer.draw_svg(iced::advanced::svg::Svg::new(crate::EXTERNAL_LINK.clone()).color(ink), arrow, *viewport);
         }
         // Desktop's `.custom-emoji img`: 1em high, at the bottom of the text, raised by 0.075em.
         let slots = self.spans().iter().enumerate().filter(|(_, s)| s.text == IMAGE_SLOT);
@@ -633,7 +664,7 @@ fn selected_text(buffer: &Buffer, start: Cursor, end: Cursor) -> String {
             text.get(from..to.max(from))
         })
         .collect();
-    lines.join("\n").replace(['\u{200b}', '\u{2060}'], "").trim_end_matches('\u{a0}').to_string()
+    lines.join("\n").replace(ARROW_SLOT, "").replace(['\u{200b}', '\u{2060}'], "").trim_end_matches('\u{a0}').to_string()
 }
 
 /// Chromium's frame, which its selection autoscroll moves by the distance of the pointer from the edge.
