@@ -1751,7 +1751,7 @@ impl BeeperGuiApp {
                 .into()
         };
         let groups = first_groups(&shown, |h| h.1).into_iter().map(|group| {
-            let head = container(semi(tr(group), 13.0).color(p.text)).padding([4.8, 11.2]).width(row_w);
+            let head = container(semi(tr(group), 13.0).line_height(lh(18.2)).color(p.text)).padding([4.8, 11.2]).width(row_w);
             let rows = shown.iter().filter(|h| h.1 == group).map(row);
             column![head].extend(rows).padding(Padding::ZERO.top(12.8)).into()
         });
@@ -1773,20 +1773,22 @@ impl BeeperGuiApp {
             .id("hotkeys-search")
             .on_input(|q| UiMessage::Hotkeys(hotkeys::Msg::Modal(Some(q))))
             .size(rem(13.0))
-            .line_height(lh(18.2))
-            .padding([3, 6])
+            // Chromium's `normal` line height of Inter, inside a 1 px border and 3 px by 6 px of padding.
+            .line_height(lh(14.95))
+            .padding([4, 7])
             .style(outline_input(p));
         let rule = p.fg.scale_alpha(if self.hotkeys_scrolled { 0.1 } else { 0.0 });
         let card = column![
             // `.modal h3` is 24 px.
-            container(crate::style::fixed(tr("Keyboard Shortcuts"), 24.0, Weight::Bold).color(p.text)).padding([8.0, 24.0]),
+            container(crate::style::fixed(tr("Keyboard Shortcuts"), 24.0, Weight::Bold).line_height(Pixels(33.6)).color(p.text))
+                .padding([8.0, 24.0]),
             container(search).padding(pad(4.0, 22.4, 10.0, 22.4)),
             container(Space::new()).width(Fill).height(1).style(fill_box(rule, 0.0)),
             list,
         ]
         .width(card_w)
         .padding([13, 0]);
-        let card = mouse_area(container(card).style(fill_box(p.elevated, 0.0))).on_press(UiMessage::Noop);
+        let card = mouse_area(container(card).style(fill_box(p.elevated, 8.0))).on_press(UiMessage::Noop);
         let shade = container(card).align_right(Fill).center_y(Fill).padding(Padding::ZERO.right(13.0));
         crate::backdrop(shade.style(fill_box(Color::from_rgba(0.0, 0.0, 0.0, 0.4), 0.0)))
             .on_press(UiMessage::Hotkeys(hotkeys::Msg::Modal(None)))
@@ -2767,6 +2769,24 @@ mod tests {
 
     fn shows(app: &BeeperGuiApp, text: &str) -> bool {
         simulator(app.view_settings()).find(text).is_ok()
+    }
+
+    /// The places of Desktop's `hotkeys-modal` in a 1200 x 800 main window, as Desktop's CSS lays it out: the 24 px
+    /// title on its 33.6 px line, the search field, the 18.2 px group heading and the 31.6 px rows.
+    #[test]
+    fn keyboard_shortcuts_like_desktop() {
+        let app = crate::fuzz::demo_app("hotkeys-modal-geometry");
+        let size = Size::new(1200.0, 800.0);
+        let mut sim = iced_test::Simulator::with_size(Default::default(), size, app.view_hotkeys_modal("", size));
+        let mut top = |text: &str| sim.find(text).expect(text).bounds().y;
+        let (title, group) = (top("Keyboard Shortcuts"), top("Composer"));
+        let (first, second) = (top("Bold Text Selection"), top("Format Text Selection as Inline Code"));
+        // Desktop's card is 753.55 px high in the middle of the window, with 13 px of padding.
+        let card = (800.0 - 753.55) / 2.0 + 13.0;
+        assert!((title - (card + 8.0)).abs() < 0.5, "the title line: {title}");
+        assert!((group - (card + 49.6 + 37.95 + 12.8 + 4.8)).abs() < 0.5, "the Composer heading: {group}");
+        assert!((first - (group + 18.2 + 4.8 + 4.8 + 3.0)).abs() < 0.5, "the first row: {first}");
+        assert!((second - first - 31.6).abs() < 0.5, "a row is 31.6 px: {}", second - first);
     }
 
     /// Desktop's "Installed sticker packs" under "Use sticker packs": nothing until the packs load, the empty text,

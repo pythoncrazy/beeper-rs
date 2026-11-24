@@ -293,6 +293,9 @@ impl BeeperGuiApp {
 /// Desktop's default size of the main window (`Wg` and `jg`).
 pub(crate) const MAIN_SIZE: Size = Size::new(1200.0, 800.0);
 
+/// Desktop's `minWidth` and `minHeight` of its windows (`ji`).
+pub(crate) const MIN_SIZE: Size = Size::new(330.0, 400.0);
+
 /// Desktop's `windowStateKeeper` key of the chat windows (`w2` of a window ID that starts with `thread-`).
 pub(crate) const POP_OUT: &str = "pop-out-thread";
 
@@ -440,9 +443,23 @@ impl BeeperGuiApp {
         if self.unmaps() {
             self.opened.push((id, settings.clone()));
         }
-        let settings = window::Settings { size: settings.size * (1.0 / self.zoom), icon, ..settings };
+        // The title bar takes its height out of the window's, like Electron's on Wayland.
+        let bar = if settings.decorations { self.title_bar() } else { 0.0 };
+        let page = |s: Size| Size::new(s.width, s.height - bar) * (1.0 / self.zoom);
+        let settings = window::Settings { size: page(settings.size), min_size: settings.min_size.map(page), icon, ..settings };
         // iced's `window::open` with a given ID, so that all the state of a window that hid on Wayland follows it.
         iced_runtime::task::oneshot(move |done| iced_runtime::Action::Window(iced_runtime::window::Action::Open(id, settings, done)))
+    }
+
+    /// The height in Desktop's pixels of the title bar that winit adds on top of a window on Wayland. Electron draws
+    /// its own title bar there, inside the window's size, so Desktop's 800 px high window has 763 px of page under a
+    /// 37 px title bar. On X11 the window manager draws the title bar outside the window, for both.
+    pub(crate) fn title_bar(&self) -> f32 {
+        #[cfg(target_os = "linux")]
+        if self.unmaps() {
+            return sctk_adwaita::theme::header_size() as f32 / text_scale();
+        }
+        0.0
     }
 
     /// Whether the app hides a window by closing it and opening it again: on Wayland, where winit cannot hide a
@@ -468,8 +485,9 @@ impl BeeperGuiApp {
         let Some(i) = self.opened.iter().position(|w| w.0 == id) else { return Task::none() };
         let settings = self.opened.remove(i).1;
         self.unmapped.push((id, settings));
-        let zoom = self.zoom;
-        let state = window::is_maximized(id).then(move |max| window::size(id).map(move |size| (size * zoom, max)));
+        let (zoom, bar) = (self.zoom, self.title_bar());
+        let size = move |size: Size| Size::new(size.width * zoom, size.height * zoom + bar);
+        let state = window::is_maximized(id).then(move |max| window::size(id).map(move |s| (size(s), max)));
         let state = state.map(move |(size, max)| UiMessage::Window(Msg::Unmapped(id, size, max)));
         // The new window has none of the widget state of the old one, so the focus goes back to the same widget.
         let focus = (Some(id) == self.main_window.or(self.login_window)).then(|| {
@@ -631,7 +649,22 @@ impl BeeperGuiApp {
 
     /// A window of a fixed `size` over the middle of the main window, like Desktop's `center: "parent"`.
     pub(crate) fn open_child(&mut self, size: Size) -> (window::Id, Task<UiMessage>) {
-        let (id, open) = self.open_window(window::Settings { resizable: false, min_size: None, ..Self::window_settings(size) });
+        self.open_centered(size, false)
+    }
+
+    /// A resizable window of `size` over the middle of the main window, like Desktop's windows whose features leave
+    /// out `resizable`.
+    pub(crate) fn open_resizable_child(&mut self, size: Size) -> (window::Id, Task<UiMessage>) {
+        self.open_centered(size, true)
+    }
+
+    /// A window over the middle of the main window, at least Desktop's minimum size: Electron gives the windows that
+    /// Desktop's renderer opens its `minWidth` and `minHeight` too, so the 303 px wide Edit Labels window is 330 px
+    /// wide, and a fixed size grows to it.
+    fn open_centered(&mut self, size: Size, resizable: bool) -> (window::Id, Task<UiMessage>) {
+        let size = size.max(MIN_SIZE);
+        let min_size = resizable.then_some(MIN_SIZE);
+        let (id, open) = self.open_window(window::Settings { resizable, min_size, ..Self::window_settings(size) });
         // The main window, or the sign-in window of the onboarding.
         let (parent, around) = match self.main_window {
             Some(main) => (main, self.pane.size * self.zoom),
@@ -643,7 +676,7 @@ impl BeeperGuiApp {
     pub(crate) fn window_settings(size: Size) -> window::Settings {
         window::Settings {
             size,
-            min_size: Some(Size::new(330.0, 400.0)),
+            min_size: Some(MIN_SIZE),
             exit_on_close_request: false,
             icon: Some({
                 let img = ::image::load_from_memory(include_bytes!("../assets/icon.png")).expect("the app icon is a PNG");

@@ -1294,10 +1294,12 @@ impl BeeperGuiApp {
             (network_space(st, id).is_some() || twins).then(|| icon.into())
         });
         let line = row![].push(space_icon.map(|i| container(i).padding(Padding::ZERO.right(4.0)))).push(heading);
-        // Desktop's header of a space window neither opens the space sheet nor has a menu.
-        let chevron = (!list.locked).then(|| ic(icon::UNFOLD_MORE, 12.0).color(p.weak));
+        // Desktop's header of a space window neither opens the space sheet nor has a menu, and a list of at most
+        // 10.625rem inside its 8 px padding (`@container threads`) hides the chevron.
+        let roomy = self.list_width(st) - 8.0 > rem(170.0);
+        let chevron = (!list.locked && roomy).then(|| ic(icon::UNFOLD_MORE, 12.0).color(p.sub));
         let title = column![line.push(chevron).spacing(1.4).align_y(Center)]
-            .push((!names.is_empty()).then(|| txt(names.join(", "), 10.0).color(p.sub)))
+            .push((!names.is_empty()).then(|| txt(names.join(", "), 10.0).color(p.muted)))
             .padding([0, 8]);
         let title: El<'_> = match list.locked {
             true => title.into(),
@@ -1331,7 +1333,8 @@ impl BeeperGuiApp {
                 .on_press(UiMessage::ChatList(chat_list::Msg::ToggleFilterMenu));
             let pill = row![trigger, container(ic(icon::FILTER_LIST, 16.8).color(fg)).center_x(27).center_y(20)];
             let ring = if active { p.accent } else { CLEAR };
-            let face = bordered_btn([CLEAR, p.hover, p.hover], [fg; 3], ring, 1.0, 12.0);
+            // `.tab-bar-btn button:hover` keeps it clear.
+            let face = bordered_btn([CLEAR; 3], [fg; 3], ring, 1.0, 12.0);
             let press = UiMessage::ChatList(chat_list::Msg::FilterButton);
             let el = mouse_area(button(pill).padding(0).style(face).on_press(press.clone()))
                 .on_right_press(UiMessage::ChatList(chat_list::Msg::ToggleFilterMenu));
@@ -1500,7 +1503,8 @@ impl BeeperGuiApp {
         let loud = p.badge.map_or((p.accent, Color::WHITE), |from| (Color::WHITE, from));
         let (bg, fg) = if quiet { (p.card, p.strong) } else { loud };
         let dot = (!l.counts && unread).then(|| container(Space::new()).width(6).height(6).style(fill_box(bg, 3.0)));
-        let title_w = tile - if muted { 35.2 } else { 20.0 } - if dot.is_some() { 9.2 } else { 0.0 };
+        // The padding of the pin, then the bell and the dot with the heading's 0.2rem gaps.
+        let title_w = tile - if l.compact { 20.0 } else { 24.0 } - if muted { 15.2 } else { 0.0 } - if dot.is_some() { 9.2 } else { 0.0 };
         let title = ell(short_title(c), title_w, 12.0, Weight::Semibold);
         let label = row![]
             .push(dot)
@@ -1511,15 +1515,18 @@ impl BeeperGuiApp {
         let unread = match (st.typing.contains_key(&c.id), l.counts) {
             (true, _) => Some(self.typing_badge()),
             (false, true) => unread.then(|| count_badge(c, bg, fg, 14.0)),
-            (false, false) => (c.unread_mentions > 0).then(|| {
-                let at = ic(icon::AT_SIGN, 10.0).color(fg);
-                container(at).padding([0, 4]).center_y(14).style(fill_box(bg, 7.0)).into()
-            }),
+            (false, false) => {
+                (c.unread_mentions > 0).then(|| container(ic(icon::AT_SIGN, 10.0).color(fg)).center(16).style(fill_box(bg, 8.0)).into())
+            }
         };
+        // Desktop's 14 px indicators center on the line of the bubbles, 5 px below the avatar's top (2 px in the
+        // compact list), and its 16 px `mentionIndicator` 2 px lower.
+        let mention = !l.counts && !st.typing.contains_key(&c.id);
+        let lift = if l.compact { 5.0 } else { 2.0 } - if mention { 1.0 } else { 0.0 };
         let bubble = bubble_text(c, g.launched, g.now).filter(|_| l.previews && !on && !l.selecting);
         let unread = unread.filter(|_| bubble.is_none());
         let face = stack![container(self.chat_avatar(c, pin_av, 1.25)).center_x(pin_av + 4.0)]
-            .push((!l.selecting).then(|| container(unread).width(pin_av + 4.0).align_right(pin_av + 4.0)))
+            .push((!l.selecting).then(|| pin(container(unread).width(pin_av + 4.0).align_right(pin_av + 4.0)).y(-lift)))
             .push(l.selecting.then(|| pin(checkbox(p, self.selection.contains(&c.id))).x(pin_av - 11.0).y(-5.0)))
             .width(pin_av + 4.0)
             .height(pin_av);
@@ -1580,9 +1587,11 @@ impl BeeperGuiApp {
         let item = row![]
             .push(dot)
             .push(container(face).width(l.av + 10.0))
-            .push(column![top, preview].width(Fill))
+            // Desktop's 10 px padding, but iced draws a 14 px title 1 px lower than Chromium, so the regular row moves
+            // its title up and keeps the preview in place.
+            .push(column![top, preview].spacing(if l.compact { 0 } else { 1 }).width(Fill))
             .align_y(Center)
-            .padding(Padding::new(8.0).top(9.0).bottom(11.0).left(if l.selecting { 0.0 } else { 8.0 }));
+            .padding(Padding::new(8.0).top(if l.compact { 10.0 } else { 9.0 }).bottom(10.0).left(if l.selecting { 0.0 } else { 8.0 }));
         // Desktop's Play button takes the place of the hover actions.
         let plays = st.resolve_chat_idx(&key).is_some_and(|i| self.plays(&st.chats[i]));
         let hover = !l.selecting && !plays;
@@ -1654,7 +1663,8 @@ impl BeeperGuiApp {
             (false, None) => (p.accent, Color::WHITE),
         };
         let count = match l.counts {
-            true => unread.then(|| count_badge(c, dot_bg, dot_fg, 12.0)),
+            // `.unreadCount` is `1lh` of 14 px, or 12 px in the compact list.
+            true => unread.then(|| count_badge(c, dot_bg, dot_fg, if l.compact { 12.0 } else { 14.0 })),
             false => (c.unread_mentions > 0).then(|| ic(icon::AT_SIGN, 12.0).color(p.accent).into()),
         };
         // Desktop's `indicators`: the unread dot, and a red dot while a send of the chat waits for Retry.
@@ -1719,7 +1729,13 @@ impl BeeperGuiApp {
             .push(Space::new().width(Fill))
             .push(later.then(|| tinted(&COMPOSER_ICONS[6], 12.0, p.strong.scale_alpha(0.7))))
             .push(
-                txt(ts, l.ts_size).color(p.strong.scale_alpha(0.7)).font(crate::style::redact(iced::Font { style, ..fw(Weight::Normal) })),
+                container(
+                    txt(ts, l.ts_size)
+                        .color(p.strong.scale_alpha(0.7))
+                        .font(crate::style::redact(iced::Font { style, ..fw(Weight::Normal) })),
+                )
+                .height(Fill)
+                .padding(Padding::ZERO.top(2.0)),
             )
             .height(rem(16.0))
             .align_y(Center)
@@ -1834,7 +1850,8 @@ impl BeeperGuiApp {
                 .width(width)
             }))
             .push(Space::new().width(Fill))
-            .push(count)
+            // `.actions` has a 2 px top margin.
+            .push(count.map(|c| container(c).padding(Padding::ZERO.top(if l.compact { 0.0 } else { 2.0 }))))
             .spacing(4)
             .align_y(if l.compact { Center } else { iced::Alignment::Start });
         column![preview].push(second.map(|r| txt(r.to_string(), 13.0).font(font).color(fg)))

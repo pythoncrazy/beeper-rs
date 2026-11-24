@@ -343,6 +343,16 @@ fn short_count(n: usize) -> String {
     }
 }
 
+/// The opacity of a dot of the typing indicator `t` of the way through its second.
+fn typing_pulse(t: f32) -> f32 {
+    let ease = |x| crate::cubic_bezier(x, [0.25, 0.1, 0.25, 1.0]);
+    if t < 0.5 {
+        0.2 + 0.2 * ease(2.0 * t)
+    } else {
+        0.4 - 0.2 * ease(2.0 * t - 1.0)
+    }
+}
+
 /// The tooltip of Desktop's `BrandTypingIndicator`, which Desktop does not translate.
 fn typing_tip(names: &[String]) -> String {
     match names {
@@ -922,8 +932,10 @@ impl BeeperGuiApp {
     /// with its name as a tooltip. The bubble's tooltip says who types.
     fn typing_bubble<'a>(&self, st: &BeeperStore, chat: &Chat, ids: &[String], v: f32) -> El<'a> {
         let p = &self.pal;
-        let ink = p.text.scale_alpha(v);
-        let dot = |delay| anim::dot(6.0, ink, self.started, delay, |t| 0.2 + 0.2 * (1.0 - (2.0 * t - 1.0).abs()));
+        // `.BrandTypingIndicator-module__indicator`: `--color-on-surface` dots that pulse from 0.2 to 0.4 and back each
+        // second, with the CSS `ease` in each half.
+        let ink = p.strong.scale_alpha(v);
+        let dot = |delay| anim::dot(6.0, ink, self.started, delay, typing_pulse);
         let bubble =
             container(row![dot(0), dot(340), dot(670)].spacing(4)).padding([12, 11]).style(fill_box(p.received.scale_alpha(v), 16.0));
         let users: Vec<&User> = ids.iter().filter_map(|id| chat.participants.items.iter().find(|u| u.id == *id)).collect();
@@ -1435,7 +1447,9 @@ impl BeeperGuiApp {
         let typing = st.typing.get(cid).filter(|ids| chat.chat_type == "single" && ids.len() == 1);
         let status = typing.map(|_| crate::style::region(true, || txt("typing", 10.0).color(p.sub)));
         let status_line = status.is_some();
-        let info = container(column![name_row].push(status).spacing(2).align_x(Center)).padding(pad(6.0, 6.0, 6.0, 10.0)).style(raised(
+        // `.thread-header-info`: 6/6/6/10 inside a 1 px outline that CSS draws outside the box, so the pill is 2 px
+        // taller and wider than its padding, and starts 1 px above the 4 px under the avatar.
+        let info = container(column![name_row].push(status).spacing(2).align_x(Center)).padding(pad(7.0, 7.0, 7.0, 11.0)).style(raised(
             p.elevated,
             14.0,
             Some(p.strong.scale_alpha(0.025)),
@@ -1444,7 +1458,7 @@ impl BeeperGuiApp {
         let avatar = crate::style::region(true, || self.chat_avatar(chat, 40.0, 0.0));
         let avatar = container(avatar).style(raised(p.card, 20.0, None, (1.0, 4.0, 0x1a)));
         // The pill sets the width of the card, and the avatar sits over its middle.
-        let card = stack![column![Space::new().height(36.0), info].align_x(Center), container(avatar).center_x(Fill)];
+        let card = stack![column![Space::new().height(35.0), info].align_x(Center), container(avatar).center_x(Fill)];
         let card = mouse_area(card)
             .interaction(mouse::Interaction::Pointer)
             .on_press(UiMessage::ToggleRightPanel)
@@ -1767,7 +1781,8 @@ impl BeeperGuiApp {
             let keys = Row::with_children(keys);
             row![count, label.color(fade(p.accent)), keys].spacing(7).align_y(Center).into()
         } else {
-            let chevron = tinted(&CHEVRON_DOWN, 20.0, fade(p.strong).scale_alpha(0.8));
+            // `--color-icon-neutrals-strong` at the 0.8 of its path.
+            let chevron = tinted(&CHEVRON_DOWN, 20.0, fade(p.text).scale_alpha(0.8));
             container(chevron).center(20).into()
         };
         let shadow = Shadow { color: fade(Color::from_rgba(0.0, 0.0, 0.0, 0.15)), offset: Vector::ZERO, blur_radius: 20.0 };
@@ -2123,7 +2138,7 @@ impl BeeperGuiApp {
             let body = row![icon, txt(text, 13.0).font(italic).color(fg)];
             container(body.spacing(5).align_y(iced::Bottom)).padding(Padding::new(13.0).top(9.0).bottom(7.0)).style(bordered_box(
                 CLEAR,
-                mix(p.card, p.received, 0.8),
+                mix(p.card, p.link_card, 0.8),
                 1.0,
                 17.0,
             ))
@@ -2263,9 +2278,10 @@ impl BeeperGuiApp {
                 (_, "audio") if self.playable(a) => {
                     let ts = shows_time.then(|| {
                         let time = format_short_ts(&m.timestamp, st.settings.pref("timeFormat") == 1);
-                        (time, if mine { sent_meta } else { p.sub })
+                        (time, if mine { sent_meta } else { p.muted })
                     });
-                    self.view_audio(m, a, mine, ts, fg, bg)
+                    // `.audio-player` of a received voice note is `--color-background-message-bubble-received`.
+                    self.view_audio(m, a, mine, ts, fg, if mine { bg } else { dim(p.link_card) })
                 }
                 (false, "img" | "video") if m.unresolved_media.is_some() || self.needs_download(a).is_none() => {
                     self.view_media_attachment(st, m, ai, a, name)
@@ -2321,7 +2337,7 @@ impl BeeperGuiApp {
             let line = txt(text.clone(), 13.0).line_height(lh(16.0)).font(italic).color(fg.scale_alpha(0.8));
             let time = shows_time.then(|| {
                 let time = format_short_ts(&m.timestamp, st.settings.pref("timeFormat") == 1);
-                crate::style::fixed(time, 11.0, Weight::Normal).color(if mine { sent_meta } else { p.sub })
+                crate::style::fixed(time, 11.0, Weight::Normal).color(if mine { sent_meta } else { p.muted })
             });
             let body = column![].push(inside).push(row![line].push(time).spacing(4).align_y(Bottom));
             parts = parts.push(container(body).padding([BUBBLE_PAD_Y, BUBBLE_PAD_X]).style(fill_box(bg, 17.0)));
@@ -2662,8 +2678,10 @@ impl BeeperGuiApp {
         let p = &self.pal;
         let ts = shows_time.then(|| format_short_ts(&m.timestamp, st.settings.pref("timeFormat") == 1));
         let room = ts.as_deref().map_or(0.0, |t| crate::style::fixed_width(t, 11.0, Weight::Normal) + 4.0);
+        // `.MessageReadableMetadata-module__readableMetadata`: `--color-on-surface-variant`, or the text color of a sent
+        // bubble at 0.8.
         let time: Option<El<'a>> =
-            ts.map(|t| crate::style::fixed(t, 11.0, Weight::Normal).color(if mine { sent_meta } else { p.sub }).into());
+            ts.map(|t| crate::style::fixed(t, 11.0, Weight::Normal).color(if mine { sent_meta } else { p.muted }).into());
         // Desktop's `MessageErrorTooltip` takes the place of the time.
         let (room, time) = match failed {
             Some(e) => {
@@ -2672,7 +2690,7 @@ impl BeeperGuiApp {
             }
             // Desktop's `BookmarkIndicator` and `ReminderIndicator` (`E3`) go before the time.
             None => {
-                let color = if mine { sent_meta } else { p.sub };
+                let color = if mine { sent_meta } else { p.muted };
                 let marker = |handle: &svg::Handle, color: Color, label: String| {
                     let icon = svg(handle.clone()).width(10).height(10);
                     let icon = icon.style(move |_, _| svg::Style { color: Some(color) });
@@ -3283,8 +3301,9 @@ impl BeeperGuiApp {
     pub(crate) fn view_file_row<'a>(&'a self, m: &Message, ai: usize, a: &Attachment, timer: Option<String>) -> El<'a> {
         let p = &self.pal;
         let meta = file_label(a).into_iter().chain(a.file_size.map(human_size)).collect::<Vec<_>>();
-        let timer = timer.map(|label| self.tip(tinted(&TIMER, 10.0, p.sub), label, vec![], tooltip::Position::Left));
-        let details = (!meta.is_empty()).then(|| txt(meta.join(" · "), 11.0).color(p.sub));
+        // `.AttachmentFileRow-module__meta` is `--color-text-neutrals-weak`, the rest of the row `--color-text-neutrals`.
+        let timer = timer.map(|label| self.tip(tinted(&TIMER, 10.0, p.weak), label, vec![], tooltip::Position::Left));
+        let details = (!meta.is_empty()).then(|| txt(meta.join(" · "), 11.0).color(p.weak));
         let details = (details.is_some() || timer.is_some()).then(|| row![].push(details).push(timer).spacing(4).align_y(Center));
         let name = attachment_name(a);
         let info = column![clamp(&name, 186.0, 2, 13.0, Weight::Semibold).line_height(lh(16.0))].push(details).spacing(4);
@@ -3296,7 +3315,7 @@ impl BeeperGuiApp {
             }
             // Desktop's `onOpenPreview`: a PDF opens in the carousel.
             FileState::Ready => (
-                tinted(file_icon(a), 24.0, p.strong),
+                tinted(file_icon(a), 24.0, p.text),
                 Some(match a.src_url.is_some() && crate::pdf::is_pdf(a) {
                     true => UiMessage::Media(media_view::Msg::OpenCarousel(m.id.clone(), ai, false)),
                     false => UiMessage::Message(Msg::Download(m.id.clone(), Some(ai))),
@@ -3305,7 +3324,7 @@ impl BeeperGuiApp {
         };
         let line = row![icon, info].spacing(8).align_y(Center);
         // The disabled row of a fetching file keeps its colors.
-        let style = btn_style([p.received; 3], [p.strong; 3], 17.0);
+        let style = btn_style([p.link_card; 3], [p.text; 3], 17.0);
         let style = move |t: &Theme, s| style(t, if s == button::Status::Disabled { button::Status::Active } else { s });
         button(container(line).max_width(240.0 - 2.0 * BUBBLE_PAD_X)).padding([8, 11]).style(style).on_press_maybe(press).into()
     }
@@ -3363,7 +3382,7 @@ impl BeeperGuiApp {
             .into_iter()
             .chain(entries)
             .fold(w(&trn("Phone Number", "Phone Numbers", 2, &[]), 12.0, Weight::Semibold), f32::max);
-        let fill = if mine { bg } else { p.received };
+        let fill = if mine { bg } else { p.link_card };
         container(body).width((32.0 + 8.0 + text.ceil()).max(180.0) + 20.0).padding([8, 10]).style(fill_box(fill, 17.0)).into()
     }
 
@@ -4405,6 +4424,20 @@ pub(crate) mod tests {
         assert_eq!(scroll_fade_due(&app.pane), None, "a faded-out button");
     }
 
+    /// `.ScrollToBottom-module__circle`: a chevron of the neutral gray `--color-icon-neutrals-strong` at 0.8 on the
+    /// background, not of the bluish `--color-on-surface`.
+    #[test]
+    fn the_scroll_button_chevron_like_desktop() {
+        let mut app = crate::fuzz::demo_app("scroll-chevron");
+        let _ = app.update(UiMessage::SelectChat("!note_self:beeper.com".into()));
+        app.pane.scrolled_up = Some((true, std::time::Instant::now() - std::time::Duration::from_secs(1)));
+        let st = app.store.read();
+        let button = app.view_scroll_to_bottom(&st, st.chat("!note_self:beeper.com")).expect("the button");
+        let shot = pixels(&mut iced_test::Simulator::with_size(Default::default(), Size::new(200.0, 100.0), button));
+        let ink = shot.pixels().map(|px| px.0).min_by_key(|px| px[0]).expect("pixels");
+        assert!(ink[0] < 128 && ink[0] == ink[1] && ink[1] == ink[2], "{ink:?}");
+    }
+
     /// Desktop's `ActionButtons` under a message of the system user: the buttons that can open their link or post to
     /// the homeserver, a deep link that opens, and a callback that runs once at a time, then a toast for a 429 and an
     /// error toast for a failure.
@@ -4728,6 +4761,32 @@ pub(crate) mod tests {
         let (fill, ink) = look(&app);
         assert!(near(fill, mix(app.pal.card, crate::style::hex(0x3478f6), 0.3)), "a bubble color mixes it: {fill:?}");
         assert!(near(ink, app.pal.strong), "{ink:?}");
+    }
+
+    /// Desktop's `.MessageReadableMetadata-module__readableMetadata`: the time in a received bubble is
+    /// `--color-on-surface-variant`, and in a sent bubble the text color of the bubble at 0.8.
+    #[test]
+    fn message_times_like_desktop() {
+        let app = crate::fuzz::demo_app("message-times");
+        let mid = plain_received(&app, "Hi");
+        let time = {
+            let st = app.store.read();
+            format_short_ts(&st.message(&mid).timestamp, st.settings.pref("timeFormat") == 1)
+        };
+        // The darkest, or for a sent bubble the brightest, pixel of the time.
+        let ink = |sent: bool| {
+            let at = alone(&app, &mid).find(time.as_str()).expect("the time").bounds();
+            let shot = pixels(&mut alone(&app, &mid));
+            let (x, y) = ((2.0 * at.x) as u32, (2.0 * at.y) as u32);
+            let pxs = (x..x + (2.0 * at.width) as u32).flat_map(|x| (y..y + (2.0 * at.height) as u32).map(move |y| (x, y)));
+            let pxs = pxs.map(|(x, y)| shot.get_pixel(x, y).0);
+            if sent { pxs.max_by_key(|px| px[0]) } else { pxs.min_by_key(|px| px[0]) }.expect("the time pixels")
+        };
+        let received = ink(false);
+        assert!(near(received, app.pal.muted), "{received:?}");
+        change(&app, &mid, |m| m.is_sender = Some(true));
+        let sent = ink(true);
+        assert!(near(sent, mix(app.pal.sent, Color::WHITE, 0.8)), "{sent:?}");
     }
 
     /// A received message of a DM, as plain text.
@@ -5524,6 +5583,13 @@ pub(crate) mod tests {
 
     /// Desktop's `BrandTypingIndicator`: who types in its tooltip, in a group the first 4 faces at
     /// `min(20, (34 + 10(n - 1)) / n)` px, and 0.32 s to show and to hide, but at once while scrolled up.
+    /// `BrandTypingIndicator-module__pulse`: from 0.2 to 0.4 at the middle of the second and back, `ease` in each half.
+    #[test]
+    fn typing_dots_pulse_like_desktop() {
+        let at = |t: f32| (typing_pulse(t) * 1000.0).round() / 1000.0;
+        assert_eq!([at(0.0), at(0.25), at(0.5), at(0.75), at(1.0)], [0.2, 0.36, 0.4, 0.24, 0.2]);
+    }
+
     #[test]
     fn typing_indicator_like_desktop() {
         let names = |n: usize| (1..=n).map(|k| format!("P{k}")).collect::<Vec<_>>();
@@ -5799,6 +5865,28 @@ pub(crate) mod tests {
         assert_eq!(app.file_state(&a), FileState::Ready);
         assert!(app.media.get(&url).is_none(), "the image loads again, from the cache");
         assert!(simulator(app.view_conversation()).find("photo.jpg").is_err(), "the image takes its place");
+    }
+
+    /// Desktop's `.audio-player` of a received voice note and its `AttachmentFileRow` fill with
+    /// `--color-background-message-bubble-received`, not with the secondary container of text bubbles.
+    #[test]
+    fn attachment_fills_like_desktop() {
+        let mut app = crate::fuzz::demo_app("attachment-fills");
+        let _ = app.update(UiMessage::SelectChat("!tg_rust:beeper.com".into()));
+        (app.dark, app.pal) = (true, crate::style::palette(true, None, 0));
+        let shot = pixels(&mut alone(&app, "msg_1003"));
+        let count = |c: Color| shot.pixels().filter(|px| px.0 == c.into_rgba8()).count();
+        assert!(count(app.pal.link_card) > 20_000, "the voice note and the file row: {}", count(app.pal.link_card));
+        assert_eq!(count(app.pal.received), 0, "no text bubble color");
+        // The name and icon of the row are `--color-text-neutrals`, its details `--color-text-neutrals-weak`.
+        let mut sim = alone(&app, "msg_1003");
+        let mut ink = |s: &str, c: Color| {
+            let b = sim.find(s).expect(s).bounds();
+            let (x, y) = ((2.0 * b.x) as u32, (2.0 * b.y) as u32);
+            let pxs = (x..x + (2.0 * b.width) as u32).flat_map(|x| (y..y + (2.0 * b.height) as u32).map(move |y| (x, y)));
+            pxs.map(|(x, y)| shot.get_pixel(x, y).0).max_by_key(|px| px[0]) == Some(c.into_rgba8())
+        };
+        assert!(ink("beeper-v4-spec.pdf", app.pal.text) && ink("PDF · 125.5 KB", app.pal.weak));
     }
 
     /// A still that is much larger than its box shows from a cut of its box that a worker bakes, like Chromium's

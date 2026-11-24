@@ -387,12 +387,13 @@ impl BeeperGuiApp {
     pub(crate) fn view_rail(&self) -> El<'_> {
         let p = &self.pal;
         let drag = self.rail_drag.as_ref().filter(|d| d.order.is_some());
-        // Desktop's buttons of the space bar take the focus without showing it (`button { outline: 0 }`).
+        // Desktop's buttons of the space bar take the focus without showing it (`button { outline: 0 }`), and only the
+        // selected space has a fill: hovering or pressing one shows none.
         let window = self.main_window;
         let rail_btn = |key: String, glyph: El<'static>, on: bool, msg: UiMessage| -> El<'static> {
             let b = button(container(glyph).center(36))
                 .padding(0)
-                .style(btn_style([if on { p.selected } else { CLEAR }, p.hover, p.selected], [p.strong; 3], 14.0))
+                .style(btn_style([if on { p.selected } else { CLEAR }; 3], [p.strong; 3], 14.0))
                 .on_press_maybe(drag.is_none().then(|| msg.clone()));
             self.target(window, key, b, Keys::press(msg), Look::Hidden)
         };
@@ -410,10 +411,10 @@ impl BeeperGuiApp {
         let (dot_bg, dot_fg) = p.badge.map_or((p.accent, Color::WHITE), |from| (Color::WHITE, from));
         let badge = move |btn: El<'static>, n: usize, number: bool| -> El<'static> {
             let dot = match number && numbers {
+                // `.unreadWithNumber`: 4 px sides, at least 15 px wide.
                 true => container(semi(unread_label(n), 10.0).color(dot_fg))
-                    .padding([0, 4])
+                    .center_x((crate::style::text_width(&unread_label(n), 10.0, Weight::Semibold) + 8.0).max(15.0))
                     .center_y(14)
-                    .width(Shrink)
                     .style(fill_box(dot_bg, 8.0)),
                 false => container(Space::new()).width(8).height(8).style(fill_box(dot_bg, 4.0)),
             };
@@ -476,7 +477,7 @@ impl BeeperGuiApp {
         let labels = st.feature("labels-v2");
         let add_label = button(add_space)
             .padding(0)
-            .style(ghost(p, 12.0))
+            .style(btn_style([CLEAR; 3], [p.strong; 3], 14.0))
             .on_press_maybe(labels.on.then(|| UiMessage::Labels(labels::Msg::OpenCreate(Vec::new()))));
         let mut add_label = Some(add_label);
         let draft = self.label_window.as_ref().filter(|d| d.label.is_none());
@@ -972,18 +973,22 @@ impl BeeperGuiApp {
         };
         let h = 8.0 + menu_pitch() * rail_label(&st, id).map_or(2.0, label_rows);
         drop(st);
-        let (menu, sub) = self.account_menu(id, SpaceMenu::Gear);
-        let x = if at.x + 233.0 > SPACES_SIZE.width { at.x - 233.0 } else { at.x }.max(4.0);
-        let y = at.y.min(SPACES_SIZE.height - h - 8.0);
-        let sub_x = (x + 233.0).min(SPACES_SIZE.width - ACCOUNT_SUB_W - 4.0);
-        let act = |m| UiMessage::Spaces(SpacesEdit::Act(Box::new(m)));
-        let place = |m: El<'a>, x: f32| -> El<'a> {
-            let m = mouse_area(m.map(act)).on_press(UiMessage::Noop);
-            container(m).padding(Padding::ZERO.left(x).top(y)).into()
-        };
-        let close = crate::backdrop(container(Space::new()).width(Fill).height(Fill))
-            .on_press(edit(SpacesEdit::Menu(None)))
-            .on_right_press(edit(SpacesEdit::Menu(None)));
-        stack![window, close, place(menu, x)].push(sub.map(|s| place(s, sub_x))).into()
+        // The window is resizable, so the menu stays in the window's size.
+        let menus = iced::widget::responsive(move |size| {
+            let (menu, sub) = self.account_menu(id, SpaceMenu::Gear);
+            let x = if at.x + 233.0 > size.width { at.x - 233.0 } else { at.x }.max(4.0);
+            let y = at.y.min(size.height - h - 8.0);
+            let sub_x = (x + 233.0).min(size.width - ACCOUNT_SUB_W - 4.0);
+            let act = |m| UiMessage::Spaces(SpacesEdit::Act(Box::new(m)));
+            let place = |m: El<'a>, x: f32| -> El<'a> {
+                let m = mouse_area(m.map(act)).on_press(UiMessage::Noop);
+                container(m).padding(Padding::ZERO.left(x).top(y)).into()
+            };
+            let close = crate::backdrop(container(Space::new()).width(Fill).height(Fill))
+                .on_press(edit(SpacesEdit::Menu(None)))
+                .on_right_press(edit(SpacesEdit::Menu(None)));
+            stack![close, place(menu, x)].push(sub.map(|s| place(s, sub_x))).into()
+        });
+        stack![window, menus].into()
     }
 }

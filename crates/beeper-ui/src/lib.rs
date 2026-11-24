@@ -918,11 +918,16 @@ fn unread_label(n: usize) -> String {
 
 fn count_badge<'a>(c: &Chat, bg: Color, fg: Color, h: f32) -> El<'a> {
     let n = if c.unread_count > 0 { unread_label(c.unread_count as usize) } else { String::new() };
-    let empty = n.is_empty() && c.unread_mentions == 0;
-    let at = (c.unread_mentions > 0).then(|| ic(icon::AT_SIGN, 10.0).color(fg));
+    count_pill(n, c.unread_mentions > 0, (bg, fg), h)
+}
+
+/// Desktop's unread counts (`.unreadCount`, `.activityIndicator`, `.pillCount`): `h` high and at least as wide, with
+/// 4 px sides, the 12 px AtSign of mentions 2 px before the count, and tabular figures.
+fn count_pill<'a>(n: String, mention: bool, (bg, fg): (Color, Color), h: f32) -> El<'a> {
+    let w = (crate::style::tabular_width(&n, 10.0, Weight::Semibold) + if mention { 14.0 } else { 0.0 } + 8.0).max(h);
+    let at = mention.then(|| ic(icon::AT_SIGN, 10.0).color(fg));
     let body = row![].push(at).push(semi(n, 10.0).color(fg)).spacing(2).align_y(Center);
-    let pill = container(body).padding([0, 4]).center_y(h).style(fill_box(bg, h / 2.0));
-    if empty { pill.width(h) } else { pill }.into()
+    container(body).center_x(w).center_y(h).style(fill_box(bg, h / 2.0)).into()
 }
 
 fn closable_head<'a>(p: &Palette, title: &str, size: f32, msg: UiMessage) -> El<'a> {
@@ -3480,8 +3485,9 @@ impl BeeperGuiApp {
     }
 
     /// Desktop's `ga` (`mainWindowSetSize`): window `id` takes `size`, at most its screen, grows or shrinks around its
-    /// center, and stays on the screen. Without a position (Wayland), it only takes the size.
-    pub(crate) fn resize_around(id: window::Id, size: Size) -> Task<UiMessage> {
+    /// center, and stays on the screen. Without a position (Wayland), it only takes the size, the title bar's included.
+    pub(crate) fn resize_around(&self, id: window::Id, size: Size) -> Task<UiMessage> {
+        let size = Size::new(size.width, size.height - self.title_bar()) * (1.0 / self.zoom);
         let state = window::position(id).then(move |at| window::size(id).map(move |old| (at, old)));
         let state = state.then(move |(at, old)| window::monitor_size(id).map(move |screen| (at, old, screen)));
         state.then(move |(at, old, screen)| {
@@ -3551,9 +3557,11 @@ impl BeeperGuiApp {
     /// Saves the state of window `id` under `key` in `window.json`. A maximized window keeps the bounds from before.
     fn save_window(&self, id: window::Id, key: &'static str) -> Task<UiMessage> {
         let path = self.store.read().config.data_dir.join("window.json");
-        // Desktop keeps the bounds in screen pixels, and iced gives the size in pixels of the zoom.
-        let zoom = self.zoom;
-        let state = window::is_maximized(id).then(move |max| window::size(id).map(move |size| (max, size * zoom)));
+        // Desktop keeps the bounds in screen pixels with the title bar on Wayland, and iced gives the size of the page
+        // in pixels of the zoom.
+        let (zoom, bar) = (self.zoom, self.title_bar());
+        let size = move |size: Size| Size::new(size.width * zoom, size.height * zoom + bar);
+        let state = window::is_maximized(id).then(move |max| window::size(id).map(move |s| (max, size(s))));
         let state = state.then(move |(max, size)| window::position(id).map(move |at| (max, size, at)));
         state.map(move |(max, size, at)| write_window_state(&path, key, max, size, at)).discard()
     }
@@ -4867,7 +4875,7 @@ impl BeeperGuiApp {
                 if let Some(d) = &self.spaces_window {
                     return self.raise(d.id);
                 }
-                let (id, open) = self.open_child(SPACES_SIZE);
+                let (id, open) = self.open_resizable_child(SPACES_SIZE);
                 let st = self.store.read();
                 let order = rail_spaces(&st).into_iter().chain([SPACES_DIVIDER.into()]).chain(hidden_spaces(&st));
                 let order = order.collect();
