@@ -156,9 +156,12 @@ async fn account_data(room: &Room, kind: &str) -> Option<Value> {
     Some(serde_json::from_str::<Value>(raw.json().get()).expect("account data JSON")["content"].take())
 }
 
-async fn tag(room: &Room, name: TagName, on: bool) -> matrix_sdk::Result<()> {
+/// Desktop's `addRoomTag` with its `order` (mautrix's `AddTag`), or `deleteRoomTag`.
+async fn tag(room: &Room, name: TagName, order: f64, on: bool) -> matrix_sdk::Result<()> {
+    let mut info = TagInfo::new();
+    info.order = Some(order);
     match on {
-        true => room.set_tag(name, TagInfo::new()).await.map(drop),
+        true => room.set_tag(name, info).await.map(drop),
         false => room.remove_tag(name).await.map(drop),
     }
 }
@@ -3449,10 +3452,10 @@ impl Push<'_> {
                 room.set_account_data_raw("com.beeper.inbox.done".into(), raw(&done)).await?;
             }
             ChatFlag::Pinned => {
-                tag(room, TagName::Favorite, on).await?;
+                tag(room, TagName::Favorite, 1.0, on).await?;
                 edit_pins(client, room.room_id().as_str(), on).await?;
             }
-            ChatFlag::LowPriority => tag(room, TagName::LowPriority, on).await?,
+            ChatFlag::LowPriority => tag(room, TagName::LowPriority, 0.0, on).await?,
             ChatFlag::Muted => {
                 let settings = client.notification_settings().await;
                 match on {
@@ -7133,6 +7136,37 @@ mod tests {
     fn stub_event(id: &str, kind: &str, content: Value) -> Value {
         json!({ "type": kind, "sender": "@me:x", "event_id": id, "origin_server_ts": 1_700_000_000_000i64,
             "content": content, "unsigned": { "com.beeper.hs.order": 1 } })
+    }
+
+    /// Desktop's `pinThread` tags a pin with the order 1, and `updateThread` a low priority chat with 0.
+    #[tokio::test]
+    async fn tags_have_desktops_orders() {
+        let sent = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let log = sent.clone();
+        let url = crate::bridge_stub::serve(move |method, path, body| match path.split_once('?').map_or(path, |p| p.0) {
+            "/_matrix/client/versions" => (200, json!({ "versions": ["v1.11"] })),
+            "/_matrix/client/v3/sync" => (200, stub_sync()),
+            "/_matrix/client/v3/keys/upload" => (200, json!({ "one_time_key_counts": {} })),
+            p if p.ends_with("/messages") => (200, json!({ "start": "t", "chunk": [] })),
+            _ if method == "GET" => (404, json!({ "errcode": "M_NOT_FOUND", "error": "not in the stub" })),
+            p => {
+                log.lock().unwrap().push((p.to_string(), body));
+                (200, json!({}))
+            }
+        })
+        .await;
+        let store = stub_store(&crate::testing::temp_dir("tag-orders"), &url).await;
+        sync_stub_room(&store, "!room:x").await;
+        {
+            let mut st = store.write();
+            let i = st.chat_idx("!room:x");
+            assert!(st.set_chat_flag(i, super::ChatFlag::Pinned, Some(true)));
+            assert!(st.set_chat_flag(i, super::ChatFlag::LowPriority, Some(true)));
+        }
+        super::flush(store.clone()).await.expect("the stub takes the tags");
+        let sent = sent.lock().unwrap();
+        let tag = |name: &str| sent.iter().find(|(p, _)| p.ends_with(&format!("/tags/{name}"))).expect(name).1.clone();
+        assert_eq!((tag("m.favourite"), tag("m.lowpriority")), (json!({ "order": 1.0 }), json!({ "order": 0.0 })));
     }
 
     /// Desktop's optimistic thread update: a flag changed here keeps its value until a sync shows the change, also
