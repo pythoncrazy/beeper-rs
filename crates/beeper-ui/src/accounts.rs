@@ -119,9 +119,7 @@ impl BeeperGuiApp {
                 let top = operation::scroll_to("settings-pane", operation::AbsoluteOffset { x: 0.0, y: 0.0 });
                 return top.chain(servers);
             }
-            Msg::AskRemove(id) => {
-                (self.list.chat_menu, self.delete_target, self.confirm) = (None, Some(id), Some(ASK_REMOVE_ACCOUNT));
-            }
+            Msg::AskRemove(id) => (self.list.chat_menu, self.delete_target, self.confirm) = (None, Some(id), Some(ASK_REMOVE_ACCOUNT)),
             Msg::Remove(id) => {
                 self.confirm = None;
                 let p = self.provision(&id);
@@ -206,10 +204,7 @@ impl BeeperGuiApp {
                     (s.connected, s.mxid) = (connect, connect.then(|| format!("!{server}:beeper.local")));
                 }
                 drop(st);
-                let text = match connect {
-                    true => trf("Connecting %s...", &[&name]),
-                    false => trf("Disconnecting %s...", &[&name]),
-                };
+                let text = if connect { trf("Connecting %s...", &[&name]) } else { trf("Disconnecting %s...", &[&name]) };
                 self.show(Toast { stays: true, id: Some(format!("server-{server}")), ..Toast::new(text) });
                 let (p, sent) = (self.provision(&id), server.clone());
                 let change = async move {

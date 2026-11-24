@@ -6,7 +6,6 @@ use crate::modals::Modal;
 use crate::portal;
 use crate::prelude::*;
 use crate::settings;
-use crate::verify::Brand;
 use crate::{COPIED_ICON, COPY_ICON};
 use beeper_core::models::Plan;
 use iced::widget::column;
@@ -450,13 +449,14 @@ impl BeeperGuiApp {
         let body: El<'_> = match &self.profile.recovery_key {
             None => Space::new().into(),
             // `verifiedContainer`: the 36 px `done` icon in green over "Verified", 4 px apart.
-            Some(KeyStep::Verified) => {
-                column![tinted(&COPIED_ICON, 36.0, hex(0x19ba3b)), semi(tr("Verified"), 28.0).line_height(lh(36.0)).color(p.strong)]
-                    .spacing(4)
-                    .align_x(Center)
-                    .width(Fill)
-                    .into()
-            }
+            Some(KeyStep::Verified) => column![
+                tinted(&COPIED_ICON, 36.0, hex(0x19ba3b)),
+                t(tr("Verified"), 28.0, crate::style::display(Weight::Semibold, 28.0)).line_height(lh(36.0)).color(p.strong)
+            ]
+            .spacing(4)
+            .align_x(Center)
+            .width(Fill)
+            .into(),
             Some(KeyStep::Verify(typed, busy, error)) => {
                 let heading = if *busy { tr("Verifying...") } else { tr("Verify recovery key") };
                 let heading = semi(heading, 18.0).line_height(lh(26.0)).color(p.accent).center().width(Fill);
@@ -469,7 +469,7 @@ impl BeeperGuiApp {
             Some(KeyStep::Display(copied)) => {
                 let key = crate::verify::format_recovery_key(&st.beeper_state.secrets.recovery_code);
                 // `ClippableRecoveryCode` without its copy text: the key on a gray card, which a click copies.
-                let key = txt(key, 28.0).font(fw(Weight::Semibold)).line_height(lh(36.0)).color(p.strong).center();
+                let key = t(key, 28.0, crate::style::display(Weight::Semibold, 28.0)).line_height(lh(36.0)).color(p.strong).center();
                 let key = button(container(key).center_x(Fill).padding([12, 16]))
                     .padding(0)
                     .style(btn_style([p.chip; 3], [p.strong; 3], 8.0))
@@ -597,10 +597,7 @@ const CURRENT_EMAIL: &str = "change-email-current";
 fn profile_input(p: &Palette) -> impl Fn(&Theme, text_input::Status) -> text_input::Style + use<> {
     let (edge, text, sub, accent) = (p.chip, p.strong, p.sub, p.accent);
     move |_, status| text_input::Style {
-        background: match status {
-            text_input::Status::Disabled => edge.into(),
-            _ => CLEAR.into(),
-        },
+        background: if matches!(status, text_input::Status::Disabled) { edge.into() } else { CLEAR.into() },
         border: iced::Border { color: edge, width: 1.0, radius: 8.0.into() },
         icon: sub,
         placeholder: sub,

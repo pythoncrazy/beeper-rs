@@ -100,7 +100,7 @@ impl BeeperGuiApp {
             let same: Vec<&Chat> = members.iter().copied().filter(|c| network_name(&c.account_id) == network).collect();
             identifier(&st, m, &same).unwrap_or_else(|| network.to_string())
         };
-        let line = || container(Space::new().width(Fill).height(1)).style(fill_box(p.received, 0.0));
+        let line = || container(Space::new().width(Fill).height(1)).style(fill_box(p.chip, 0.0));
         let header = container(semi(tr("Switch chats"), 13.0).color(p.strong)).padding(Padding::new(12.0).left(27.0).right(8.0));
         let wide = |m: &Chat| {
             let name = text_width(&m.title, 15.0, Weight::Normal);

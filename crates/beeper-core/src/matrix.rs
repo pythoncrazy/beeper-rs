@@ -2668,6 +2668,9 @@ async fn flush(store: SharedStore) -> Result<(), PushError> {
         }
         let pending = matches!(out, Outgoing::RemoveFromBeeper { .. });
         let flag = if let Outgoing::Flag(f, on) = out { Some((chat.clone(), f, on)) } else { None };
+        // Desktop's `recordSend` when the homeserver takes a message.
+        let sent = matches!(out, Outgoing::Send { .. } | Outgoing::Poll { .. } | Outgoing::Forward { .. } | Outgoing::Media { .. })
+            .then(|| chat.clone());
         // Desktop's `sendQueuedMessages` gives up on a message five times its slow wait after its push began.
         let wait = message.as_ref().filter(|_| retry).and_then(|id| store.read().send_wait(id));
         let left = wait.map_or(std::time::Duration::MAX, |(start, wait)| {
@@ -2687,6 +2690,9 @@ async fn flush(store: SharedStore) -> Result<(), PushError> {
             (Ok(()), message) => {
                 if let Some((chat, f, on)) = flag {
                     st.flag_sent(chat, f, on);
+                }
+                if let Some(chat) = sent {
+                    st.record_activity(&chat, crate::store::Activity::SEND, now_unix_millis());
                 }
                 st.pushed(row, message.as_deref(), None);
             }
@@ -6984,12 +6990,12 @@ mod tests {
         assert_eq!(texts(&store), range(41, 70), "the first sync loads the newest page");
         assert_eq!(pages.load(Relaxed), 1);
         super::on_sync(&client, &store, client.sync_once(super::SyncSettings::default()).await).await;
-        for _ in 0..200 {
-            if texts(&store).len() == 100 && pages.load(Relaxed) == 4 {
-                break;
+        let filled = async {
+            while texts(&store).len() != 100 || pages.load(Relaxed) != 4 {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
             }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
+        };
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(60), filled).await;
         assert_eq!(texts(&store), range(41, 140), "the gap from m71 to m130 is filled");
         assert_eq!(pages.load(Relaxed), 4, "the fill stops at the page that reaches a loaded message");
     }

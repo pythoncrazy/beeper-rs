@@ -216,7 +216,7 @@ fn auth_button<'a>(label: String, msg: UiMessage) -> El<'a> {
     let lit = |k: f32| Color { r: (blue.r * k).min(1.0), g: (blue.g * k).min(1.0), b: (blue.b * k).min(1.0), a: 1.0 };
     let icon = svg(EXTERNAL.clone()).width(10).height(10).style(|_, _| svg::Style { color: Some(Color::WHITE) });
     // `gap: 1ch` of 14 px text.
-    let label = row![med(label, 14.0), icon].spacing(7).align_y(Center);
+    let label = row![t(label, 14.0, spaced(Weight::Medium, 0.00625)), icon].spacing(7).align_y(Center);
     let button = button(container(label).center_x(Fill))
         .width(Fill)
         .padding([10, 12])
@@ -450,10 +450,7 @@ impl BeeperGuiApp {
             AddMsg::Emoji(_, r) => a.emoji = r.ok().map(image::Handle::from_bytes),
             // A phone field takes a new value in its country, like Desktop's `PhoneInput` with a new `value`.
             AddMsg::Field(f, v) => {
-                let v = match a.phones.get_mut(&f) {
-                    Some(field) => field.set(&v),
-                    None => v,
-                };
+                let v = if let Some(field) = a.phones.get_mut(&f) { field.set(&v) } else { v };
                 a.touched.insert(f.clone());
                 a.values.insert(f, v);
             }
@@ -791,7 +788,8 @@ impl BeeperGuiApp {
                     let shown: Option<El<'a>> = match d.kind.as_str() {
                         "emoji" => a.emoji.clone().map(|h| image(h).width(100).height(100).into()),
                         "code" => Some({
-                            let code = semi(d.data.as_str(), 22.0).color(p.strong);
+                            // `.login-pairing-code-value`: 28 px with a 0.12em letter spacing.
+                            let code = t(d.data.as_str(), 28.0, spaced(Weight::Semibold, 0.12)).color(p.strong);
                             let copy = button(svg(COPY.clone()).width(16).height(16))
                                 .padding(6)
                                 .style(btn_style([CLEAR, p.hover, p.hover], [p.strong; 3], 6.0))
@@ -816,10 +814,7 @@ impl BeeperGuiApp {
                         Browser::Open | Browser::Closed if hidden || a.busy => para(tr("Authenticating...").into()),
                         browser => {
                             let text = trf("Click the button below to open the browser and begin authentication with %s.", &[&name]);
-                            let error = match browser {
-                                Browser::Failed(e) => Some(error_line(e)),
-                                _ => None,
-                            };
+                            let error = if let Browser::Failed(e) = browser { Some(error_line(e)) } else { None };
                             let open = auth_button(trf("Open %s Login", &[&name]), go(AddMsg::OpenBrowser));
                             column![para(text), open].push(error).spacing(16).align_x(Center).into()
                         }
@@ -890,10 +885,7 @@ impl BeeperGuiApp {
             let items = options.into_iter().map(|f| {
                 let key = format!("{}/{}", a.bridge, f.id);
                 let label = FLOW_LABELS.iter().find(|l| l.0 == key).map(|l| tr(l.1).to_string());
-                let label = label.unwrap_or_else(|| match f.name.is_empty() {
-                    true => f.id.clone(),
-                    false => bridge_text("flowName", &key, &f.name),
-                });
+                let label = label.unwrap_or_else(|| if f.name.is_empty() { f.id.clone() } else { bridge_text("flowName", &key, &f.name) });
                 menu_item(p, None, label, "", (!a.busy).then(|| go(AddMsg::Flow(f.id.clone()))))
             });
             let list = crate::menu_card(p, Column::with_children(items), 200);

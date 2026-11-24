@@ -15,7 +15,6 @@ use crate::{
 };
 use beeper_core::models::*;
 use beeper_core::prefs;
-use iced::keyboard::key::Named;
 use iced::widget::column;
 use iced::widget::operation;
 use iced::window;
@@ -74,20 +73,14 @@ fn pasted_link(t: &str) -> Option<String> {
     }
     let (r, href) = crate::linkify::link(t).filter(|(r, _)| *r == (0..t.len()))?;
     let bare = !t[r].to_lowercase().starts_with("http://");
-    Some(match href.strip_prefix("http://").filter(|_| bare) {
-        Some(rest) => format!("https://{rest}"),
-        None => href,
-    })
+    Some(if let Some(rest) = href.strip_prefix("http://").filter(|_| bare) { format!("https://{rest}") } else { href })
 }
 
 /// The row of a quick reply in the autocomplete: its whole label for the width, the title, and the text cut like
 /// Desktop's `vL(text, { length: 100 })`.
 fn quick_reply_row(r: &beeper_core::models::QuickReply) -> (String, String, String) {
     let text: String = r.text.split_whitespace().collect::<Vec<_>>().join(" ");
-    let text = match text.chars().count() > 100 {
-        true => format!("{}...", text.chars().take(97).collect::<String>()),
-        false => text,
-    };
+    let text = if text.chars().count() > 100 { format!("{}...", text.chars().take(97).collect::<String>()) } else { text };
     (format!("{} - {text}", r.title), r.title.clone(), text)
 }
 
@@ -721,10 +714,7 @@ impl BeeperGuiApp {
         self.pane.link_dialog = None;
         self.pane.suggest = 0;
         // Desktop types nothing for an empty composer or a Send Later message.
-        let typing = match self.pane.composer.is_empty() || self.pane.send_later.is_some() {
-            true => Task::none(),
-            false => self.typing(true),
-        };
+        let typing = if self.pane.composer.is_empty() || self.pane.send_later.is_some() { Task::none() } else { self.typing(true) };
         Task::batch([typing, self.fetch_link_previews()])
     }
 
@@ -1063,7 +1053,7 @@ impl BeeperGuiApp {
             let body = column![].push(name.map(|n| n.color(p.strong))).push(txt(text, 12.0).color(p.text)).spacing(2);
             let (edge, fill) = match q.is_sender == Some(true) {
                 true => (p.sent, mix(p.card, p.sent, 0.3)),
-                false => (p.received, p.card),
+                false => (p.chip, p.card),
             };
             let pill = container(body).max_width(self.pane().size.width / 2.0).padding(8);
             removable(p, pill.style(bordered_box(fill, edge, 2.0, 17.0)), UiMessage::Composer(Msg::CancelMode))
@@ -1518,7 +1508,7 @@ impl BeeperGuiApp {
                 txt(s, 12.0).line_height(lh(16.0)).color(p.text).into()
             };
             let card = contact_card(p, &parse_vcard(&String::from_utf8_lossy(&pm.bytes)), p.text, 1, &entry);
-            container(card).padding([8, 10]).style(fill_box(p.received, 0.0)).into()
+            container(card).padding([8, 10]).style(fill_box(p.chip, 0.0)).into()
         } else if pm.frames.is_empty() {
             let ext = std::path::Path::new(&pm.name).extension().map(|e| e.to_string_lossy().to_uppercase());
             let meta = ext.into_iter().chain([human_size(pm.bytes.len() as u64)]).collect::<Vec<_>>();
@@ -1526,7 +1516,7 @@ impl BeeperGuiApp {
             let info = column![name, txt(meta.join(" ・ "), 11.0)].spacing(4);
             let icon = &FILE_ICONS[if pm.mime.starts_with("audio") { 3 } else { 0 }];
             let line = row![tinted(icon, 20.0, p.strong), info].spacing(8).align_y(Center);
-            container(column![line, Space::new().width(158)]).max_width(240).padding([8, 11]).style(fill_box(p.received, 17.0)).into()
+            container(column![line, Space::new().width(158)]).max_width(240).padding([8, 11]).style(fill_box(p.chip, 17.0)).into()
         } else {
             let fg = Color { a: 0.1, ..p.text };
             let fit = |f| image(f).height(66).content_fit(iced::ContentFit::Contain);
@@ -1536,7 +1526,7 @@ impl BeeperGuiApp {
             let play = self.shows() && (!video || st.settings.on("autoplayGifs"));
             let img = container(anim::gif(&pm.frames, play, self.started, fit)).max_width(120).clip(true);
             let img = img.style(bordered_box(CLEAR, fg, 1.0, 8.0));
-            let play = container(tinted(&voice::ICONS[0], 20.0, p.strong)).center(36).style(fill_box(p.received, 18.0));
+            let play = container(tinted(&voice::ICONS[0], 20.0, p.strong)).center(36).style(fill_box(p.chip, 18.0));
             match video && !pm.is_gif {
                 true => stack![img, container(play).center(Fill)].into(),
                 false => img.into(),
@@ -1600,9 +1590,7 @@ impl BeeperGuiApp {
                 self.pane.att_focus = i.checked_sub(1);
                 self.pane.quick_look = None;
             }
-            Key::Named(Named::Space) => {
-                self.pane.quick_look = (self.pane.quick_look != Some(i)).then_some(i);
-            }
+            Key::Named(Named::Space) => self.pane.quick_look = (self.pane.quick_look != Some(i)).then_some(i),
             _ => {}
         }
         Task::none()
@@ -1628,10 +1616,7 @@ impl BeeperGuiApp {
             Msg::Submit if !self.can_compose() => {}
             Msg::Submit => {
                 self.submit_composer(false);
-                return match self.pane.thread_root.is_some() {
-                    true => Task::none(),
-                    false => self.typing(false),
-                };
+                return if self.pane.thread_root.is_some() { Task::none() } else { self.typing(false) };
             }
             Msg::SendAndArchive => {
                 let cid = self.pane.selected_chat_id.clone().expect("a chat is selected");
@@ -2018,18 +2003,20 @@ impl BeeperGuiApp {
                 self.pane.edit_menu = Some((self.cursor.get(), word));
             }
             Msg::MenuEdit(edit) => {
-                let (_, word) = self.pane.edit_menu.take().expect("the edit menu is open");
+                // The view that gave the message can be older than the message before it, which closed the menu:
+                // two letters of one frame both run Paste.
+                let Some((_, word)) = self.pane.edit_menu.take() else { return Task::none() };
                 let old = self.pane.composer.text();
                 let sel = format::selection(&self.pane.composer).map_or("", |r| &old[r]).to_owned();
                 let focus = operation::focus("composer-input");
                 return match edit {
                     MenuEdit::Replace(fix) => {
-                        let (r, _) = word.expect("a suggestion has a word");
+                        let Some((r, _)) = word.filter(|(r, _)| old.get(r.clone()).is_some()) else { return focus };
                         let text = format!("{}{fix}{}", &old[..r.start], &old[r.end..]);
                         self.pane.composer = format::content(&text, r.start + fix.len()..r.start + fix.len());
                         Task::batch([self.composer_changed(old), focus])
                     }
-                    MenuEdit::Learn => match spell::learn(&old[word.expect("Learn Spelling has a word").0]) {
+                    MenuEdit::Learn => match word.and_then(|(r, _)| old.get(r)).map_or(Ok(()), spell::learn) {
                         Ok(()) => focus,
                         Err(e) => {
                             self.status_banner = e.to_string();
@@ -2057,9 +2044,7 @@ impl BeeperGuiApp {
                 self.hold_compose_target();
                 let old = self.pane.composer.text();
                 match (action, self.pane.emoticon.take().filter(|(after, ..)| *after == old)) {
-                    (Action::Edit(Edit::Backspace), Some((_, typed, at))) => {
-                        self.pane.composer = format::content(&typed, at..at);
-                    }
+                    (Action::Edit(Edit::Backspace), Some((_, typed, at))) => self.pane.composer = format::content(&typed, at..at),
                     (action, _) => {
                         let typed = matches!(action, Action::Edit(Edit::Insert(_)));
                         self.pane.composer.perform(action);
@@ -2143,7 +2128,7 @@ impl BeeperGuiApp {
                 }
             }
             Msg::SaveLink => {
-                let (url, label) = self.pane.link_dialog.take().expect("the link dialog is open");
+                let Some((url, label)) = self.pane.link_dialog.take() else { return Task::none() };
                 let old = self.pane.composer.text();
                 let caret = format::offset(&old, self.pane.composer.cursor().position);
                 let r = format::selection(&self.pane.composer).unwrap_or(caret..caret);
@@ -2198,5 +2183,28 @@ mod tests {
         app.store.write().update_chat(note, |c| c.formatting &= !(1 << format::LINK));
         let plain = paste(&mut app, "see docs", 4..8, "https://example.com/a");
         assert_eq!(plain, "see https://example.com/a", "a chat without links");
+    }
+
+    /// iced sends all the events of a frame to one view, so the second "p" of a frame runs Paste of the edit menu
+    /// again after the first one closed it, and a second Enter saves the link dialog again: those do nothing.
+    #[test]
+    fn a_closed_menu_or_dialog_ignores_the_rest_of_the_frame() {
+        let mut app = crate::fuzz::demo_app("closed-edit-menu");
+        let _ = app.update(UiMessage::SelectChat(beeper_core::store::NOTE_CHAT_ID.into()));
+        let _ = app.update(UiMessage::Composer(Msg::EditMenu(None)));
+        let mut sim = iced_test::simulator(app.view_main());
+        let _ = sim.simulate(iced_test::simulator::typewrite("pp"));
+        let msgs: Vec<UiMessage> = sim.into_messages().collect();
+        let paste = |m: &UiMessage| matches!(m, UiMessage::Composer(Msg::MenuEdit(MenuEdit::Paste)));
+        assert!(msgs.len() == 2 && msgs.iter().all(paste), "both letters run Paste: {msgs:?}");
+        for m in msgs {
+            let _ = app.update(m);
+        }
+        assert!(app.pane.edit_menu.is_none());
+        app.pane.composer = format::content("", 0..0);
+        app.pane.link_dialog = Some(("https://example.com".into(), "site".into()));
+        let _ = app.update(UiMessage::Composer(Msg::SaveLink));
+        let _ = app.update(UiMessage::Composer(Msg::SaveLink));
+        assert_eq!(app.pane.composer.text(), "[site](https://example.com)", "one link");
     }
 }

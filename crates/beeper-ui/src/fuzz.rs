@@ -5349,13 +5349,13 @@ pub(crate) fn opened_window(task: Task<UiMessage>) -> Option<window::Settings> {
 fn small_windows_open_at_desktops_minimum_size() {
     let mut app = demo_app("window-minimum");
     let size = |s: window::Settings| (s.size, s.resizable, s.min_size);
-    let (_, nickname) = app.open_child(crate::nickname::NICKNAME_SIZE);
+    let (_, nickname) = app.open_child(crate::nickname::NICKNAME_SIZE, false);
     assert_eq!(opened_window(nickname).map(size), Some((Size::new(340.0, 400.0), false, None)));
     let labels = app.update(UiMessage::Labels(labels::Msg::OpenEdit(NOTE_CHAT_ID.into())));
     assert_eq!(opened_window(labels).map(size), Some((Size::new(330.0, 488.0), true, Some(windows::MIN_SIZE))));
     let spaces = app.update(UiMessage::OpenEditSpaces);
     assert_eq!(opened_window(spaces).map(size), Some((SPACES_SIZE, true, Some(windows::MIN_SIZE))));
-    let (_, poll) = app.open_child(Size::new(400.0, 620.0));
+    let (_, poll) = app.open_child(Size::new(400.0, 620.0), false);
     assert_eq!(opened_window(poll).map(size), Some((Size::new(400.0, 620.0), false, None)), "a bigger one keeps its size");
 }
 
@@ -5500,6 +5500,17 @@ fn message_times_keep_their_px_size_like_desktop() {
         let sent = sim.find("Sent").expect("the receipt").bounds();
         assert_eq!(sent.height, crate::style::rem(15.0), "rem text at font {font}");
     }
+}
+
+/// Desktop's letter spacing: the filter count (`.FilterButton-module__count`, 11 px with 0.25 px) "2" is 6.906 px
+/// wide in Desktop 4.3.308, where Inter alone makes it 6.656.
+#[test]
+fn filter_count_is_spaced_like_desktop() {
+    let mut app = demo_app("letter-spacing");
+    let main = app.main_window.expect("the main window");
+    app.set_filters(0b11);
+    let count = Simulator::with_size(Default::default(), app.pane.size, app.view(main)).find("2").expect("the count").bounds().width;
+    assert!((count - 6.906).abs() < 0.05, "{count}");
 }
 
 /// Text that Desktop sets in px keeps its size at any Font size: the filter count (`.FilterButton-module__count`,
@@ -6421,6 +6432,30 @@ fn rail_spaces_show_no_hover_fill_like_desktop() {
     assert_eq!(edge(&mut sim), clear);
 }
 
+/// Desktop's spaces scroll in `.filters-pane-list`, which ends 10 px above the footer (`.current-user`'s margin) and
+/// starts under the 14 px padding of `.account-switcher`: a space that does not fit is cut at those edges.
+#[test]
+fn rail_spaces_scroll_between_the_top_padding_and_the_footer_like_desktop() {
+    let app = demo_app("rail-scroll");
+    let size = Size::new(68.0, 400.0);
+    let mut sim = Simulator::with_size(Default::default(), size, app.view_rail());
+    let media = sim.find(iced::widget::Id::new("rail-media")).expect("the Media button").bounds();
+    // The rows of the space bar that have a pixel other than its background.
+    let inked = |sim: &mut Simulator<'_, UiMessage>| {
+        let shot = crate::message::tests::pixels(sim);
+        let k = shot.width() as f32 / size.width;
+        let bg = shot.get_pixel(1, 1).0;
+        (0..size.height as u32).filter(move |&y| (0..68).any(|x| shot.get_pixel((x as f32 * k) as u32, (y as f32 * k) as u32).0 != bg))
+    };
+    let gap = (media.y - 10.0) as u32..media.y as u32;
+    assert!(inked(&mut sim).any(|y| y == gap.start - 1), "a space is cut at the end of the list");
+    assert!(!inked(&mut sim).any(|y| gap.contains(&y)), "nothing in the 10 px above the footer");
+    let at = Point::new(34.0, 100.0);
+    sim.point_at(at);
+    let _ = sim.simulate([iced::Event::Mouse(mouse::Event::WheelScrolled { delta: ScrollDelta::Pixels { x: 0.0, y: -30.0 } })]);
+    assert!(!inked(&mut sim).any(|y| y < 14), "nothing scrolls into the 14 px above the list");
+}
+
 /// Desktop's `.btn-ghost:active svg`: the pressed Search and New Chat icons of the chat list header turn
 /// `--color-icon-translucent-strong`, black at 0.9, from the `--color-on-surface` #202124 of `.tab-bar-btn button svg`.
 #[test]
@@ -7153,6 +7188,31 @@ fn chat_rows_place_their_lines_like_desktop() {
         let half = if compact { 6.0 } else { 7.0 };
         assert_eq!(badge.center_y() - title.y, count + half, "the count, compact {compact}");
     }
+}
+
+/// Desktop's `.thread-participant-name`: the sender's 12 px avatar has a 2 px margin before the name.
+#[test]
+fn previews_start_the_name_2_px_after_the_sender_like_desktop() {
+    let app = demo_app("row-sender");
+    let mut sim = simulator(app.view_sidebar());
+    let title = sim.find("Family").expect("the title").bounds();
+    let name = sim.find(|c: iced_test::selector::Candidate<'_>| match c {
+        iced_test::selector::Candidate::Text { content, bounds, .. } if content.starts_with("Mom: Dinner") => Some(bounds),
+        _ => None,
+    });
+    assert_eq!(name.expect("the preview").x - title.x, 14.0);
+}
+
+/// Desktop's colored network badge (`BrandNetworkIcon`) is the brand tile with 35 % corners, where a circle leaves the
+/// corners of its 16 px box to the cutout around it.
+#[test]
+fn colored_badges_are_rounded_tiles_like_desktop() {
+    let face: El = container(Space::new()).width(46).height(46).style(fill_box(Color::BLACK, 23.0)).into();
+    let shot = crate::focus::tests::shot(badged(face, "whatsapp", 46.0, 16.0, None, Color::WHITE), Size::new(48.0, 46.0), "badge");
+    // 2.25 px into the corner of the badge, which spans 32 to 48 and 30 to 46.
+    let k = shot.width() as f32 / 48.0;
+    let corner = shot.get_pixel((34.25 * k) as u32, (32.25 * k) as u32).0;
+    assert!(corner[1] > 150 && corner[0] < 120, "WhatsApp green, not the cutout: {corner:?}");
 }
 
 /// Desktop's `.UnreadThreads-module__pill`: 30 px high with its 1 px border, with its label 13 px in.
@@ -10147,6 +10207,26 @@ pub(crate) fn signed_out_app(name: &str) -> BeeperGuiApp {
     app
 }
 
+/// Desktop's `.right` card clips what it holds to its 10 px corners (`overflow: hidden`), so the fade over the top of
+/// the timeline leaves the top corners round, and its shadow is `drop-shadow(0 0 10px rgba(0, 0, 0, 0.12))`.
+#[test]
+fn the_open_chat_card_keeps_its_round_corners_and_shadow_like_desktop() {
+    let mut app = demo_app("card-corners");
+    let _ = app.update(UiMessage::SelectChat(NOTE_CHAT_ID.into()));
+    let mut sim = Simulator::with_size(Default::default(), Size::new(1200.0, 800.0), app.view_main());
+    let shot = crate::focus::tests::pixels(&mut sim, &app.iced_theme(), "card-corners");
+    let k = shot.width() / 1200;
+    let at = |x: u32, y: u32| shot[(x * k, y * k)].0;
+    let card = app.pal.card.into_rgba8();
+    let left = (0..1200).find(|&x| at(x, 400) == card).expect("the card");
+    assert_eq!(at(left + 12, 8), card, "the fade fills the top edge between the corners");
+    assert_ne!(at(left + 1, 8), card, "the top left corner is round");
+    assert_ne!(at(1190, 8), card, "the top right corner too");
+    // Desktop's frame above the card is #E3E4E9 at the top of the window and #DCDDE1 at the card, 8 px below.
+    let dark = i32::from(at(700, 0)[0]) - i32::from(at(700, 7)[0]);
+    assert!((5..=8).contains(&dark), "the shadow grows by 7 towards the card: {dark}");
+}
+
 /// The pixels of the sign-in window at points of its 330x620 layout.
 fn login_pixels(app: &BeeperGuiApp, points: &[(u32, u32)]) -> Vec<Color> {
     let mut sim = Simulator::with_size(Default::default(), Size::new(330.0, 620.0), app.view_login());
@@ -11098,9 +11178,9 @@ fn the_header_shows_the_disappearing_timer_like_desktop() {
 fn sidebar_slides_like_desktop() {
     let mut app = demo_app("sidebar-slide");
     assert!((crate::style::cubic_bezier(0.5, [0.165, 0.84, 0.44, 1.0]) - 0.92).abs() < 0.02, "an ease-out curve");
+    let before = std::time::Instant::now();
     let _ = app.update(UiMessage::RunHotkey("Toggle Sidebar"));
-    let started = app.sidebar_slide.expect("a slide").elapsed().as_secs_f32();
-    assert!(app.sidebar_hidden && (started >= 0.2 || app.sidebar_progress().is_some()), "it starts to slide out");
+    assert!(app.sidebar_hidden && app.sidebar_slide.is_some_and(|t| t >= before), "it starts to slide out");
     drop(simulator(app.view_main()));
     std::thread::sleep(std::time::Duration::from_millis(220));
     assert_eq!(app.sidebar_progress(), None, "and is gone after 0.2 s");
@@ -11114,9 +11194,9 @@ fn sidebar_slides_like_desktop() {
         sim.into_messages().any(|m| matches!(m, UiMessage::RunHotkey("Toggle Sidebar")))
     };
     assert!(show(&app), "the header shows the sidebar again");
+    let before = std::time::Instant::now();
     let _ = app.update(UiMessage::RunHotkey("Toggle Sidebar"));
-    // The slide starts at the toggle; a slow debug build can be past its 0.2 s by the time the update returns.
-    assert!(!app.sidebar_hidden && app.sidebar_slide.is_some_and(|t| t.elapsed().as_secs_f32() < 1.0));
+    assert!(!app.sidebar_hidden && app.sidebar_slide.is_some_and(|t| t >= before), "the slide starts at the toggle");
     drop(simulator(app.view_main()));
     std::thread::sleep(std::time::Duration::from_millis(220));
     assert!(!show(&app), "not while the sidebar shows");

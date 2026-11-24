@@ -208,10 +208,7 @@ impl BeeperGuiApp {
     pub(crate) fn view_toast(&self, main: bool) -> Option<El<'_>> {
         let p = &self.pal;
         let left = if main { 76.0 } else { 8.0 };
-        let banner = match self.relaunch_toast {
-            Some(t) => trs(t, &["Beeper"]),
-            None => self.status_banner.clone(),
-        };
+        let banner = if let Some(t) = self.relaunch_toast { trs(t, &["Beeper"]) } else { self.status_banner.clone() };
         let pill = |(kind, text): (Pill, String)| -> El<'_> {
             let icon = (kind == Pill::Syncing).then(|| tinted(&MAT_SYNC, 12.0, p.strong));
             let body = row![].push(icon).push(txt(text, 11.0).line_height(lh(14.0)).color(p.strong)).spacing(4).align_y(Center);
@@ -289,10 +286,7 @@ impl BeeperGuiApp {
     /// Desktop's `Toast`: the newest toast, or the toast at an index of `older_toasts`.
     pub(crate) fn toast_card<'a>(&'a self, t: &Toast, older: Option<usize>) -> El<'a> {
         let p = &self.pal;
-        let (bg, fg) = match t.error {
-            true => (ON_ERROR, Color::WHITE),
-            false => (p.card, p.strong),
-        };
+        let (bg, fg) = if t.error { (ON_ERROR, Color::WHITE) } else { (p.card, p.strong) };
         let btn = |(label, msg): &(&'static str, UiMessage), fg: Color| {
             let label = semi(*label, 13.0).line_height(lh(18.0)).color(fg);
             let action = match t.dismiss {

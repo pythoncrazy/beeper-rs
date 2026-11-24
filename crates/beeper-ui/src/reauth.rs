@@ -3,7 +3,6 @@
 use crate::i18n::{tr, trx};
 use crate::login::field;
 use crate::prelude::*;
-use iced::keyboard::key::Named;
 use iced::widget::{column, operation};
 use iced::window;
 
@@ -50,7 +49,7 @@ impl BeeperGuiApp {
         if let Some(id) = self.reauth.window {
             return self.raise(id);
         }
-        let (id, open) = self.open_child(SIZE);
+        let (id, open) = self.open_child(SIZE, false);
         self.reauth = Reauth { window: Some(id), retry: Some(retry), ..Reauth::default() };
         let open = open.chain(operation::focus(CODE_INPUT));
         // Like Desktop, an account without an email gets no code.

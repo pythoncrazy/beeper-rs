@@ -728,10 +728,7 @@ impl BeeperGuiApp {
             section_btn(p, label, p.main_text).on_press(UiMessage::Info(info::Msg::Media(toggle)))
         });
         let head = row![txt(tr("Media"), 11.0).color(p.strong), Space::new().width(Fill)].push(link).align_y(Center).padding(8);
-        let head: El = match expandable {
-            true => mouse_area(head).on_press(UiMessage::Info(info::Msg::Media(toggle))).into(),
-            false => head.into(),
-        };
+        let head: El = if expandable { mouse_area(head).on_press(UiMessage::Info(info::Msg::Media(toggle))).into() } else { head.into() };
         let body = column![].push(tabs).push(grid).spacing(4).padding(8);
         Some(column![head, container(body).width(Fill).style(fill_box(Color { a: 0.1, ..p.strong }, 10.0))].into())
     }

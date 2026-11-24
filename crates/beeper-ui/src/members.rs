@@ -193,10 +193,7 @@ impl BeeperGuiApp {
         let less =
             (expandable && self.info_all).then(|| section_btn(p, tr("Show less"), p.main_text).on_press(UiMessage::Info(info::Msg::All)));
         let head = row![txt(tr("Members"), 11.0).color(p.strong), Space::new().width(Fill)].push(less).align_y(Center).padding(8);
-        let head: El = match expandable {
-            true => mouse_area(head).on_press(UiMessage::Info(info::Msg::All)).into(),
-            false => head.into(),
-        };
+        let head: El = if expandable { mouse_area(head).on_press(UiMessage::Info(info::Msg::All)).into() } else { head.into() };
         column![head, container(list).style(fill_box(p.chip, 10.0))].into()
     }
 }
