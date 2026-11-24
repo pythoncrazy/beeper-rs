@@ -685,9 +685,6 @@ fn right_to_left(text: &str) -> bool {
     text.chars().find(|c| c.is_alphabetic()).is_some_and(rtl)
 }
 
-/// How far under the top of the timeline the date of the day at its top floats, under the header card.
-const STICKY_DATE: f32 = 80.0;
-
 /// The container of the unread divider, which a chat scrolls to when it opens.
 const UNREAD_DIVIDER: &str = "unread-divider";
 
@@ -1516,15 +1513,6 @@ impl BeeperGuiApp {
         let banner = banner.map(|b| container(b).center_x(Fill).padding(Padding::ZERO.top(card_h + 16.0 - 11.0)));
         let members = self.header_hover.0.then(|| self.header_members(chat)).flatten();
         let members = members.filter(|_| in_chat).map(|m| container(m).center_x(Fill).padding(Padding::ZERO.top(84.0 + below)));
-        // Desktop's `sticky-date-container`: while the timeline scrolls, the date of the day at its top floats under the
-        // header.
-        let sticky = self
-            .pane()
-            .timeline
-            .sticky()
-            .filter(|_| in_chat)
-            .and_then(|i| msgs.get(i))
-            .map(|m| self.day_pill(&m.timestamp, true).padding(Padding::ZERO.top(STICKY_DATE).left(GUTTER)));
         let overlay = match in_chat {
             true if selecting => stack![fade],
             true if chat.is_request == Some(true) => stack![fade, self.view_info_toggle(&st)],
@@ -1580,17 +1568,9 @@ impl BeeperGuiApp {
             None => unavailable(&st, chat).is_none().then(|| self.view_composer(&st, chat)),
         };
         let jump = self.view_scroll_to_bottom(&st, chat);
-        let pane = column![stack![list, overlay]
-            .push(sticky)
-            .push(banner)
-            .push(members)
-            .push(jump)
-            .push(replies)
-            .push(close)
-            .width(Fill)
-            .height(Fill)]
-        .push(verify)
-        .push(composer);
+        let pane = column![stack![list, overlay].push(banner).push(members).push(jump).push(replies).push(close).width(Fill).height(Fill)]
+            .push(verify)
+            .push(composer);
         let secondary = st.settings.pref("secondaryComposerButton") != 6;
         let picker = self
             .view_emoji_picker(&st)
@@ -1838,8 +1818,6 @@ impl BeeperGuiApp {
         // messages of the chat only until the root loads.
         let root = self.pane().thread_root.as_deref();
         let list = if thread { &self.pane().thread_list } else { &self.pane().timeline };
-        // The date of the day that starts under the header shows only where it floats.
-        let covered = list.covered().filter(|_| !thread);
         let top = if root.is_some() { 38.0 } else { 96.0 };
         let mut col = Column::new().padding(Padding::new(8.0).right(8.0 + GUTTER).top(top).bottom(0.0));
         let loaded = root.is_some_and(|r| msgs.first().is_some_and(|m| m.id == r));
@@ -1872,11 +1850,9 @@ impl BeeperGuiApp {
             let mine = m.is_sender == Some(true);
             let day_changed = prev.is_none_or(|q| day_num(&q.timestamp) != day_num(&m.timestamp));
             let mut head = Column::new().width(Fill).push(prev.map(|q| Space::new().height(gap_below(q, m))));
+            // The list draws the date in the place of its day (`sticky-date-placeholder`).
             if day_changed {
-                let shown = covered.is_none_or(|c| i > c);
-                // Desktop's `date` is a `.negate-redacted-region`.
-                let pill = crate::style::region(false, || self.day_pill(&m.timestamp, shown));
-                head = head.push(pill.padding(Padding::new(4.0).left(GUTTER).right(0.0)));
+                head = head.push(self.day_pill(&m.timestamp, 0.0).padding(Padding::new(4.0).left(GUTTER).right(0.0)));
             }
             // The `along-message-footer` line of the message before goes on through the gap below it, past its
             // sender's avatar, and the date between two messages of a chain (`MessageDate`) has a line of its own.
@@ -2032,9 +2008,20 @@ impl BeeperGuiApp {
                 None => cell.into(),
             }
         };
-        // The pill floats at `STICKY_DATE`, 4 px into the row of its day.
-        list.sections(days.clone(), if thread { 0.0 } else { STICKY_DATE - 4.0 });
-        col.push(list.view(keys, true, 48.0, UiMessage::Relist, item))
+        // Desktop's dates are `sticky-date-container`s: in the timeline, whose scrolling container has the 36 px header
+        // over its top, they stick 48 px under it, and in the thread pane (`ThreadedRepliesView`, 40 px) at its top.
+        let float = match (thread, root) {
+            (true, _) => None,
+            (false, None) => Some(vlist::Float { pad: 36.0, line: 84.0 }),
+            (false, Some(_)) => Some(vlist::Float { pad: 40.0, line: 40.0 }),
+        };
+        list.sections(days.clone(), float);
+        // Desktop's `date` is a `.negate-redacted-region`.
+        let label = |s: usize| -> Option<El<'a>> {
+            let pill = self.day_pill(&msgs[s].timestamp, list.alpha(keys[s]));
+            Some(crate::style::region(false, || pill.padding(Padding::ZERO.left(GUTTER))).into())
+        };
+        col.push(list.labeled(keys, true, 48.0, UiMessage::Relist, item, label))
     }
 
     /// Desktop's `kmt`, which shows while the pointer is on the header card: the other members who have not left, the
@@ -2080,10 +2067,10 @@ impl BeeperGuiApp {
         Some(mouse_area(list).on_enter(UiMessage::HeaderHover(true)).on_exit(UiMessage::HeaderHover(false)).into())
     }
 
-    /// Desktop's `MessageDate` pill of the day of `timestamp`, in the middle of its row, or its empty place.
-    fn day_pill<'a>(&self, timestamp: &str, shown: bool) -> iced::widget::Container<'a, UiMessage> {
+    /// Desktop's `MessageDate` pill of the day of `timestamp` at `alpha`, in the middle of its row, or its empty place.
+    fn day_pill<'a>(&self, timestamp: &str, alpha: f32) -> iced::widget::Container<'a, UiMessage> {
         let p = &self.pal;
-        let [fg, bg, edge] = if shown { [p.on_secondary, p.card, p.chip] } else { [CLEAR; 3] };
+        let [fg, bg, edge] = [p.on_secondary, p.card, p.chip].map(|c| c.scale_alpha(alpha));
         let label = semi(day_label(timestamp), 11.0).color(fg);
         container(container(label).padding([5, 9]).style(bordered_box(bg, edge, 1.0, 12.0))).center_x(Fill)
     }
@@ -4680,6 +4667,39 @@ pub(crate) mod tests {
         assert!(alone(&app, &reply).find("ZQ").is_err(), "a DM has no reply avatar");
     }
 
+    /// Desktop's `sticky-date-container`s: a day whose row starts 27 px under the top of the timeline, with the next day
+    /// 64 px further down, keeps its date over the next day's row (sticky at 84 px, pushed up to 67 px), and the next
+    /// date shows in its place, 4 px into its row.
+    #[test]
+    fn a_date_near_the_next_day_floats_pushed_up_like_desktop() {
+        let mut app = crate::fuzz::demo_app("date-pushed");
+        let _ = app.update(UiMessage::SelectChat("!note_self:beeper.com".into()));
+        // The rows of the timeline with a pixel other than the background where the dates are, after a first frame.
+        let inked = |app: &mut BeeperGuiApp, h: f32| {
+            app.pane.size = Size::new(900.0, h);
+            let mut sim = iced_test::Simulator::with_size(Default::default(), app.pane.size, app.view_conversation());
+            let pill = sim.find("Wed, Oct 14").expect("the date").bounds();
+            let _ = sim.simulate([iced::Event::Window(window::Event::RedrawRequested(std::time::Instant::now()))]);
+            drop(sim);
+            let shot = pixels(&mut iced_test::Simulator::with_size(Default::default(), app.pane.size, app.view_conversation()));
+            let xs = (pill.x as u32 - 9) * 2..(pill.x + pill.width) as u32 * 2 + 18;
+            let ink = |y: u32| xs.clone().any(|x| shot.get_pixel(x, y) != shot.get_pixel(40, y));
+            (0..h as u32).filter(|&y| ink(2 * y) && ink(2 * y + 1)).collect::<Vec<u32>>()
+        };
+        // At 800 px every date is in its place: Wednesday's is the last run of 24 inked rows.
+        let rows = inked(&mut app, 800.0);
+        let starts = rows.iter().copied().filter(|&y| !rows.contains(&(y - 1)));
+        let mut pills = starts.filter(|&y| (y..y + 24).all(|r| rows.contains(&r)) && !rows.contains(&(y + 25)));
+        let wed = pills.next_back().expect("the date") - 4;
+        // The timeline keeps its bottom, so a shorter pane moves Monday's row, 64 px above, 27 px under the top.
+        let h = 800.0 - (wed - 64 - 27) as f32;
+        let rows = inked(&mut app, h);
+        let ink = |r: std::ops::RangeInclusive<u32>| r.filter(|y| rows.contains(y)).count();
+        assert_eq!(ink(72..=90), 19, "the Monday date under the header, down to 91: {rows:?}");
+        assert_eq!(ink(91..=94), 0, "nothing between the dates: {rows:?}");
+        assert_eq!(ink(95..=119), 24, "the Wednesday date from 95 to 119: {rows:?}");
+    }
+
     /// Desktop's `dir="auto"`: the wrapped lines of a right-to-left message start at the right of its bubble, so its
     /// ragged edge is on the left.
     #[test]
@@ -4938,7 +4958,7 @@ pub(crate) mod tests {
             xs.iter().max().zip(xs.iter().min()).map_or(0, |(a, b)| a - b + 1)
         };
         let at = |app: &mut BeeperGuiApp, ms: u64| {
-            app.started = std::time::Instant::now() - std::time::Duration::from_millis(ms);
+            let _clock = clock_at(app, ms);
             pixels(&mut alone(app, &mid))
         };
         let whole = at(&mut app, 0);
@@ -4981,7 +5001,7 @@ pub(crate) mod tests {
         app.media.insert(url.clone(), Some(Ok(frames)));
         let (red, blue, button) = (0xff0000, 0x0000ff, 0xefeff0);
         let at = |app: &mut BeeperGuiApp, ms: u64| {
-            app.started = std::time::Instant::now() - std::time::Duration::from_millis(ms);
+            let _clock = clock_at(app, ms);
             pixels(&mut alone(app, &mid))
         };
         let first = at(&mut app, 0);
@@ -5074,8 +5094,7 @@ pub(crate) mod tests {
                 app.media.insert(u, Some(frames));
             }
         }
-        // The frames of the demo, slowed to `SLOW` each, so that a slow draw of a debug build lands in the frame
-        // that it is meant to draw.
+        // The frames of the demo, slowed to `SLOW` each, so that the tests name a frame by its time.
         let slow =
             |f: &crate::Frames| -> crate::Frames { f.iter().map(|(h, d)| (h.clone(), if f.len() > 1 { SLOW } else { *d })).collect() };
         let avatars: Vec<(String, crate::Frames)> = (app.store.read().chat(ANIMATED_CHAT).participants.items.iter())
@@ -5103,20 +5122,19 @@ pub(crate) mod tests {
     /// The delay of each frame of the demo's animations in these tests.
     const SLOW: u128 = 2000;
 
-    /// The main window of `app` as the simulator draws it `ms` into the animations; a draw that takes so long that
-    /// it may have drawn the next frame draws again.
+    /// Stops the clock of the animations of `app` `ms` into their play, until the clock drops, so that a view draws
+    /// the frames of that time however long it takes.
+    fn clock_at(app: &mut BeeperGuiApp, ms: u64) -> crate::anim::Frozen {
+        let now = std::time::Instant::now();
+        app.started = now - std::time::Duration::from_millis(ms);
+        crate::anim::freeze(now)
+    }
+
+    /// The main window of `app` as the simulator draws it `ms` into the animations.
     fn main_at(app: &mut BeeperGuiApp, ms: u64) -> ::image::RgbaImage {
-        let end = u128::from(ms) / SLOW * SLOW + SLOW;
-        for _ in 0..5 {
-            app.started = std::time::Instant::now() - std::time::Duration::from_millis(ms);
-            let main = app.main_window.expect("the main window");
-            let mut sim = iced_test::Simulator::with_size(Default::default(), Size::new(1200.0, 800.0), app.view(main));
-            let shot = pixels(&mut sim);
-            if app.started.elapsed().as_millis() < end {
-                return shot;
-            }
-        }
-        panic!("five draws took more than {} ms each", end - u128::from(ms));
+        let _clock = clock_at(app, ms);
+        let main = app.main_window.expect("the main window");
+        pixels(&mut iced_test::Simulator::with_size(Default::default(), Size::new(1200.0, 800.0), app.view(main)))
     }
 
     /// The places of the pixels of `shot` in the color `c`.
@@ -5270,23 +5288,27 @@ pub(crate) mod tests {
 
     const TGS_STICKER: &str = "msg_x6s";
 
-    /// Waits until the workers drew the frames that `redraw` asks for `ms` into the animations, and gives true when
-    /// they are frame `due` or one of the next three, which a slow draw of a debug build may reach.
-    fn drawn_at(app: &mut BeeperGuiApp, a: &crate::lottie::Animation, (ms, due): (u64, Option<u64>), redraw: fn(&BeeperGuiApp)) -> bool {
-        app.started = std::time::Instant::now() - std::time::Duration::from_millis(ms);
+    /// Waits until the workers drew the frames that `redraw` asks for at the time of the clock, after the frames
+    /// that they were drawing, and gives whether they are frame `due`.
+    fn drawn(app: &BeeperGuiApp, a: &crate::lottie::Animation, due: Option<u64>, redraw: fn(&BeeperGuiApp)) -> bool {
+        let idle = || {
+            let t = std::time::Instant::now();
+            while !a.idle() {
+                assert!(t.elapsed().as_secs() < 60, "a worker draws the frame");
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+        };
+        idle();
         redraw(app);
-        let t = std::time::Instant::now();
-        while !a.idle() {
-            assert!(t.elapsed().as_secs() < 20, "a worker draws the frame");
-            std::thread::sleep(std::time::Duration::from_millis(2));
-        }
-        due.is_none_or(|due| a.shown().iter().all(|n| (due..=due + 3).contains(n)))
+        idle();
+        due.is_none_or(|due| a.shown().iter().all(|n| *n == due))
     }
 
     /// The sticker message alone `ms` into its animation, once its worker drew frame `due`.
     fn sticker_at(app: &mut BeeperGuiApp, a: &crate::lottie::Animation, ms: u64, due: u64) -> ::image::RgbaImage {
+        let _clock = clock_at(app, ms);
         let redraw = |app: &BeeperGuiApp| _ = alone_redraw(app, TGS_STICKER);
-        assert!((0..20).any(|_| drawn_at(app, a, (ms, Some(due)), redraw)), "the frame that is due draws");
+        assert!(drawn(app, a, Some(due), redraw), "frame {due} draws, not {:?}", a.shown());
         pixels(&mut alone(app, TGS_STICKER))
     }
 
@@ -5351,7 +5373,8 @@ pub(crate) mod tests {
         // The view asks for the frames that show, and draws them once the workers drew them.
         let settle = |app: &mut BeeperGuiApp, due: Option<u64>| {
             let redraw = |app: &BeeperGuiApp| _ = next_redraw(app);
-            assert!((0..20).any(|_| drawn_at(app, &a, (0, due), redraw)), "the frame that is due draws");
+            let _clock = clock_at(app, 0);
+            assert!(drawn(app, &a, due, redraw), "frame {due:?} draws, not {:?}", a.shown());
             let main = app.main_window.expect("the main window");
             pixels(&mut iced_test::Simulator::with_size(Default::default(), Size::new(1200.0, 800.0), app.view(main)))
         };
@@ -5404,7 +5427,7 @@ pub(crate) mod tests {
         app.media.insert(url.clone(), Some(Ok(frames.clone())));
         // The brightest red and blue of the message at `ms` into the animation.
         let at = |app: &mut BeeperGuiApp, ms: u64| {
-            app.started = std::time::Instant::now() - std::time::Duration::from_millis(ms);
+            let _clock = clock_at(app, ms);
             let shot = pixels(&mut alone(app, &mid));
             let most = |c: usize| shot.pixels().filter(|p| p[(c + 2) % 3] < 40 && p[3] > 0).map(|p| p[c]).max();
             (most(0).unwrap_or(0), most(2).unwrap_or(0))

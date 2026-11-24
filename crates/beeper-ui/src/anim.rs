@@ -21,6 +21,42 @@ pub struct Gif<'a> {
     turn: (f32, f32, Instant),
 }
 
+#[cfg(test)]
+thread_local!(static FROZEN: std::cell::Cell<Option<Instant>> = const { std::cell::Cell::new(None) });
+
+/// The time that the animations of this thread draw at: the time of the redraw `at`, or the time that a test froze.
+fn at(at: Instant) -> Instant {
+    #[cfg(test)]
+    if let Some(t) = FROZEN.get() {
+        return t;
+    }
+    at
+}
+
+/// How long ago `start` was for the animations of this thread.
+pub fn since(start: Instant) -> Duration {
+    at(Instant::now()).saturating_duration_since(start)
+}
+
+/// Stops the clock of the animations of this thread at `t` until the guard drops, so that a test draws the frame
+/// of a time, however long the draw takes.
+#[cfg(test)]
+pub fn freeze(t: Instant) -> Frozen {
+    FROZEN.set(Some(t));
+    Frozen
+}
+
+/// The clock of [`freeze`], which goes on when it drops.
+#[cfg(test)]
+pub struct Frozen;
+
+#[cfg(test)]
+impl Drop for Frozen {
+    fn drop(&mut self) {
+        FROZEN.set(None);
+    }
+}
+
 /// The time of Desktop's `.2s transform` transition.
 const TURN_MS: f32 = 200.0;
 
@@ -124,7 +160,7 @@ impl Gif<'_> {
     /// The image of frame `h` at the angle of the turn now, and if the turn goes on.
     fn image(&self, h: image::Handle) -> (Image, bool) {
         let (from, to, at) = self.turn;
-        let t = (at.elapsed().as_secs_f32() * 1000.0 / TURN_MS).min(1.0);
+        let t = (since(at).as_secs_f32() * 1000.0 / TURN_MS).min(1.0);
         let angle = from + (to - from) * crate::cubic_bezier(t, [0.25, 0.1, 0.25, 1.0]);
         ((self.make)(h).rotation(iced::Rotation::Solid(iced::Radians(angle))), t < 1.0 && from != to)
     }
@@ -159,6 +195,7 @@ impl<M> Widget<M, Theme, Renderer> for Gif<'_> {
         shell: &mut Shell<'_, M>, viewport: &Rectangle,
     ) {
         let Event::Window(window::Event::RedrawRequested(now)) = event else { return };
+        let now = at(*now);
         if !layout.bounds().intersects(viewport) {
             return;
         }
@@ -173,13 +210,13 @@ impl<M> Widget<M, Theme, Renderer> for Gif<'_> {
                 true => {
                     let (n, left) = a.frame(now.saturating_duration_since(self.start));
                     a.want(n, size);
-                    shell.request_redraw_at(*now + left);
+                    shell.request_redraw_at(now + left);
                 }
-                false if a.drawn(size).is_none() && !a.want(0, size) => shell.request_redraw_at(*now + POLL),
+                false if a.drawn(size).is_none() && !a.want(0, size) => shell.request_redraw_at(now + POLL),
                 false => {}
             }
         } else if plays(&self.frames, self.play) {
-            shell.request_redraw_at(next(&self.frames, self.start, *now));
+            shell.request_redraw_at(next(&self.frames, self.start, now));
         }
     }
 
@@ -193,7 +230,7 @@ impl<M> Widget<M, Theme, Renderer> for Gif<'_> {
         let h = match (self.frames.animation(), plays(&self.frames, self.play)) {
             (Some(a), _) => a.drawn(lottie_size(a, layout.bounds())).map_or_else(first, |d| d.1),
             (None, false) => first(),
-            (None, true) => frame(&self.frames, self.start.elapsed().as_millis()).0.clone(),
+            (None, true) => frame(&self.frames, since(self.start).as_millis()).0.clone(),
         };
         let (image, _) = self.image(h);
         Widget::<M, Theme, Renderer>::draw(&image, tree, renderer, theme, style, layout, cursor, viewport);
@@ -236,7 +273,7 @@ impl<M> Widget<M, Theme, Renderer> for Dot {
         &self, _: &widget::Tree, renderer: &mut Renderer, _: &Theme, _: &renderer::Style, layout: Layout<'_>, _: mouse::Cursor,
         _: &Rectangle,
     ) {
-        let t = ((self.start.elapsed().as_millis() + 1000 - self.delay) % 1000) as f32 / 1000.0;
+        let t = ((since(self.start).as_millis() + 1000 - self.delay) % 1000) as f32 / 1000.0;
         let quad = renderer::Quad { bounds: layout.bounds(), border: iced::border::rounded(self.size / 2.0), ..Default::default() };
         renderer.fill_quad(quad, self.color.scale_alpha((self.alpha)(t)));
     }
@@ -383,7 +420,7 @@ impl<M> Widget<M, Theme, Renderer> for Skeleton {
         _: &Rectangle,
     ) {
         let quad = renderer::Quad { bounds: layout.bounds(), border: iced::border::rounded(self.radius), ..Default::default() };
-        let t = self.start.elapsed().as_secs_f32();
+        let t = since(self.start).as_secs_f32();
         renderer.fill_quad(quad, iced::Background::Gradient(Self::gradient(self.color, t).into()));
     }
 }

@@ -1315,28 +1315,32 @@ fn preview_sender<'a>(chat: &'a Chat, m: &Message) -> Option<&'a User> {
     chat.participants.items.iter().find(|u| shown && u.id == m.sender_id)
 }
 
-/// The 2 px cutout around a 12 or 16 px avatar badge, clipped at its right and bottom where no avatar is.
-static BADGE_RINGS: std::sync::LazyLock<[svg::Handle; 2]> = std::sync::LazyLock::new(|| {
-    [12, 16].map(|b| {
-        let (r, s) = (b / 2 + 2, b + 2);
-        let ring = format!(
-            r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {s} {s}"><circle cx="{r}" cy="{r}" r="{r}" fill="currentColor"/></svg>"#
-        );
-        svg::Handle::from_memory(ring.into_bytes())
+/// The 2 px cutouts around a 12 or 16 px avatar badge, clipped at their right and bottom where no avatar is: Desktop's
+/// `jd` circle around a gray badge, and its `su` square with 8 px corners around a colored one.
+static BADGE_RINGS: std::sync::LazyLock<[[svg::Handle; 2]; 2]> = std::sync::LazyLock::new(|| {
+    [false, true].map(|colored| {
+        [12, 16].map(|b| {
+            let (s, w, r) = (b + 2, b + 4, if colored { 8 } else { b / 2 + 2 });
+            let ring = format!(
+                r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {s} {s}"><rect width="{w}" height="{w}" rx="{r}" fill="currentColor"/></svg>"#
+            );
+            svg::Handle::from_memory(ring.into_bytes())
+        })
     })
 });
 
-/// `ring` is the row color, which Desktop shows in a cutout of the avatar around the badge.
+/// `ring` is the row color, which Desktop shows in a cutout of the avatar around the badge. A colored badge is the
+/// brand tile with its 35 % corners (`BrandNetworkIcon`), a gray one a circle (`.is-badge`).
 fn badged<'a>(inner: El<'a>, brand: &str, size: f32, badge: f32, mono: Option<&Palette>, ring: Color) -> El<'a> {
     let icon: El<'a> = match mono {
-        None => svg(crate::style::brand_round(brand)).width(badge).height(badge).into(),
+        None => svg(crate::style::brand_svg(brand)).width(badge).height(badge).into(),
         Some(p) => {
             let fg = p.strong;
             let glyph = svg(crate::style::brand_badge(brand)).style(move |_, _| svg::Style { color: Some(fg) }).width(badge).height(badge);
             container(glyph).style(fill_box(p.chip, badge / 2.0)).into()
         }
     };
-    let cutout = tinted(&BADGE_RINGS[usize::from(badge > 12.0)], badge + 2.0, ring);
+    let cutout = tinted(&BADGE_RINGS[usize::from(mono.is_none())][usize::from(badge > 12.0)], badge + 2.0, ring);
     let w = size + badge / 8.0;
     let corner = |e: El<'a>| container(e).width(w).height(size).align_right(w).align_bottom(size);
     stack![container(inner), corner(cutout), corner(icon)].width(w).height(size).into()
@@ -6775,12 +6779,21 @@ pub static FRAME_READY: tokio::sync::Notify = tokio::sync::Notify::const_new();
 /// GNOME's `text-scaling-factor` on Wayland, as the bits of an `f32`, which Chromium applies to the whole of each
 /// window like a zoom, the size of the window included: Desktop's device scale is the screen's times it. On X11 the
 /// scale of the window already has it, from `Xft.dpi`.
+#[cfg(not(test))]
 static TEXT_SCALE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0x3f80_0000);
+
+// The tests run at once, each on its own thread with its own text scaling, so that a test that changes it changes the
+// title bars and windows of no other test.
+#[cfg(test)]
+thread_local!(static TEXT_SCALE: std::cell::Cell<f32> = const { std::cell::Cell::new(1.0) });
 
 /// Takes GNOME's text scaling, at launch and when it changes; the windows follow it once [`FRAME_READY`] wakes them.
 pub fn set_text_scale(scale: f32) {
     if scale.is_finite() && scale > 0.0 {
+        #[cfg(not(test))]
         TEXT_SCALE.store(scale.to_bits(), std::sync::atomic::Ordering::Relaxed);
+        #[cfg(test)]
+        TEXT_SCALE.set(scale);
     }
 }
 
@@ -6839,8 +6852,14 @@ fn window_events() -> Subscription<UiMessage> {
 }
 
 /// [`TEXT_SCALE`].
+#[cfg(not(test))]
 fn text_scale() -> f32 {
     f32::from_bits(TEXT_SCALE.load(std::sync::atomic::Ordering::Relaxed))
+}
+
+#[cfg(test)]
+fn text_scale() -> f32 {
+    TEXT_SCALE.get()
 }
 
 /// People, each with the account to reach them on.
