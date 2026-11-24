@@ -3617,199 +3617,18 @@ impl BeeperGuiApp {
                 self.vote_windows.push((id, chat, mid));
                 return open;
             }
-            Msg::LinkMenu(mid, href) if href.starts_with("https://") || href.starts_with("mailto:") => {
-                // Desktop's menu of a link leaves the selection, and has the link's own items.
-                let open = self.update(UiMessage::Message(Msg::OpenMenu(mid.clone())));
-                self.pane.menu_selection = None;
-                if !self.pane.selected_msgs.contains(&mid) {
-                    self.pane.selected_msgs = vec![mid];
-                }
-                self.pane.menu_link = Some(href);
-                return open;
-            }
-            Msg::LinkMenu(mid, href) if href.starts_with(crate::MENTION) => {
-                return self.update(UiMessage::Message(Msg::OpenMenu(mid)));
-            }
-            // Desktop leaves the right click on another link to Electron, which has no menu for it.
-            Msg::LinkMenu(..) => {}
-            Msg::MessageContact(account, user) => return self.open_dm(account, *user, None, None),
-            Msg::LinkedMenu(mid, linked) => {
-                let open = self.update(UiMessage::Message(Msg::OpenMenu(mid)));
-                self.pane.menu_linked = Some(linked);
-                return open;
-            }
-            Msg::ImageMenu(mid) => {
-                let open = self.update(UiMessage::Message(Msg::OpenMenu(mid)));
-                self.pane.menu_image = true;
-                return open;
-            }
-            // Desktop's `selectedImage` with `dataset.mxEmoticon`: the name is its `title` without the first and the
-            // last character (the colons of ":name:").
-            Msg::EmoticonMenu(mid, title, src) => {
-                let open = self.update(UiMessage::Message(Msg::OpenMenu(mid)));
-                self.pane.menu_image = true;
-                let name = title.map(|t| t.chars().skip(1).collect::<String>()).map(|t| {
-                    let mut t = t;
-                    t.pop();
-                    t
-                });
-                self.pane.menu_emoticon = name.map(|n| (n, src));
-                return open;
-            }
-            // Desktop's `selectedReaction` with an image (`dataset.reactionImgUrl`) and its key.
-            Msg::ReactionMenu(mid, key, url) => {
-                let open = self.update(UiMessage::Message(Msg::OpenMenu(mid)));
-                self.pane.menu_emoticon = Some((key, url));
-                return open;
-            }
-            Msg::AddCustomEmoji(name, url) => {
-                let mut st = self.store.write();
-                match beeper_core::matrix::with_custom_emoji(&st.image_pack, &name, &url) {
-                    Err(e) => {
-                        drop(st);
-                        self.show(Toast::new(trf("Couldn't add the emoji: %s", &[&e])));
-                    }
-                    // Desktop's `set` shows the pack at once, and writes it.
-                    Ok(pack) => {
-                        let old = std::mem::replace(&mut st.image_pack, pack.clone());
-                        let Some(c) = st.matrix.clone() else {
-                            drop(st);
-                            return self.update(UiMessage::Message(Msg::CustomEmojiAdded(name, old, Ok(()))));
-                        };
-                        let write = beeper_core::matrix::set_global(c, beeper_core::matrix::IMAGE_PACK, pack);
-                        return Task::perform(write, move |r| UiMessage::Message(Msg::CustomEmojiAdded(name.clone(), old.clone(), r)));
-                    }
-                }
-            }
-            Msg::CustomEmojiAdded(name, _, Ok(())) => self.show(Toast::new(trf("Added emoji :%s:", &[&name]))),
-            // Desktop's `setAccountData` puts the old pack back with its own toast, then the menu shows its own.
-            Msg::CustomEmojiAdded(_, old, Err(e)) => {
-                self.store.write().image_pack = old;
-                self.fail(Toast::new(format!("Settings couldn't be saved: {e}")));
-                self.show(Toast::new(trf("Couldn't add the emoji: %s", &[&e])));
-            }
-            Msg::OpenMenu(mid) => {
-                (self.pane.menu_link, self.pane.video_menu, self.pane.menu_linked) = (None, false, None);
-                (self.pane.menu_image, self.pane.menu_emoticon) = (false, None);
-                // With text selected, Desktop leaves the menu to Electron's, which offers the selection.
-                self.pane.menu_selection = crate::selectable::has_selection().then(crate::selectable::text);
-                // Desktop's `selectOnly`: a right click on a message outside the selection selects it alone.
-                if self.pane.menu_selection.is_none() && !self.pane.selected_msgs.contains(&mid) {
-                    self.pane.selected_msgs = vec![mid.clone()];
-                }
-                self.video.iter_mut().for_each(|v| v.sub = false);
-                (self.audio.sub, self.audio.lang, self.pane.remind_sub) = (false, false, false);
-                self.pane.message_menu = Some((mid, self.cursor.get()));
-                self.pane.gallery_menu.clear();
-            }
-            Msg::Select(mids) => self.pane.selected_msgs = mids,
-            Msg::QuoteSelected => {
-                let st = self.store.read();
-                let (msgs, _) = self.timeline(&st);
-                let picked: Vec<&Message> = msgs.into_iter().filter(|m| self.pane.selected_msgs.contains(&m.id)).collect();
-                let quote: Vec<String> = picked
-                    .iter()
-                    .flat_map(|m| crate::copy_text(m, false, true).lines().map(|l| format!("> {l}")).collect::<Vec<_>>())
-                    .filter(|l| l.len() > 2)
-                    .collect();
-                drop(st);
-                if quote.is_empty() {
-                    return Task::none();
-                }
-                let text = format!("{}{}\n\n", self.pane.composer.text(), quote.join("\n"));
-                return self.update(UiMessage::Composer(composer::Msg::Changed(text)));
-            }
-            Msg::CopySelected(stamp) => {
-                let st = self.store.read();
-                let (msgs, _) = self.timeline(&st);
-                let picked: Vec<&Message> = msgs.into_iter().filter(|m| self.pane.selected_msgs.contains(&m.id)).collect();
-                let many = picked.len() > 1;
-                let text: Vec<String> = picked.iter().map(|m| copy_text(m, stamp, many)).collect();
-                drop(st);
-                return self.update(UiMessage::Message(Msg::CopyText(text.join("\n"))));
-            }
-            Msg::Click(mid)
-                if !self.mods.shift()
-                    && self.store.read().settings.on("undoOnPendingClick")
-                    && self.queued.iter().any(|q| q.sends.iter().any(|s| s.0 == mid)) =>
-            {
-                return self.update(UiMessage::Composer(composer::Msg::UndoSend));
-            }
-            Msg::Click(_) if crate::selectable::has_selection() => {}
-            Msg::Click(mid) => {
-                let picked = self.pane.selected_msgs.contains(&mid);
-                if self.mods.shift() {
-                    let st = self.store.read();
-                    let (msgs, live) = self.timeline(&st);
-                    let at = |id: &str| msgs.iter().position(|m| m.id == id).expect("the message is in the open chat");
-                    let (a, b) = (at(self.pane.msg_anchor.as_deref().unwrap_or(&mid)), at(&mid));
-                    let range = (a.min(b)..=a.max(b)).filter(|&i| live[i]).map(|i| msgs[i].id.clone());
-                    let range: Vec<String> = range.filter(|id| !self.pane.selected_msgs.contains(id)).collect();
-                    drop(st);
-                    self.pane.selected_msgs.extend(range);
-                } else {
-                    match (self.mods.command(), picked) {
-                        (true, false) => self.pane.selected_msgs.push(mid.clone()),
-                        (false, false) => self.pane.selected_msgs = vec![mid.clone()],
-                        (_, true) => self.pane.selected_msgs.retain(|m| *m != mid),
-                    }
-                }
-                self.pane.msg_anchor = Some(mid);
-            }
-            // Desktop's double-click action waits for the selection: a double click on the text selects a word.
-            Msg::DoubleClick(_) if crate::selectable::has_selection() => {}
-            Msg::DoubleClick(mid) => {
-                let st = self.store.read();
-                let action = st.settings.pref("messageDoubleClick");
-                // Desktop's `$`: the chat takes reactions; a quick reaction also needs a message that takes one.
-                let react = st.loaded(&mid).is_some_and(|m| st.chat(&m.chat_id).messages.react);
-                let reactable = react && st.loaded(&mid).is_some_and(Message::reactable);
-                drop(st);
-                return match action {
-                    1 if !react => Task::none(),
-                    5 if !reactable => Task::none(),
-                    0 => Task::none(),
-                    1 => self.update(UiMessage::Message(Msg::React(mid))),
-                    3 => self.update(UiMessage::Forward(forward::Msg::Open(vec![mid]))),
-                    2 => {
-                        self.pane.selected_msgs = vec![mid.clone()];
-                        self.update(UiMessage::Composer(composer::Msg::StartReply(mid)))
-                    }
-                    4 => self.update(UiMessage::Message(Msg::OpenMenu(mid))),
-                    5 => self.update(self.quick_react(mid)),
-                    n => unreachable!("messageDoubleClick option {n}"),
-                };
-            }
-            Msg::Step(down, extend) => {
-                let st = self.store.read();
-                let (msgs, live) = self.timeline(&st);
-                let live = |i: &usize| live[*i];
-                let picked = |m: &&Message| self.pane.selected_msgs.contains(&m.id);
-                let (first, last) = (msgs.iter().position(picked), msgs.iter().rposition(picked));
-                let extend = extend && last.is_some();
-                let next = match (first.zip(last), down) {
-                    (None, false) => (0..msgs.len()).rev().find(live),
-                    // Desktop's ↓ with nothing selected goes to the first message after the unread divider.
-                    (None, true) => self.first_unread(&msgs).and_then(|u| (u..msgs.len()).find(live)),
-                    (Some((_, l)), true) => (l + 1..msgs.len()).find(live),
-                    (Some((f, _)), false) if extend => (0..f).rev().find(live),
-                    (Some((_, l)), false) => (0..l).rev().find(live).or(Some(l).filter(live)),
-                };
-                let next = next.map(|i| msgs[i].id.clone());
-                drop(st);
-                match (extend, next) {
-                    (true, Some(mid)) => self.pane.selected_msgs.push(mid),
-                    (true, None) => return Task::none(),
-                    (false, next) => self.pane.selected_msgs = next.into_iter().collect(),
-                }
-                self.follow_member_selection();
-                return match self.pane.selected_msgs.last() {
-                    Some(mid) => {
-                        self.pane.timeline.reveal(vlist::key(mid));
-                        locate(format!("msg-{mid}"), self.pane.scroll_id(), crate::Align::Nearest)
-                    }
-                    None => operation::focus("composer-input"),
-                };
+            msg @ (Msg::LinkMenu(..)
+            | Msg::MessageContact(..)
+            | Msg::LinkedMenu(..)
+            | Msg::ImageMenu(..)
+            | Msg::EmoticonMenu(..)
+            | Msg::ReactionMenu(..)
+            | Msg::AddCustomEmoji(..)
+            | Msg::CustomEmojiAdded(..)
+            | Msg::OpenMenu(..)) => return self.message_menus(msg),
+            msg
+            @ (Msg::Select(..) | Msg::QuoteSelected | Msg::CopySelected(..) | Msg::Click(..) | Msg::DoubleClick(..) | Msg::Step(..)) => {
+                return self.message_selection(msg)
             }
             Msg::React(mid) => return self.open_emoji(Some((mid, self.cursor.get()))),
             // A message off screen opens it at the cursor.
@@ -3826,6 +3645,78 @@ impl BeeperGuiApp {
                 return self.update(*msg);
             }
             Msg::CopyText(s) => return iced::clipboard::write(s),
+            msg @ (Msg::CopyImage(..)
+            | Msg::ImageFetched(..)
+            | Msg::CopyLink(..)
+            | Msg::GoTo(..)
+            | Msg::Download(..)
+            | Msg::Downloaded(..)) => return self.message_files(msg),
+            Msg::AskDelete(mids) => (self.confirm, self.delete_target) = (Some(ASK_DELETE_MESSAGE), Some(mids.join(" "))),
+            Msg::RetrySend(id) => {
+                self.store.write().retry_send(&id);
+                // Desktop's `retryErroredMessage` closes the error toast of the send.
+                self.remove_toast(&id);
+                self.retried.insert(id);
+            }
+            Msg::RemoveUnsent(id) => {
+                self.store.write().remove_unsent(&id);
+                // So does its `removeErroredMessage`.
+                self.remove_toast(&id);
+            }
+            Msg::ToggleClamp(mid) => {
+                if !self.pane.unclamped.remove(&mid) {
+                    self.pane.unclamped.insert(mid);
+                }
+            }
+            Msg::PressButton(mid, id) => return self.press_button(mid, id),
+            // Desktop's `z4t`: a toast when the homeserver answered 429, and an error toast when the callback failed.
+            Msg::Pressed(mid, id, r) => {
+                self.pressing.remove(&(mid, id));
+                match r {
+                    Pressed::Ok => {}
+                    Pressed::RateLimited => {
+                        self.show(Toast::new(tr("We're on it. If nothing arrives, try again in a few minutes.").into()))
+                    }
+                    Pressed::Failed => self.fail(Toast::new(tr("Couldn't reach Beeper. Try again.").into())),
+                }
+            }
+            Msg::ToggleGif(mid, ai) => {
+                if self.pane.played_gifs.remove(&(mid.clone(), ai)).is_none() {
+                    self.pane.played_gifs.insert((mid, ai), std::time::Instant::now());
+                }
+            }
+            Msg::ToggleLinkGif(mid, url) => {
+                if self.pane.played_links.remove(&(mid.clone(), url.clone())).is_none() {
+                    self.pane.played_links.insert((mid, url), std::time::Instant::now());
+                }
+            }
+            Msg::ToggleEditHistory(mid) => {
+                self.pane.expanded_history_msg_id = (self.pane.expanded_history_msg_id.as_ref() != Some(&mid)).then_some(mid);
+            }
+            Msg::HoverEnter(id) => {
+                self.quick_open &= self.pane.hovered_msg.as_ref() == Some(&id);
+                if self.pane.hovered_msg.as_ref() != Some(&id) {
+                    (self.pane.hover_msg_at, self.pane.flyover_at) = (Some(std::time::Instant::now()), None);
+                }
+                self.pane.hovered_msg = Some(id);
+            }
+            Msg::ShowQuickReactions if !self.quick_open => {
+                self.quick_open = true;
+                self.pane.flyover_at = Some(std::time::Instant::now());
+            }
+            Msg::ShowQuickReactions => {}
+            Msg::HoverExit(id) => {
+                if self.pane.hovered_msg.as_ref() == Some(&id) {
+                    self.pane.hovered_msg = None;
+                }
+            }
+        }
+        self.settle()
+    }
+
+    /// Copying images and downloading the attachments of messages.
+    fn message_files(&mut self, msg: Msg) -> Task<UiMessage> {
+        match msg {
             Msg::CopyImage(mid, ai) => {
                 let st = self.store.read();
                 let a = &stored(&st, &mid).attachments[ai];
@@ -3942,65 +3833,217 @@ impl BeeperGuiApp {
                     }
                 }
             }
-            Msg::AskDelete(mids) => (self.confirm, self.delete_target) = (Some(ASK_DELETE_MESSAGE), Some(mids.join(" "))),
-            Msg::RetrySend(id) => {
-                self.store.write().retry_send(&id);
-                // Desktop's `retryErroredMessage` closes the error toast of the send.
-                self.remove_toast(&id);
-                self.retried.insert(id);
-            }
-            Msg::RemoveUnsent(id) => {
-                self.store.write().remove_unsent(&id);
-                // So does its `removeErroredMessage`.
-                self.remove_toast(&id);
-            }
-            Msg::ToggleClamp(mid) => {
-                if !self.pane.unclamped.remove(&mid) {
-                    self.pane.unclamped.insert(mid);
+            _ => unreachable!("not a message_files message"),
+        }
+        self.settle()
+    }
+
+    /// The selection of messages: clicks, copying and quoting what is selected, and the arrow keys.
+    fn message_selection(&mut self, msg: Msg) -> Task<UiMessage> {
+        match msg {
+            Msg::Select(mids) => self.pane.selected_msgs = mids,
+            Msg::QuoteSelected => {
+                let st = self.store.read();
+                let (msgs, _) = self.timeline(&st);
+                let picked: Vec<&Message> = msgs.into_iter().filter(|m| self.pane.selected_msgs.contains(&m.id)).collect();
+                let quote: Vec<String> = picked
+                    .iter()
+                    .flat_map(|m| crate::copy_text(m, false, true).lines().map(|l| format!("> {l}")).collect::<Vec<_>>())
+                    .filter(|l| l.len() > 2)
+                    .collect();
+                drop(st);
+                if quote.is_empty() {
+                    return Task::none();
                 }
+                let text = format!("{}{}\n\n", self.pane.composer.text(), quote.join("\n"));
+                return self.update(UiMessage::Composer(composer::Msg::Changed(text)));
             }
-            Msg::PressButton(mid, id) => return self.press_button(mid, id),
-            // Desktop's `z4t`: a toast when the homeserver answered 429, and an error toast when the callback failed.
-            Msg::Pressed(mid, id, r) => {
-                self.pressing.remove(&(mid, id));
-                match r {
-                    Pressed::Ok => {}
-                    Pressed::RateLimited => {
-                        self.show(Toast::new(tr("We're on it. If nothing arrives, try again in a few minutes.").into()))
+            Msg::CopySelected(stamp) => {
+                let st = self.store.read();
+                let (msgs, _) = self.timeline(&st);
+                let picked: Vec<&Message> = msgs.into_iter().filter(|m| self.pane.selected_msgs.contains(&m.id)).collect();
+                let many = picked.len() > 1;
+                let text: Vec<String> = picked.iter().map(|m| copy_text(m, stamp, many)).collect();
+                drop(st);
+                return self.update(UiMessage::Message(Msg::CopyText(text.join("\n"))));
+            }
+            Msg::Click(mid)
+                if !self.mods.shift()
+                    && self.store.read().settings.on("undoOnPendingClick")
+                    && self.queued.iter().any(|q| q.sends.iter().any(|s| s.0 == mid)) =>
+            {
+                return self.update(UiMessage::Composer(composer::Msg::UndoSend));
+            }
+            Msg::Click(_) if crate::selectable::has_selection() => {}
+            Msg::Click(mid) => {
+                let picked = self.pane.selected_msgs.contains(&mid);
+                if self.mods.shift() {
+                    let st = self.store.read();
+                    let (msgs, live) = self.timeline(&st);
+                    let at = |id: &str| msgs.iter().position(|m| m.id == id).expect("the message is in the open chat");
+                    let (a, b) = (at(self.pane.msg_anchor.as_deref().unwrap_or(&mid)), at(&mid));
+                    let range = (a.min(b)..=a.max(b)).filter(|&i| live[i]).map(|i| msgs[i].id.clone());
+                    let range: Vec<String> = range.filter(|id| !self.pane.selected_msgs.contains(id)).collect();
+                    drop(st);
+                    self.pane.selected_msgs.extend(range);
+                } else {
+                    match (self.mods.command(), picked) {
+                        (true, false) => self.pane.selected_msgs.push(mid.clone()),
+                        (false, false) => self.pane.selected_msgs = vec![mid.clone()],
+                        (_, true) => self.pane.selected_msgs.retain(|m| *m != mid),
                     }
-                    Pressed::Failed => self.fail(Toast::new(tr("Couldn't reach Beeper. Try again.").into())),
+                }
+                self.pane.msg_anchor = Some(mid);
+            }
+            // Desktop's double-click action waits for the selection: a double click on the text selects a word.
+            Msg::DoubleClick(_) if crate::selectable::has_selection() => {}
+            Msg::DoubleClick(mid) => {
+                let st = self.store.read();
+                let action = st.settings.pref("messageDoubleClick");
+                // Desktop's `$`: the chat takes reactions; a quick reaction also needs a message that takes one.
+                let react = st.loaded(&mid).is_some_and(|m| st.chat(&m.chat_id).messages.react);
+                let reactable = react && st.loaded(&mid).is_some_and(Message::reactable);
+                drop(st);
+                return match action {
+                    1 if !react => Task::none(),
+                    5 if !reactable => Task::none(),
+                    0 => Task::none(),
+                    1 => self.update(UiMessage::Message(Msg::React(mid))),
+                    3 => self.update(UiMessage::Forward(forward::Msg::Open(vec![mid]))),
+                    2 => {
+                        self.pane.selected_msgs = vec![mid.clone()];
+                        self.update(UiMessage::Composer(composer::Msg::StartReply(mid)))
+                    }
+                    4 => self.update(UiMessage::Message(Msg::OpenMenu(mid))),
+                    5 => self.update(self.quick_react(mid)),
+                    n => unreachable!("messageDoubleClick option {n}"),
+                };
+            }
+            Msg::Step(down, extend) => {
+                let st = self.store.read();
+                let (msgs, live) = self.timeline(&st);
+                let live = |i: &usize| live[*i];
+                let picked = |m: &&Message| self.pane.selected_msgs.contains(&m.id);
+                let (first, last) = (msgs.iter().position(picked), msgs.iter().rposition(picked));
+                let extend = extend && last.is_some();
+                let next = match (first.zip(last), down) {
+                    (None, false) => (0..msgs.len()).rev().find(live),
+                    // Desktop's ↓ with nothing selected goes to the first message after the unread divider.
+                    (None, true) => self.first_unread(&msgs).and_then(|u| (u..msgs.len()).find(live)),
+                    (Some((_, l)), true) => (l + 1..msgs.len()).find(live),
+                    (Some((f, _)), false) if extend => (0..f).rev().find(live),
+                    (Some((_, l)), false) => (0..l).rev().find(live).or(Some(l).filter(live)),
+                };
+                let next = next.map(|i| msgs[i].id.clone());
+                drop(st);
+                match (extend, next) {
+                    (true, Some(mid)) => self.pane.selected_msgs.push(mid),
+                    (true, None) => return Task::none(),
+                    (false, next) => self.pane.selected_msgs = next.into_iter().collect(),
+                }
+                self.follow_member_selection();
+                return match self.pane.selected_msgs.last() {
+                    Some(mid) => {
+                        self.pane.timeline.reveal(vlist::key(mid));
+                        locate(format!("msg-{mid}"), self.pane.scroll_id(), crate::Align::Nearest)
+                    }
+                    None => operation::focus("composer-input"),
+                };
+            }
+            _ => unreachable!("not a message_selection message"),
+        }
+        self.settle()
+    }
+
+    /// The menus of the timeline: links, quotes, images, custom emoji and reactions, and adding a custom emoji.
+    fn message_menus(&mut self, msg: Msg) -> Task<UiMessage> {
+        match msg {
+            Msg::LinkMenu(mid, href) if href.starts_with("https://") || href.starts_with("mailto:") => {
+                // Desktop's menu of a link leaves the selection, and has the link's own items.
+                let open = self.update(UiMessage::Message(Msg::OpenMenu(mid.clone())));
+                self.pane.menu_selection = None;
+                if !self.pane.selected_msgs.contains(&mid) {
+                    self.pane.selected_msgs = vec![mid];
+                }
+                self.pane.menu_link = Some(href);
+                return open;
+            }
+            Msg::LinkMenu(mid, href) if href.starts_with(crate::MENTION) => {
+                return self.update(UiMessage::Message(Msg::OpenMenu(mid)));
+            }
+            // Desktop leaves the right click on another link to Electron, which has no menu for it.
+            Msg::LinkMenu(..) => {}
+            Msg::MessageContact(account, user) => return self.open_dm(account, *user, None, None),
+            Msg::LinkedMenu(mid, linked) => {
+                let open = self.update(UiMessage::Message(Msg::OpenMenu(mid)));
+                self.pane.menu_linked = Some(linked);
+                return open;
+            }
+            Msg::ImageMenu(mid) => {
+                let open = self.update(UiMessage::Message(Msg::OpenMenu(mid)));
+                self.pane.menu_image = true;
+                return open;
+            }
+            // Desktop's `selectedImage` with `dataset.mxEmoticon`: the name is its `title` without the first and the
+            // last character (the colons of ":name:").
+            Msg::EmoticonMenu(mid, title, src) => {
+                let open = self.update(UiMessage::Message(Msg::OpenMenu(mid)));
+                self.pane.menu_image = true;
+                let name = title.map(|t| t.chars().skip(1).collect::<String>()).map(|t| {
+                    let mut t = t;
+                    t.pop();
+                    t
+                });
+                self.pane.menu_emoticon = name.map(|n| (n, src));
+                return open;
+            }
+            // Desktop's `selectedReaction` with an image (`dataset.reactionImgUrl`) and its key.
+            Msg::ReactionMenu(mid, key, url) => {
+                let open = self.update(UiMessage::Message(Msg::OpenMenu(mid)));
+                self.pane.menu_emoticon = Some((key, url));
+                return open;
+            }
+            Msg::AddCustomEmoji(name, url) => {
+                let mut st = self.store.write();
+                match beeper_core::matrix::with_custom_emoji(&st.image_pack, &name, &url) {
+                    Err(e) => {
+                        drop(st);
+                        self.show(Toast::new(trf("Couldn't add the emoji: %s", &[&e])));
+                    }
+                    // Desktop's `set` shows the pack at once, and writes it.
+                    Ok(pack) => {
+                        let old = std::mem::replace(&mut st.image_pack, pack.clone());
+                        let Some(c) = st.matrix.clone() else {
+                            drop(st);
+                            return self.update(UiMessage::Message(Msg::CustomEmojiAdded(name, old, Ok(()))));
+                        };
+                        let write = beeper_core::matrix::set_global(c, beeper_core::matrix::IMAGE_PACK, pack);
+                        return Task::perform(write, move |r| UiMessage::Message(Msg::CustomEmojiAdded(name.clone(), old.clone(), r)));
+                    }
                 }
             }
-            Msg::ToggleGif(mid, ai) => {
-                if self.pane.played_gifs.remove(&(mid.clone(), ai)).is_none() {
-                    self.pane.played_gifs.insert((mid, ai), std::time::Instant::now());
+            Msg::CustomEmojiAdded(name, _, Ok(())) => self.show(Toast::new(trf("Added emoji :%s:", &[&name]))),
+            // Desktop's `setAccountData` puts the old pack back with its own toast, then the menu shows its own.
+            Msg::CustomEmojiAdded(_, old, Err(e)) => {
+                self.store.write().image_pack = old;
+                self.fail(Toast::new(format!("Settings couldn't be saved: {e}")));
+                self.show(Toast::new(trf("Couldn't add the emoji: %s", &[&e])));
+            }
+            Msg::OpenMenu(mid) => {
+                (self.pane.menu_link, self.pane.video_menu, self.pane.menu_linked) = (None, false, None);
+                (self.pane.menu_image, self.pane.menu_emoticon) = (false, None);
+                // With text selected, Desktop leaves the menu to Electron's, which offers the selection.
+                self.pane.menu_selection = crate::selectable::has_selection().then(crate::selectable::text);
+                // Desktop's `selectOnly`: a right click on a message outside the selection selects it alone.
+                if self.pane.menu_selection.is_none() && !self.pane.selected_msgs.contains(&mid) {
+                    self.pane.selected_msgs = vec![mid.clone()];
                 }
+                self.video.iter_mut().for_each(|v| v.sub = false);
+                (self.audio.sub, self.audio.lang, self.pane.remind_sub) = (false, false, false);
+                self.pane.message_menu = Some((mid, self.cursor.get()));
+                self.pane.gallery_menu.clear();
             }
-            Msg::ToggleLinkGif(mid, url) => {
-                if self.pane.played_links.remove(&(mid.clone(), url.clone())).is_none() {
-                    self.pane.played_links.insert((mid, url), std::time::Instant::now());
-                }
-            }
-            Msg::ToggleEditHistory(mid) => {
-                self.pane.expanded_history_msg_id = (self.pane.expanded_history_msg_id.as_ref() != Some(&mid)).then_some(mid);
-            }
-            Msg::HoverEnter(id) => {
-                self.quick_open &= self.pane.hovered_msg.as_ref() == Some(&id);
-                if self.pane.hovered_msg.as_ref() != Some(&id) {
-                    (self.pane.hover_msg_at, self.pane.flyover_at) = (Some(std::time::Instant::now()), None);
-                }
-                self.pane.hovered_msg = Some(id);
-            }
-            Msg::ShowQuickReactions if !self.quick_open => {
-                self.quick_open = true;
-                self.pane.flyover_at = Some(std::time::Instant::now());
-            }
-            Msg::ShowQuickReactions => {}
-            Msg::HoverExit(id) => {
-                if self.pane.hovered_msg.as_ref() == Some(&id) {
-                    self.pane.hovered_msg = None;
-                }
-            }
+            _ => unreachable!("not a message_menus message"),
         }
         self.settle()
     }
