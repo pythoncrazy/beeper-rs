@@ -93,7 +93,7 @@ impl BeeperGuiApp {
     /// Desktop's `YNt` Members section of a group, with its first six members and a search above more than six.
     pub(crate) fn view_members<'a>(&'a self, chat: &Chat) -> El<'a> {
         let p = &self.pal;
-        let shade = Color { a: 0.1, ..p.strong };
+        let shade = p.hover;
         let named = |u: &User| {
             let full = u.full_name.as_deref();
             u.custom_nickname.is_some()
@@ -115,11 +115,11 @@ impl BeeperGuiApp {
         let searchable = all.len() > 6;
         let shown = if self.info_all { rows.len() } else { rows.len().min(6 - usize::from(invite)) };
         let add = invite.then(|| {
-            let face = row![tinted(&ADD_ACCOUNT, 28.0, p.strong), semi(tr("Add Members"), 13.0)];
+            let face = row![tinted(&ADD_ACCOUNT, 28.0, p.text), semi(tr("Add Members"), 13.0)];
             button(face.spacing(8).align_y(Center))
                 .padding(4)
                 .width(Fill)
-                .style(btn_style([CLEAR, shade, shade], [p.strong; 3], 8.0))
+                .style(btn_style([CLEAR, shade, shade], [p.text; 3], 8.0))
                 .on_press(UiMessage::Members(members::Msg::OpenAdd(self.info_query.clone())))
         });
         let row = |u: &User| -> El<'a> {
@@ -138,11 +138,12 @@ impl BeeperGuiApp {
             let fade = if u.is_pending == Some(true) { 0.5 } else { 1.0 };
             let you_w = you.as_deref().map_or(0.0, |y| crate::style::text_width(y, 13.0, Weight::Normal));
             let name = member_name(u);
-            let strong = p.strong.scale_alpha(fade);
-            let label = row![ell(&name, 224.0 - tag_w - you_w, 13.0, Weight::Semibold).line_height(lh(16.0)).color(strong)]
-                .push(you.map(|y| txt(y, 13.0).color(strong)));
+            // The rows take the `--color-text-neutrals` of the pane.
+            let fg = p.text.scale_alpha(fade);
+            let label = row![ell(&name, 224.0 - tag_w - you_w, 13.0, Weight::Semibold).line_height(lh(16.0)).color(fg)]
+                .push(you.map(|y| txt(y, 13.0).color(fg)));
             let tags = tags.into_iter().map(|t| -> El<'a> {
-                container(crate::style::t(t, 10.0, Weight::Semibold).line_height(lh(12.0)).color(p.strong))
+                container(crate::style::t(t, 10.0, Weight::Semibold).line_height(lh(12.0)).color(p.text))
                     .padding([2, 4])
                     .style(fill_box(p.card, 4.0))
                     .into()
@@ -166,9 +167,11 @@ impl BeeperGuiApp {
                 .line_height(lh(16.0))
                 .padding([10, 12])
                 .style(input_style(CLEAR, p.strong, p.on_secondary, p.accent, 0.0));
-            let clear = (!self.info_query.is_empty())
-                .then(|| button(ic(icon::CLOSE, 20.0).color(p.sub)).bare(p.sub).on_press(UiMessage::Info(info::Msg::Query(String::new()))));
-            let bar = row![ic(icon::SEARCH, 20.0).color(p.sub), input].push(clear).align_y(Center).padding([0, 8]);
+            let clear = (!self.info_query.is_empty()).then(|| {
+                button(ic(icon::CLOSE, 20.0).color(p.muted)).bare(p.muted).on_press(UiMessage::Info(info::Msg::Query(String::new())))
+            });
+            // `BrandInput-module__icon` is `--color-on-surface-variant`.
+            let bar = row![ic(icon::SEARCH, 20.0).color(p.muted), input].push(clear).align_y(Center).padding([0, 8]);
             container(bar).padding(Padding::ZERO.top(8.0))
         });
         let toggle_label = if self.info_all { tr("Show less") } else { tr("Show all") };
@@ -187,8 +190,8 @@ impl BeeperGuiApp {
             .push(toggle)
             .spacing(6)
             .padding(if searchable { Padding::new(8.0).top(0.0) } else { Padding::new(8.0) });
-        let less = (expandable && self.info_all)
-            .then(|| button(semi(tr("Show less"), 11.0).color(p.accent)).bare(p.accent).on_press(UiMessage::Info(info::Msg::All)));
+        let less =
+            (expandable && self.info_all).then(|| section_btn(p, tr("Show less"), p.main_text).on_press(UiMessage::Info(info::Msg::All)));
         let head = row![txt(tr("Members"), 11.0).color(p.strong), Space::new().width(Fill)].push(less).align_y(Center).padding(8);
         let head: El = match expandable {
             true => mouse_area(head).on_press(UiMessage::Info(info::Msg::All)).into(),
