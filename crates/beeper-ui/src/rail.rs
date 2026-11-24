@@ -833,26 +833,11 @@ impl BeeperGuiApp {
         let p = &self.pal;
         let st = self.store.read();
         let edit = UiMessage::Spaces;
-        let search = text_input(tr("Search Spaces"), &d.search)
-            .id("spaces-search")
-            .on_input(move |q| edit(SpacesEdit::Search(q)))
-            .size(rem(13.0))
-            .line_height(lh(16.0))
-            .padding([14, 0])
-            .style(input_style(CLEAR, p.strong, p.sub, p.accent, 0.0));
+        let search = self.sheet_search(d.id, "spaces-search", tr("Search Spaces"), &d.search, move |q| edit(SpacesEdit::Search(q)));
         // Desktop's controls of the sheet: plain `<button>`s whose focus does not show, and the `dnd-kit` handles,
         // which show Chromium's ring, and whose Enter and Space pick the space up for the arrows (see `sortable`).
         let window = Some(d.id);
         let plain = |key: String, b: El<'a>, msg: UiMessage| self.target(window, key, b, Keys::press(msg), Look::Hidden);
-        let clear = (!d.search.trim().is_empty()).then(|| {
-            let empty = edit(SpacesEdit::Search(String::new()));
-            plain("clear".into(), icon_btn(p, icon::CLOSE, 16.0, 28.0, p.sub, empty.clone()), empty)
-        });
-        let search = row![ic(icon::SEARCH, 16.0).color(p.sub), search]
-            .push(clear)
-            .spacing(10)
-            .align_y(Center)
-            .padding(Padding::ZERO.left(16.0).right(8.0));
         let q = d.search.trim().to_lowercase();
         // The shown and the hidden spaces that the search finds.
         let found = |order: &[String]| -> (Vec<String>, Vec<String>) {

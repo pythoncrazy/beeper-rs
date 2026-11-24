@@ -2,7 +2,7 @@
 //! and the name, photo and default chat of a new or an edited merged chat.
 
 use super::*;
-use crate::dialogs::LABEL_INTRO_FACES;
+use crate::dialogs::intro_faces;
 use crate::merged::chat_brand;
 use crate::prelude::*;
 use iced::widget::column;
@@ -316,19 +316,8 @@ impl BeeperGuiApp {
         let edit = |e| UiMessage::Merged(merged::Msg::Edit(e));
         let can = st.can_create_union();
         let picked: Vec<&Chat> = d.chats.iter().filter_map(|c| st.find_chat(c)).take(5).collect();
-        let mut faces: Vec<El> = picked.iter().map(|c| self.chat_avatar(c, 48.0, 1.25)).collect();
-        if faces.is_empty() {
-            faces = LABEL_INTRO_FACES.iter().map(|h| image(h.clone()).width(48).height(48).into()).collect();
-        }
-        let n = faces.len();
-        let faces = faces.into_iter().enumerate().fold(Stack::new(), |s, (i, face)| {
-            let ring = container(face).padding(4).style(fill_box(p.card, 28.0));
-            s.push(container(ring).padding(Padding::ZERO.left(i as f32 * 33.0)))
-        });
-        let tile = svg(crate::style::brand_round("merged-chat")).width(26).height(26);
-        let tile = container(tile).padding(2).style(fill_box(p.card, 15.0));
-        let width = 56.0 + (n - 1) as f32 * 33.0;
-        let stack = stack![container(faces).padding(Padding::ZERO.top(15.0)), container(tile).align_right(width + 15.0)];
+        let faces = picked.iter().map(|c| self.chat_avatar(c, 48.0, 1.25)).collect();
+        let stack = intro_faces(p, faces, svg(crate::style::brand_round("merged-chat")).width(26).height(26), 15.0);
         let headline = match picked.first().map(|c| c.title.trim()).filter(|t| !t.is_empty()) {
             Some(t) => trf("View all your chats with %s as one conversation", &[&t]),
             None => tr("View chats with the same contacts, across different accounts, as one conversation.").into(),
