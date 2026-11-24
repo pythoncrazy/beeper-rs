@@ -6437,14 +6437,14 @@ impl BeeperGuiApp {
 
     fn tip<'a>(
         &self, el: El<'a>, label: impl iced::widget::text::IntoFragment<'a>, keys: Vec<&'static str>, at: tooltip::Position,
-    ) -> iced::widget::Tooltip<'a, UiMessage> {
+    ) -> crate::popover::Tip<'a, UiMessage> {
         self.tip_caps(el, label, keys.into_iter().map(String::from).collect(), at)
     }
 
     /// [`Self::tip`] with the key caps of a hotkey from the settings.
     fn tip_caps<'a>(
         &self, el: El<'a>, label: impl iced::widget::text::IntoFragment<'a>, keys: Vec<String>, at: tooltip::Position,
-    ) -> iced::widget::Tooltip<'a, UiMessage> {
+    ) -> crate::popover::Tip<'a, UiMessage> {
         let p = &self.pal;
         let kbd = |k: String| -> El<'a> {
             let width = if k.len() == 1 { Length::Fixed(20.0) } else { Shrink };
@@ -6453,11 +6453,11 @@ impl BeeperGuiApp {
         let keys = (!keys.is_empty()).then(|| Row::with_children(keys.into_iter().map(kbd)).spacing(4));
         // Desktop's press on a trigger dismisses its tooltip, so none shows over the menu that the press opened.
         if self.menu_open() {
-            return tooltip(el, Space::new(), at);
+            return crate::popover::tip(tooltip(el, Space::new(), at), at);
         }
         let body = row![med(label, 13.0).color(p.strong)].push(keys).spacing(8).align_y(Center);
         // `.BrandTooltip-module__tooltip`'s 6 px margin, from the trigger and from the edges of the window.
-        tooltip(el, self.tip_card(body), at).padding(6)
+        crate::popover::tip(tooltip(el, self.tip_card(body), at).padding(6), at)
     }
 
     /// The box of Desktop's `BrandTooltip`: `8px 11px` inside, the bubble radius and `--shadow-large-15`.
