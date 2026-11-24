@@ -417,6 +417,8 @@ pub enum UiMessage {
     /// Settings > Integrations: the Desktop API tokens and connections, Remote Access, and the MCP install.
     Integrations(integrations::Msg),
     OpenQuickLook(String, String),
+    /// Opens a window of [`modals::Modal`] over the window where the action was, Desktop's `setVisibleModal`.
+    OpenModal(modals::Modal, Option<window::Id>),
     OpenUrl(String),
     /// The result of opening a URL in the browser.
     Opened(Result<(), String>),
@@ -4618,6 +4620,7 @@ impl BeeperGuiApp {
             | UiMessage::Pushed(..)
             | UiMessage::DismissRecoveryReminder
             | UiMessage::DismissTrialOver) => return self.handle_sync(msg),
+            UiMessage::OpenModal(m, from) => return self.open_modal(m, from),
             UiMessage::OpenQuickLook(title, detail) => {
                 self.quick_look_target = Some((title, detail));
             }
