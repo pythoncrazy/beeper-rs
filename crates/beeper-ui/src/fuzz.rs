@@ -1087,6 +1087,25 @@ fn command_bar_opens_empty_like_desktop() {
     assert_eq!(app.command_palette_query, "", "a closed bar opens empty for the search of the chat");
 }
 
+/// Desktop's `.command-bar-dimmer`: the #0003 dimmer under the command bar fades in over 40 ms from its first frame.
+#[test]
+fn the_command_bar_dimmer_fades_in_like_desktop() {
+    let mut app = demo_app("cmdbar-dimmer");
+    let main = app.main_window.expect("the main window");
+    let corner = |app: &BeeperGuiApp, events: Vec<iced::Event>| {
+        let mut sim = Simulator::with_size(Default::default(), app.pane.size, app.view(main));
+        let _ = sim.simulate(events);
+        let shot = crate::message::tests::pixels(&mut sim);
+        shot.get_pixel(shot.width() - 4, shot.height() - 4).0
+    };
+    let clear = corner(&app, vec![]);
+    let _ = app.update(UiMessage::RunHotkey("Command Bar"));
+    assert_eq!(corner(&app, vec![]), clear, "the first frame is not dimmed yet");
+    let later = std::time::Instant::now() - std::time::Duration::from_secs(1);
+    let dimmed = corner(&app, vec![iced::Event::Window(iced::window::Event::RedrawRequested(later))]);
+    assert!((0..3).all(|i| dimmed[i].abs_diff((f32::from(clear[i]) * 0.8).round() as u8) <= 1), "{dimmed:?} after 40 ms");
+}
+
 /// Desktop's `showSearch` and `showInNormalMode`: Ctrl+K never closes the bar and searches the text of the commands;
 /// Ctrl+J closes the commands, and opens them empty in place of a search; Search: Room without an open chat searches
 /// all chats.

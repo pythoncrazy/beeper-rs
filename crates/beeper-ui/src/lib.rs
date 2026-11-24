@@ -5403,10 +5403,13 @@ impl BeeperGuiApp {
             (None, false) => self.forward.as_ref().map(|f| self.view_forward(f)),
         };
         let scrim = modal.filter(|_| in_main).map(|m| {
-            backdrop(
-                container(mouse_area(m).on_press(UiMessage::Noop)).center(Fill).style(fill_box(Color::from_rgba(0.0, 0.0, 0.0, 0.2), 0.0)),
-            )
-            .on_press(UiMessage::CloseModals)
+            let m = container(mouse_area(m).on_press(UiMessage::Noop)).center(Fill);
+            // The command bar, whose Forward is a submenu, fades its dimmer in.
+            let m: El = match self.quick_look_target {
+                Some(_) => m.style(fill_box(Color::from_rgba(0.0, 0.0, 0.0, 0.2), 0.0)).into(),
+                None => crate::anim::dimmer(m),
+            };
+            backdrop(m).on_press(UiMessage::CloseModals)
         });
         let select = self.search_select.filter(|_| self.show_command_palette).map(|(chip, at)| {
             backdrop(
