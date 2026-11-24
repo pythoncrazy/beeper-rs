@@ -115,7 +115,7 @@ impl BeeperGuiApp {
                 match e {
                     LabelPane::Menu(open) => w.menu = open,
                     LabelPane::Delete => {
-                        (self.confirm, self.delete_target) = (Some(ASK_DELETE_LABEL), Some(w.label.clone()));
+                        self.confirm = Some(Confirm::DeleteLabel(w.label.clone()));
                         self.delete_in = Some(id);
                     }
                     LabelPane::Done => return self.close_window(id),

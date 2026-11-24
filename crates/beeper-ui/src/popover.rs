@@ -91,19 +91,20 @@ impl<'a, Message: 'a> From<Popover<'a, Message>> for Element<'a, Message> {
 }
 
 /// Shows `popup` over the window with its bottom center at `anchor(content size)` from the top-left of `content`,
-/// like Desktop's "top" popover.
+/// like Desktop's "top" popover, or as a dropdown `below` the first child of `content`.
 pub struct Above<'a, Message> {
     content: Element<'a, Message>,
     popup: Option<Element<'a, Message>>,
     anchor: Box<dyn Fn(Size) -> Vector + 'a>,
     squiggles: Box<dyn Fn(Size) -> Vec<(Point, f32)> + 'a>,
     on_right: Option<Box<dyn Fn(Size, Point) -> Message + 'a>>,
+    blur: Option<Message>,
 }
 
 pub fn above<'a, Message>(
     content: impl Into<Element<'a, Message>>, popup: Option<Element<'a, Message>>, anchor: impl Fn(Size) -> Vector + 'a,
 ) -> Above<'a, Message> {
-    Above { content: content.into(), popup, anchor: Box::new(anchor), squiggles: Box::new(|_| Vec::new()), on_right: None }
+    Above { content: content.into(), popup, anchor: Box::new(anchor), squiggles: Box::new(|_| Vec::new()), on_right: None, blur: None }
 }
 
 impl<'a, Message> Above<'a, Message> {
@@ -116,6 +117,13 @@ impl<'a, Message> Above<'a, Message> {
     /// The message of a right click, from the size of `content` and the cursor from its top-left.
     pub fn on_right(mut self, f: impl Fn(Size, Point) -> Message + 'a) -> Self {
         self.on_right = Some(Box::new(f));
+        self
+    }
+
+    /// A dropdown: the popup's top-left corner at `anchor` from the first child of `content`, and a press outside the
+    /// popup and that child publishes `blur` and goes on to what is under it, like a blur.
+    pub fn below(mut self, blur: Message) -> Self {
+        self.blur = Some(blur);
         self
     }
 }
@@ -166,10 +174,13 @@ impl<Message: Clone> Widget<Message, Theme, Renderer> for Above<'_, Message> {
     ) -> Option<overlay::Element<'b, Message, Theme, Renderer>> {
         let (content, rest) = tree.children.split_first_mut().expect("the content has a tree");
         let inner = self.content.as_widget_mut().overlay(content, layout, renderer, viewport, translation);
-        let at = layout.position() + (self.anchor)(layout.bounds().size()) + translation;
+        let first = layout.children().next().map_or(layout.bounds(), |l| l.bounds()) + translation;
+        let blur = self.blur.clone().map(|m| (first, m));
+        let from = if blur.is_some() { first.position() } else { layout.position() + translation };
+        let at = from + (self.anchor)(layout.bounds().size());
         let popup = self.popup.as_mut().map(|popup| {
             let tree = rest.first_mut().expect("the popup has a tree");
-            overlay::Element::new(Box::new(Bubble { popup, tree, at, below: false, blur: None }))
+            overlay::Element::new(Box::new(Bubble { popup, tree, at, below: blur.is_some(), blur }))
         });
         let all: Vec<_> = inner.into_iter().chain(popup).collect();
         (!all.is_empty()).then(|| overlay::Group::with_children(all).overlay())
@@ -178,12 +189,12 @@ impl<Message: Clone> Widget<Message, Theme, Renderer> for Above<'_, Message> {
 
 /// A popup over the window: its bottom center at `at`, or its top-left corner `below` it. With `blur`, a press
 /// outside the popup and the rectangle publishes the message and goes on to what is under it, like a blur.
-pub(crate) struct Bubble<'a, 'b, Message> {
-    pub popup: &'b mut Element<'a, Message>,
-    pub tree: &'b mut widget::Tree,
-    pub at: Point,
-    pub below: bool,
-    pub blur: Option<(Rectangle, Message)>,
+struct Bubble<'a, 'b, Message> {
+    popup: &'b mut Element<'a, Message>,
+    tree: &'b mut widget::Tree,
+    at: Point,
+    below: bool,
+    blur: Option<(Rectangle, Message)>,
 }
 
 impl<Message: Clone> overlay::Overlay<Message, Theme, Renderer> for Bubble<'_, '_, Message> {

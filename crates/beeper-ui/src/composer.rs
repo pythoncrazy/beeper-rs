@@ -1138,7 +1138,7 @@ impl BeeperGuiApp {
             .width(20)
             .height(20)
             .opacity(if msg.is_some() { 1.0_f32 } else { 0.3 })
-            .style(move |_, _| svg::Style { color: Some(color) });
+            .style(tint(color));
         let b = button(container(glyph).center(28))
             .padding(0)
             .style(btn_style([bg, p.hover, p.selected], [p.text; 3], 14.0))

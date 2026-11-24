@@ -230,7 +230,7 @@ impl BeeperGuiApp {
 
 /// An SVG of `w` by `h` in one color.
 fn paint<'a>(handle: &svg::Handle, w: f32, h: f32, color: Color) -> El<'a> {
-    svg(handle.clone()).width(w).height(h).style(move |_, _| svg::Style { color: Some(color) }).into()
+    svg(handle.clone()).width(w).height(h).style(tint(color)).into()
 }
 
 /// Desktop's `PlusPill` in its `bold` variant: "+ Plus" on the brand gradient.

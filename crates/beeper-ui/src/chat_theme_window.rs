@@ -76,8 +76,7 @@ impl BeeperGuiApp {
         let label = |text: &'static str| crate::style::fixed(tr(text), 12.0, Weight::Medium).color(p.sub);
         let default = matches!(stored.bubble, None | Some(Bubble::Default));
         let none = if chat.is_some() { Some(Bubble::Default) } else { None };
-        let sub = p.sub;
-        let cross = svg(chat_theme::NO_BUBBLE.clone()).width(26).height(26).style(move |_, _| svg::Style { color: Some(sub) });
+        let cross = tinted(&chat_theme::NO_BUBBLE, 26.0, p.sub);
         let mut swatches = vec![ring(
             container(cross).padding(1).style(bordered_box(CLEAR, p.border_neutrals, 1.0, 14.0)).into(),
             default,

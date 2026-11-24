@@ -131,9 +131,7 @@ use crate::i18n::{tr, trf, trn, trs, trx};
 use crate::media_view::{decode_media, run_ffmpeg, Carousel, MediaWindow, TAB_SLIDE};
 use crate::message::Rows;
 pub use crate::message::TopOfThread;
-use crate::settings::{
-    hotkey_key, mcp_value, shown, AddToken, IntegrationsPage, StoragePage, EXPIRIES, HOTKEYS_RELAUNCH, SETTINGS_DIALOGS, STORAGE_DAYS,
-};
+use crate::settings::{hotkey_key, mcp_value, shown, AddToken, IntegrationsPage, StoragePage, EXPIRIES, HOTKEYS_RELAUNCH, STORAGE_DAYS};
 pub use crate::settings::{search_settings, Expiry, HotkeyRec, SettingsHit, SettingsTab};
 use crate::threads::{can_thread, Threads};
 use blocking::block_action;
@@ -408,7 +406,7 @@ pub enum UiMessage {
     Timeline(timeline::Msg),
     /// Desktop's idle state, which stops the open chat from reading what comes in.
     Idle(idle::Msg),
-    Ask(Option<u8>),
+    Ask(Option<Confirm>),
     /// The close of Desktop's recovery key reminder (`dismissRecoveryCodeReminder`).
     DismissRecoveryReminder,
     /// Close Desktop's "Your incognito trial is over" over the composer.
@@ -770,41 +768,52 @@ pub(crate) const ISSUES_URL: &str = "https://github.com/pythoncrazy/beeper-rs/is
 pub(crate) const CHANGELOG_URL: &str = "https://www.beeper.com/changelog/desktop";
 const FEEDBACK: &str = "Tell us what to improve in beeper-rs.";
 const ORANGE: Color = Color::from_rgb8(245, 76, 3);
-const ASK_LOGOUT: u8 = 0;
-const ASK_DISMISS_REMINDERS: u8 = 1;
-const ASK_DELETE_CHAT: u8 = 2;
-const ASK_DELETE_MESSAGE: u8 = 3;
-const ASK_ARCHIVE_READ: u8 = 4;
-const ASK_ARCHIVE_ALL: u8 = 5;
-const ASK_ARCHIVE_WEEK: u8 = 6;
-const ASK_MARK_ALL_READ: u8 = 7;
-const ASK_CLEAR_STORAGE: u8 = 8;
-const ASK_CLEAR_CACHE: u8 = 9;
-const ASK_CLEAR_CHAT: u8 = 10;
-const ASK_REVOKE_CONNECTION: u8 = 11;
-const ASK_REMOTE_ACCESS: u8 = 12;
-const ASK_DELETE_LABEL: u8 = 13;
-const ASK_LEAVE_CHAT: u8 = 14;
-const ASK_MAKE_ADMIN: u8 = 15;
-const ASK_REMOVE_MEMBER: u8 = 16;
-const ASK_REMOVE_ACCOUNT: u8 = 17;
-/// Desktop's `confirmBlockUser` and `confirmUnblockUser`, then their "%s Is Disconnected" dialogs.
-const ASK_BLOCK: u8 = 18;
-const ASK_UNBLOCK: u8 = 19;
-const ASK_BLOCK_OFFLINE: u8 = 20;
-const ASK_UNBLOCK_OFFLINE: u8 = 21;
-/// Desktop's "Privacy notice" before the first transcription of a voice note.
-const ASK_TRANSCRIBE: u8 = 22;
-/// Desktop's logout of another device of the account in Settings > Devices.
-const ASK_LOGOUT_DEVICE: u8 = 23;
-/// Desktop's "Room encryption" step of New Chat before it creates a Matrix group of more than one person.
-const ASK_ROOM_ENCRYPTION: u8 = 24;
-/// Desktop's `confirmUnmergeUnion` of a merged chat.
-const ASK_UNMERGE: u8 = 25;
-/// Desktop's "Disconnect Discord Server?" before the switch of a connected Discord server turns off.
-const ASK_DISCONNECT_SERVER: u8 = 26;
-/// Desktop's "Remove %s?" of an installed sticker pack that a bridge imported.
-const ASK_REMOVE_PACK: u8 = 27;
+/// The confirmation dialog that shows, with what it acts on.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Confirm {
+    /// The logout of this device, or of another device (by id) of the account in Settings > Devices.
+    Logout(Option<String>),
+    DismissReminders,
+    /// Desktop's `confirmDeleteThread` of the selected chats, or of the chat of the menu.
+    DeleteChats(Vec<String>),
+    DeleteMessages(Vec<String>),
+    /// Archive all read chats (true), or all chats.
+    ArchiveAll(bool),
+    ArchiveWeek,
+    MarkAllRead,
+    /// The clear of the selected storage (0), of the cache (1) or of the storage of a chat (2).
+    Clear(u8),
+    RevokeConnection(String),
+    RemoteAccess,
+    DeleteLabel(String),
+    LeaveChat(String),
+    /// Make Group Admin and Remove from Group, as (chat, user).
+    MakeAdmin(String, String),
+    RemoveMember(String, String),
+    RemoveAccount(String),
+    /// Desktop's `confirmBlockUser` (true) and `confirmUnblockUser` of a DM, then their "%s Is Disconnected" dialogs.
+    Block(String, bool),
+    BlockOffline(String, bool),
+    /// Desktop's "Privacy notice" before the first transcription of a voice note.
+    Transcribe,
+    /// Desktop's "Room encryption" step of New Chat before it creates a Matrix group of more than one person.
+    RoomEncryption,
+    /// Desktop's `confirmUnmergeUnion` of a merged chat.
+    Unmerge(String),
+    /// Desktop's "Disconnect Discord Server?" before the switch of a connected Discord server turns off, as (account,
+    /// server).
+    DisconnectServer(String, String),
+    /// Desktop's "Remove %s?" of an installed sticker pack that a bridge imported.
+    RemovePack(String),
+}
+
+impl Confirm {
+    /// Whether the dialog shows in the Settings window.
+    pub(crate) fn in_settings(&self) -> bool {
+        use Confirm::*;
+        matches!(self, Logout(_) | Clear(_) | RevokeConnection(_) | RemoteAccess | RemoveAccount(_) | DisconnectServer(..) | RemovePack(_))
+    }
+}
 /// Desktop opens its `prefs` window at 800 x 740, in the middle of the screen.
 const SETTINGS_SIZE: Size = Size::new(800.0, 740.0);
 /// Desktop's default "Quick reaction emoji".
@@ -1347,11 +1356,7 @@ static BADGE_RINGS: std::sync::LazyLock<[[svg::Handle; 2]; 2]> = std::sync::Lazy
 fn badged<'a>(inner: El<'a>, brand: &str, size: f32, badge: f32, mono: Option<&Palette>, ring: Color) -> El<'a> {
     let icon: El<'a> = match mono {
         None => svg(crate::style::brand_svg(brand)).width(badge).height(badge).into(),
-        Some(p) => {
-            let fg = p.strong;
-            let glyph = svg(crate::style::brand_badge(brand)).style(move |_, _| svg::Style { color: Some(fg) }).width(badge).height(badge);
-            container(glyph).style(fill_box(p.chip, badge / 2.0)).into()
-        }
+        Some(p) => container(tinted(&crate::style::brand_badge(brand), badge, p.strong)).style(fill_box(p.chip, badge / 2.0)).into(),
     };
     let cutout = tinted(&BADGE_RINGS[usize::from(mono.is_none())][usize::from(badge > 12.0)], badge + 2.0, ring);
     let w = size + badge / 8.0;
@@ -2515,7 +2520,12 @@ pub fn short_title(c: &Chat) -> &str {
 
 /// The SVG `h` at `size` px in `color`, whose alpha the vendored renderers apply over the coverage (#912).
 fn tinted<'a>(h: &svg::Handle, size: f32, color: Color) -> El<'a> {
-    svg(h.clone()).width(size).height(size).style(move |_, _| svg::Style { color: Some(color) }).into()
+    svg(h.clone()).width(size).height(size).style(tint(color)).into()
+}
+
+/// The style of an SVG in `color`, for the rotated, faded or oblong SVGs that `tinted` does not draw.
+fn tint(color: Color) -> impl Fn(&Theme, svg::Status) -> svg::Style {
+    move |_, _| svg::Style { color: Some(color) }
 }
 
 static THEME_ART: std::sync::LazyLock<[svg::Handle; 3]> = std::sync::LazyLock::new(|| {
@@ -3067,10 +3077,7 @@ pub struct BeeperGuiApp {
     /// Desktop's `matrixRoomJoin` of the Join a Matrix room view: a join is going on, and the error of the last one.
     join_room: (bool, Option<String>),
     pub devices: Option<Result<Vec<DeviceInfo>, String>>,
-    pub confirm: Option<u8>,
-    delete_target: Option<String>,
-    /// The chats of Desktop's `confirmDeleteThread`: the selected chats, or the chat of the menu.
-    delete_chats: Vec<String>,
+    pub confirm: Option<Confirm>,
     /// Desktop's `loading` of the device list: a logout of another device runs.
     devices_busy: bool,
     /// The "Report spam" checkbox of the Block dialog.
@@ -3259,8 +3266,6 @@ pub struct BeeperGuiApp {
     trial_over_chat: Option<String>,
     /// The accounts whose servers load (Desktop's spinning Refresh List), and when the load started.
     servers_loading: HashMap<String, std::time::Instant>,
-    /// The account and the server of the "Disconnect Discord Server?" dialog.
-    server_target: Option<(String, String)>,
     /// Desktop's `StickerPacksPreference`: the installed sticker packs once they load, the parts (room and state key)
     /// that "Use in all chats" turned off, and the pack that Remove removes.
     installed_packs: Option<Vec<InstalledPack>>,
@@ -3372,7 +3377,7 @@ impl BeeperGuiApp {
             last_archived, creating_chat, new_chats, command_list, memo, pending_dm, link_to, link_sent, link_pick, contact_networks, new_chat_lookup,
             new_chat_search, new_chat_results_expanded, new_chat_account, new_chat_accounts_open, new_chat_query,
             new_chat_expanded, new_chat_chats_expanded, join_matrix_mode, join_room, devices, mics, confirm,
-            delete_target, delete_chats, devices_busy, report_spam, time_edit, recorder, talk, queued, selection,
+            devices_busy, report_spam, time_edit, recorder, talk, queued, selection,
             select_mode, selection_menu, show_command_palette, settings_query, settings_slider, settings_focus,
             settings_search_on, settings_pick, pref_flash, networks, app_qr, integrations, token_ask, account_page,
             quick_look_target, quick_open, hovered_chat, hover_at, unhovered, flash, typing_shown, typing, status_banner,
@@ -3383,7 +3388,7 @@ impl BeeperGuiApp {
             labels_windows, label_settings, delete_in, poll_windows, label_window, group_window, blocked_window,
             how_window, nickname_windows, add_accounts, info_desc, info_more, info_all, info_bookmarks, hydrating,
             restoring_bookmarks, info_media, info_zoom, info_query, spaces_window, merge_window, vote_windows, shot,
-            verify, reauth, enter_key, wants, vcards, pdfs, quotes, dismissed_errors, trial_over_chat, servers_loading, server_target, installed_packs, packs_off, pack_removing, resolving_media, needs_download,
+            verify, reauth, enter_key, wants, vcards, pdfs, quotes, dismissed_errors, trial_over_chat, servers_loading, installed_packs, packs_off, pack_removing, resolving_media, needs_download,
             fetching, video, view_once, minimized, state_changes, last_click, cycling, timers);
         app.store.write().load_recent();
         if let Some(id) = first_chat {
@@ -5547,8 +5552,7 @@ impl BeeperGuiApp {
         let menu = menu.or_else(|| Some(layer(self.view_unread_menu(self.unread_menu?), UiMessage::CloseModals)));
         let toast = self.view_toast(true);
         let elsewhere = self.delete_in.is_some_and(|w| self.label_asking(w));
-        let confirm = self.confirm.filter(|d| !SETTINGS_DIALOGS.contains(d) && !elsewhere);
-        let confirm = confirm.map(|d| self.view_confirm(d));
+        let confirm = self.confirm.as_ref().filter(|d| !d.in_settings() && !elsewhere).map(|d| self.view_confirm(d));
         // The carousel shows over its chat, and fills a "Media in %s" window.
         let shows = |c: &&Carousel| {
             let st = self.store.read();

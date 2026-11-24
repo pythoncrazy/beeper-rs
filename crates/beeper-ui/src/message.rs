@@ -418,7 +418,7 @@ fn button_spinner<'a>(size: f32, color: Color) -> El<'a> {
         .width(size)
         .height(size)
         .rotation(iced::Rotation::Solid(iced::Radians(step / 12.0 * std::f32::consts::TAU)))
-        .style(move |_, _| svg::Style { color: Some(color) })
+        .style(tint(color))
         .into()
 }
 
@@ -582,7 +582,7 @@ pub(crate) fn file_row_spinner<'a>(color: Color) -> El<'a> {
         .width(24)
         .height(24)
         .rotation(iced::Rotation::Floating(iced::Radians(step * std::f32::consts::TAU / 12.0)))
-        .style(move |_, _| svg::Style { color: Some(color) })
+        .style(tint(color))
         .into()
 }
 
@@ -1290,8 +1290,7 @@ impl BeeperGuiApp {
         let p = &self.pal;
         let open = self.show_right_panel;
         let bg = if open { p.strong.scale_alpha(0.08) } else { CLEAR };
-        let muted = p.muted;
-        let icon = svg(crate::INFO_CIRCLE.clone()).width(20).height(20).style(move |_, _| svg::Style { color: Some(muted) });
+        let icon = tinted(&crate::INFO_CIRCLE, 20.0, p.muted);
         let toggle = button(icon).padding(4).style(btn_style([bg; 3], [p.muted; 3], 8.0)).on_press(UiMessage::ToggleRightPanel);
         let caps = hotkey_caps(st.settings.hotkey_keys("Toggle Chat Info"));
         let toggle = self.tip_caps(toggle.into(), tr("Chat Info"), caps, tooltip::Position::Bottom);
@@ -1465,10 +1464,9 @@ impl BeeperGuiApp {
         // Desktop's `thread-header-disappearing-timer`: the 12 px timer of a chat whose messages disappear, 4 px after
         // the name, with "Messages disappear after %s".
         let timer = chat.disappearing.filter(|&t| t > 0).map(|t| {
-            let tertiary = p.tertiary;
-            let icon = svg(TIMER.clone()).width(12).height(12).style(move |_, _| svg::Style { color: Some(tertiary) });
+            let icon = tinted(&TIMER, 12.0, p.tertiary);
             let tip = trf("Messages disappear after %s", &[&beeper_core::models::timer_distance(t)]);
-            container(self.tip(icon.into(), tip, vec![], tooltip::Position::Bottom)).padding(Padding::ZERO.left(2))
+            container(self.tip(icon, tip, vec![], tooltip::Position::Bottom)).padding(Padding::ZERO.left(2))
         });
         // Desktop's `thread-header-left`, `thread-header-name` and `thread-header-status` are `.redacted-region`s.
         let name = crate::style::region(true, || semi(short_title(chat).to_string(), 13.0).line_height(lh(16.0)).color(p.fg));
@@ -1531,8 +1529,7 @@ impl BeeperGuiApp {
         });
         // Desktop's `thread-header-lhs`: "Show Sidebar" while the main window hides the sidebar, then the reminder.
         let show_sidebar = (self.sidebar_hidden && self.drawing.get().is_none()).then(|| {
-            let muted = p.muted;
-            let icon = svg(crate::THUMBNAIL_BAR.clone()).width(20).height(20).style(move |_, _| svg::Style { color: Some(muted) });
+            let icon = tinted(&crate::THUMBNAIL_BAR, 20.0, p.muted);
             // `button.btn-icon`: 4 px around the icon inside a 1 px transparent border, radius 6.
             let show = button(icon).padding(5).style(crate::ghost(p, 6.0)).on_press(UiMessage::RunHotkey("Toggle Sidebar"));
             let caps = hotkey_caps(st.settings.hotkey_keys("Toggle Sidebar"));
@@ -1650,10 +1647,9 @@ impl BeeperGuiApp {
 
     /// Desktop's `MessageErrorTooltip`: the label, and the error icon whose tooltip is the error of the send.
     fn error_tooltip<'a>(&self, e: &beeper_core::models::SendError, label: &'a str) -> El<'a> {
-        let icon = svg(ERROR_OUTLINE.clone()).width(20).height(20);
-        let icon = icon.style(|_, _| svg::Style { color: Some(ON_ERROR) });
+        let icon = tinted(&ERROR_OUTLINE, 20.0, ON_ERROR);
         let error = e.message.clone().unwrap_or_else(|| tr("Unknown error occurred").into());
-        let tip = self.tip(icon.into(), error, vec![], tooltip::Position::Left);
+        let tip = self.tip(icon, error, vec![], tooltip::Position::Left);
         row![crate::style::fixed(label, 11.0, Weight::Normal).color(ON_ERROR), tip].spacing(4).align_y(Center).into()
     }
 
@@ -1747,7 +1743,7 @@ impl BeeperGuiApp {
         let request = self.view_request_head(st, chat);
         let icon = (loading.is_none() && !has_older(st, chat) && request.is_none()).then(|| {
             let icon = svg(BEEPER_ICON.clone()).width(32.0 * 14.0 / 15.0).height(32);
-            container(icon.style(move |_, _| svg::Style { color: Some(fg.scale_alpha(0.1)) })).center_x(Fill)
+            container(icon.style(tint(fg.scale_alpha(0.1)))).center_x(Fill)
         });
         let top = column![].push(loading).push(icon).push(request).width(Fill);
         iced::widget::sensor(top)
@@ -2143,7 +2139,7 @@ impl BeeperGuiApp {
         // Desktop keeps the row of a deleted message, with its sender, its menu and its selection.
         let deleted = (m.is_deleted == Some(true) && !m.view_once_expired()).then(|| {
             let fg = on_wall.unwrap_or(mix(p.card, p.text, 0.8));
-            let icon = svg(TRASH.clone()).width(13.0 * 448.0 / 512.0).height(13).style(move |_, _| svg::Style { color: Some(fg) });
+            let icon = svg(TRASH.clone()).width(13.0 * 448.0 / 512.0).height(13).style(tint(fg));
             let text = tr(if m.removed { "Removed from Beeper" } else { "This message has been deleted" });
             let body = row![icon, txt(text, 13.0).font(italic).color(fg)];
             container(body.spacing(5).align_y(iced::Bottom)).padding(Padding::new(13.0).top(9.0).bottom(7.0)).style(bordered_box(
@@ -2697,9 +2693,7 @@ impl BeeperGuiApp {
             None => {
                 let color = if mine { sent_meta } else { p.muted };
                 let marker = |handle: &svg::Handle, color: Color, label: String| {
-                    let icon = svg(handle.clone()).width(10).height(10);
-                    let icon = icon.style(move |_, _| svg::Style { color: Some(color) });
-                    self.tip(icon.into(), label, vec![], tooltip::Position::Left)
+                    self.tip(tinted(handle, 10.0, color), label, vec![], tooltip::Position::Left)
                 };
                 let bookmark = (m.is_bookmarked == Some(true)).then(|| marker(&BOOKMARK_ICON, color, tr("Bookmarked").into()));
                 let reminder = st.message_reminders.get(&m.id).filter(|_| crate::reminders::message_reminders_on(st));
@@ -3686,7 +3680,7 @@ impl BeeperGuiApp {
             | Msg::GoTo(..)
             | Msg::Download(..)
             | Msg::Downloaded(..)) => return self.message_files(msg),
-            Msg::AskDelete(mids) => (self.confirm, self.delete_target) = (Some(ASK_DELETE_MESSAGE), Some(mids.join(" "))),
+            Msg::AskDelete(mids) => self.confirm = Some(Confirm::DeleteMessages(mids)),
             Msg::RetrySend(id) => {
                 self.store.write().retry_send(&id);
                 // Desktop's `retryErroredMessage` closes the error toast of the send.

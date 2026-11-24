@@ -214,7 +214,7 @@ fn invalid(f: &Field, v: &str) -> Option<String> {
 fn auth_button<'a>(label: String, msg: UiMessage) -> El<'a> {
     let blue = crate::hex(0x0d4ffb);
     let lit = |k: f32| Color { r: (blue.r * k).min(1.0), g: (blue.g * k).min(1.0), b: (blue.b * k).min(1.0), a: 1.0 };
-    let icon = svg(EXTERNAL.clone()).width(10).height(10).style(|_, _| svg::Style { color: Some(Color::WHITE) });
+    let icon = tinted(&EXTERNAL, 10.0, Color::WHITE);
     // `gap: 1ch` of 14 px text.
     let label = row![t(label, 14.0, spaced(Weight::Medium, 0.00625)), icon].spacing(7).align_y(Center);
     let button = button(container(label).center_x(Fill))

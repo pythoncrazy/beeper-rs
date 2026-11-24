@@ -888,7 +888,7 @@ pub(crate) mod tests {
     fn a_confirmation_dialog_keeps_the_focus_like_desktop() {
         let mut app = demo_app("focus-ask");
         let main = app.main_window.expect("the main window");
-        let _ = app.update(UiMessage::Ask(Some(ASK_DISMISS_REMINDERS)));
+        let _ = app.update(UiMessage::Ask(Some(Confirm::DismissReminders)));
         let size = Size::new(1200.0, 800.0);
         let survey = survey_of(&app, main, size, None);
         assert_eq!(ids(&survey), ["ask-cancel", "ask-0"], "only the buttons of the dialog");
