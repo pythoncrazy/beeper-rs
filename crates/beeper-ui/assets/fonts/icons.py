@@ -18,6 +18,9 @@ MATERIAL = "inbox low_priority_space archive schedule schedule_send email maps_u
 # Desktop's react-icons by the start of their path: FontAwesome's `FaCheck` of the check column of its menus.
 REACT = {"tick": "M173.898 439.404"}
 
+# Desktop's react-icons by the start of their path: FontAwesome's `FaCheck` of the check column of its menus.
+REACT = {"tick": "M173.898 439.404"}
+
 lucide, bundle, out = sys.argv[1:]
 codepoints = json.load(open(f"{lucide}/codepoints.json"))
 font = TTFont(f"{lucide}/lucide.ttf")
