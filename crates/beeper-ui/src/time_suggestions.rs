@@ -134,7 +134,9 @@ impl BeeperGuiApp {
             let handle = tinted(&DRAG_HANDLE, 16.0, handle_color.scale_alpha(if shows { fade } else { 0.0 }));
             let handle = mouse_area(handle).interaction(mouse::Interaction::Move);
             let gone = (n > 1).then(|| edit(Msg::Remove(label.clone())));
-            let remove = button(ic(icon::CLOSE, 14.0)).bare(p.text.scale_alpha(fade)).on_press_maybe(gone.clone());
+            // `.removeButton`: the 14 px system `close`.
+            let remove = button(tinted(&crate::ROW_ACTIONS[6], 14.0, p.text.scale_alpha(fade))).bare(p.text.scale_alpha(fade));
+            let remove = remove.on_press_maybe(gone.clone());
             let remove = self.plain(format!("time-remove-{label}"), remove, gone);
             let icons = row![handle, remove].spacing(6).align_y(Center).padding(Padding::ZERO.left(8.0));
             let line = mouse_area(row![labels, icons].align_y(Center))
@@ -161,8 +163,9 @@ impl BeeperGuiApp {
                 let save = addable(&saved, text, now).map(|_| edit(Msg::Save));
                 let add = row![
                     input,
-                    solid("save", ic(icon::CHECK, 16.0).into(), save),
-                    solid("cancel", ic(icon::CLOSE, 16.0).into(), Some(edit(Msg::Cancel)))
+                    // Desktop's 16 px system `done` and `close`.
+                    solid("save", tinted(&crate::COPIED_ICON, 16.0, p.strong), save),
+                    solid("cancel", tinted(&crate::ROW_ACTIONS[6], 16.0, p.strong), Some(edit(Msg::Cancel)))
                 ]
                 .spacing(6)
                 .align_y(Center);
@@ -202,6 +205,31 @@ mod tests {
         let at = parse_when_millis("tomorrow at 3:05pm", now_unix_millis()).expect("a time");
         let (y, m, d) = civil_from_days(day_of(at));
         assert_eq!(suggestion_date(at), format!("{m}/{d}/{:02}, 3:05 PM", y % 100));
+    }
+
+    /// Desktop's remove button of a phrase is the 14 px system `close` (8.2 px, square ends), and the Save and Cancel
+    /// of a new phrase are the 16 px system `done` (10.9 by 8) and `close` (9.3).
+    #[test]
+    fn suggestion_buttons_draw_desktops_icons() {
+        let mut app = crate::fuzz::demo_app("time-suggestion-icons");
+        app.time_edit.input = Some("In 3w".into());
+        let size = Size::new(600.0, 700.0);
+        let st = app.store.read();
+        let mut sim = iced_test::Simulator::with_size(Default::default(), size, app.view_time_suggestions(&st));
+        let at =
+            |sim: &mut iced_test::Simulator<'_, UiMessage>, id: &str| sim.find(iced::widget::Id::from(id.to_string())).expect(id).bounds();
+        let (remove, save, cancel) = (at(&mut sim, "time-remove-Tomorrow"), at(&mut sim, "time-save"), at(&mut sim, "time-cancel"));
+        let shot = crate::focus::tests::pixels(&mut sim, &iced::Theme::Light, "time-suggestion-icons");
+        // The icon in the middle of its button, inside the pill's border.
+        let ink = |b: Rectangle, side: f32| {
+            let (x, y) = (b.center_x() - side / 2.0, b.center_y() - side / 2.0);
+            crate::focus::tests::ink(&shot, size.width, [x, y, side, side])
+        };
+        let near = |got: [f32; 4], w: f32, h: f32| (got[2] - w).abs() <= 0.15 && (got[3] - h).abs() <= 0.15;
+        let ((remove, ..), (save, ..), (cancel, ..)) = (ink(remove, 14.0), ink(save, 18.0), ink(cancel, 18.0));
+        // Desktop's 8.17, 10.87 by 8.02 and 9.33, less what the antialiasing takes from the pointed tips. The round
+        // Material glyphs measure 7.63, 11.09 by 8.26 and 8.72.
+        assert!(near(remove, 7.88, 7.88) && near(save, 10.6, 7.69) && near(cancel, 9.13, 9.13), "{remove:?} {save:?} {cancel:?}");
     }
 
     #[test]
