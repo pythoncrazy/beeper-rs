@@ -6463,6 +6463,25 @@ fn rail_spaces_show_no_hover_fill_like_desktop() {
     assert_eq!(edge(&mut sim), clear);
 }
 
+/// Desktop's space icons inherit the body's `--color-text-neutrals` #171717, and the Media and Add an account icons of
+/// the footer are `--color-on-surface` #202124 (the signed-in Desktop's computed fills).
+#[test]
+fn rail_icons_take_desktop_colors() {
+    let app = demo_app("rail-colors");
+    let size = Size::new(68.0, 800.0);
+    let mut sim = Simulator::with_size(Default::default(), size, app.view_rail());
+    let darkest = |sim: &mut Simulator<'_, UiMessage>, key: &'static str| {
+        let b = sim.find(iced::widget::Id::new(key)).expect("a space bar button").bounds();
+        let shot = crate::message::tests::pixels(sim);
+        let k = shot.width() as f32 / size.width;
+        let (x, y) = ((b.x * k) as u32, (b.y * k) as u32);
+        let px = (x..x + (b.width * k) as u32).flat_map(|i| (y..y + (b.height * k) as u32).map(move |j| (i, j)));
+        px.map(|(i, j)| shot.get_pixel(i, j).0).min_by_key(|c| c[..3].iter().map(|&v| u32::from(v)).sum::<u32>()).unwrap()
+    };
+    assert_eq!(darkest(&mut sim, "rail-archive-button")[..3], [0x17, 0x17, 0x17], "a space");
+    assert_eq!(darkest(&mut sim, "rail-media")[..3], [0x20, 0x21, 0x24], "a footer button");
+}
+
 /// Desktop's spaces scroll in `.filters-pane-list`, which ends 10 px above the footer (`.current-user`'s margin) and
 /// starts under the 14 px padding of `.account-switcher`: a space that does not fit is cut at those edges.
 #[test]
