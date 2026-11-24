@@ -1819,8 +1819,9 @@ impl BeeperGuiApp {
         let sender = first.is_some().then(|| preview_sender(c, m?)).flatten();
         let digits = if l.counts && c.unread_count > 0 { unread_label(c.unread_count as usize).len() as f32 } else { 0.0 };
         let at = if c.unread_mentions > 0 { 12.0 } else { 0.0 };
-        let prefix = first.filter(|_| media_tag.is_some()).map(|s| format!("{s}:"));
-        let prefix_w = prefix.as_deref().map_or(0.0, |s| crate::style::text_width(s, 13.0, Weight::Normal) + 4.0);
+        // Desktop's sender before a media chip is the text "Name: ", so a space of the text comes before the chip.
+        let prefix = first.filter(|_| media_tag.is_some()).map(|s| format!("{s}: "));
+        let prefix_w = prefix.as_deref().map_or(0.0, |s| crate::style::text_width(s, 13.0, Weight::Normal));
         let base = 16.0 + if l.counts { 8.0 + 6.0 * digits + at } else { at }.max(18.0);
         let receipt = m.is_some_and(read_icon);
         let indent = match (receipt, m.is_some_and(|m| m.send_error.is_some())) {
@@ -1857,7 +1858,6 @@ impl BeeperGuiApp {
         });
         let align = if l.compact { Center } else { iced::Alignment::Start };
         let text = row![]
-            .push(prefix.map(|s| txt(s, 13.0).color(fg)))
             .push(media_tag.map(|(icon, label, _)| media_chip(p, icon, label, expired, fg)))
             .push(body.map(|b| preview_line(&b, width, if flowed { 1 } else { lines }, font, fg)))
             .push(draft.filter(|_| l.previews).map(|t| {
@@ -1874,6 +1874,8 @@ impl BeeperGuiApp {
             }))
             .spacing(4)
             .align_y(align);
+        let prefix = prefix.map(|s| txt(s, 13.0).width(prefix_w).wrapping(iced::widget::text::Wrapping::None).color(fg));
+        let text = row![].push(prefix).push(text).align_y(align);
         // `.thread-participant-name .participant-img`: 12 px, 2 px under the top of the line and 2 px before the name.
         let text = row![].push(face.map(|f| container(f).padding([2, 0]))).push(text).spacing(2).align_y(align);
         let preview = row![badge, receipt, text]
