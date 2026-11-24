@@ -2732,6 +2732,18 @@ mod tests {
         simulator(app.view_settings()).find(text).is_ok()
     }
 
+    /// "Get the app" of Desktop's `TakeBeeperWithYou` draws the 14 px system `qr-code` (10.5 px of squares).
+    #[test]
+    fn get_the_app_draws_desktops_qr_icon() {
+        let mut app = crate::fuzz::demo_app("get-the-app-icon");
+        let _ = app.update(UiMessage::Settings(Msg::Open(SettingsTab::Devices)));
+        let mut sim = iced_test::Simulator::with_size(Default::default(), SETTINGS_SIZE, app.view_settings());
+        let at = sim.find("Get the app").expect("the button").bounds();
+        let shot = crate::focus::tests::pixels(&mut sim, &iced::Theme::Light, "get-the-app");
+        let (qr, color, _) = crate::focus::tests::ink(&shot, SETTINGS_SIZE.width, [at.x - 17.0, at.y - 2.0, 16.0, at.height + 4.0]);
+        assert!((qr[2] - 10.5).abs() <= 0.4 && (qr[3] - 10.5).abs() <= 0.4 && color == [255; 3], "the QR icon: {qr:?} {color:?}");
+    }
+
     /// The places of Desktop's `hotkeys-modal` in a 1200 x 800 main window, as Desktop's CSS lays it out: the 24 px
     /// title on its 33.6 px line, the search field, the 18.2 px group heading and the 31.6 px rows.
     #[test]
