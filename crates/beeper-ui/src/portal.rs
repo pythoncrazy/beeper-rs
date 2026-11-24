@@ -87,6 +87,36 @@ async fn watch_network(out: &mut iced::futures::channel::mpsc::Sender<bool>) -> 
     }
 }
 
+/// Electron's `powerMonitor` `resume` on Linux: logind's `PrepareForSleep(false)` on the system bus, each time the
+/// computer wakes. Without logind, the stream ends.
+#[cfg(target_os = "linux")]
+pub fn resumed() -> impl iced::futures::Stream<Item = ()> {
+    iced::stream::channel(1, async |mut out: iced::futures::channel::mpsc::Sender<()>| {
+        let Err(e) = watch_sleep(&mut out).await;
+        eprintln!("sleep monitor: {e}");
+    })
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn resumed() -> iced::futures::stream::Empty<()> {
+    unreachable!("only the Linux build reads logind")
+}
+
+#[cfg(target_os = "linux")]
+async fn watch_sleep(out: &mut iced::futures::channel::mpsc::Sender<()>) -> Result<std::convert::Infallible, String> {
+    use iced::futures::{SinkExt, StreamExt};
+    let bus = zbus::Connection::system().await.map_err(|e| e.to_string())?;
+    let rule = zbus::MatchRule::builder().msg_type(zbus::message::Type::Signal).interface("org.freedesktop.login1.Manager");
+    let rule = rule.and_then(|r| r.member("PrepareForSleep")).expect("a valid match rule").build();
+    let mut signals = zbus::MessageStream::for_match_rule(rule, &bus, None).await.map_err(|e| e.to_string())?;
+    loop {
+        let signal = signals.next().await.ok_or("the system bus closed")?.map_err(|e| e.to_string())?;
+        if signal.body().deserialize::<bool>() == Ok(false) {
+            _ = out.send(()).await;
+        }
+    }
+}
+
 /// Electron's `showItemInFolder` on Linux: the file manager of `org.freedesktop.FileManager1` shows the file selected.
 #[cfg(target_os = "linux")]
 pub async fn show_item(path: PathBuf) -> Result<(), String> {
