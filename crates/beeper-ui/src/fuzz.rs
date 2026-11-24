@@ -7179,6 +7179,31 @@ fn chat_rows_place_their_lines_like_desktop() {
     }
 }
 
+/// Desktop's `.thread-participant-name`: the sender's 12 px avatar has a 2 px margin before the name.
+#[test]
+fn previews_start_the_name_2_px_after_the_sender_like_desktop() {
+    let app = demo_app("row-sender");
+    let mut sim = simulator(app.view_sidebar());
+    let title = sim.find("Family").expect("the title").bounds();
+    let name = sim.find(|c: iced_test::selector::Candidate<'_>| match c {
+        iced_test::selector::Candidate::Text { content, bounds, .. } if content.starts_with("Mom: Dinner") => Some(bounds),
+        _ => None,
+    });
+    assert_eq!(name.expect("the preview").x - title.x, 14.0);
+}
+
+/// Desktop's colored network badge (`BrandNetworkIcon`) is the brand tile with 35 % corners, where a circle leaves the
+/// corners of its 16 px box to the cutout around it.
+#[test]
+fn colored_badges_are_rounded_tiles_like_desktop() {
+    let face: El = container(Space::new()).width(46).height(46).style(fill_box(Color::BLACK, 23.0)).into();
+    let shot = crate::focus::tests::shot(badged(face, "whatsapp", 46.0, 16.0, None, Color::WHITE), Size::new(48.0, 46.0), "badge");
+    // 2.25 px into the corner of the badge, which spans 32 to 48 and 30 to 46.
+    let k = shot.width() as f32 / 48.0;
+    let corner = shot.get_pixel((34.25 * k) as u32, (32.25 * k) as u32).0;
+    assert!(corner[1] > 150 && corner[0] < 120, "WhatsApp green, not the cutout: {corner:?}");
+}
+
 /// Desktop's `.UnreadThreads-module__pill`: 30 px high with its 1 px border, with its label 13 px in.
 #[test]
 fn unread_threads_pill_sizes_like_desktop() {
