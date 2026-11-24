@@ -3690,7 +3690,7 @@ impl BeeperGuiApp {
             | Msg::GoTo(..)
             | Msg::Download(..)
             | Msg::Downloaded(..)) => return self.message_files(msg),
-            Msg::AskDelete(mids) => (self.confirm, self.delete_target) = (Some(ASK_DELETE_MESSAGE), Some(mids.join(" "))),
+            Msg::AskDelete(mids) => self.confirm = Some(Confirm::DeleteMessages(mids)),
             Msg::RetrySend(id) => {
                 self.store.write().retry_send(&id);
                 // Desktop's `retryErroredMessage` closes the error toast of the send.

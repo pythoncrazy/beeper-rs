@@ -712,7 +712,7 @@ impl BeeperGuiApp {
         let st = self.store.read();
         if !st.settings.on("transcribeWithOpenai") {
             drop(st);
-            (self.audio.asked, self.confirm) = (Some((mid, again, language)), Some(crate::ASK_TRANSCRIBE));
+            (self.audio.asked, self.confirm) = (Some((mid, again, language)), Some(Confirm::Transcribe));
             return Task::none();
         }
         let a = crate::stored(&st, &mid).attachments.swap_remove(0);
@@ -922,7 +922,7 @@ mod tests {
         for m in click(&mut app, "Try Transcribe") {
             let _ = app.update(m);
         }
-        assert_eq!(app.confirm, Some(crate::ASK_TRANSCRIBE), "the privacy notice comes first");
+        assert_eq!(app.confirm, Some(Confirm::Transcribe), "the privacy notice comes first");
         let _ = app.update(UiMessage::Voice(Msg::Allow(false)));
         assert!(!app.store.read().settings.on("transcribeWithOpenai") && app.audio.transcribing.is_empty());
         let _ = app.update(UiMessage::Voice(Msg::Transcribe(id.clone(), false, Some("de".into()))));
@@ -975,7 +975,7 @@ mod tests {
         for m in picked {
             let _ = app.update(m);
         }
-        assert!(app.pane.message_menu.is_none() && app.confirm == Some(crate::ASK_TRANSCRIBE));
+        assert!(app.pane.message_menu.is_none() && app.confirm == Some(Confirm::Transcribe));
         assert_eq!(app.audio.asked, Some((id.clone(), true, Some("de".into()))));
         let _ = app.update(UiMessage::Ask(None));
         {

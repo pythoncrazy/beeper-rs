@@ -87,7 +87,7 @@ fn main() {
         shot(&out, &format!("settings_{tab:?}").to_lowercase(), (800.0, 740.0), &theme, app.view_settings());
     }
     let _ = app.update(UiMessage::Settings(beeper_ui::settings::Msg::Open(SettingsTab::Devices)));
-    let _ = app.update(UiMessage::Ask(Some(0)));
+    let _ = app.update(UiMessage::Ask(Some(beeper_ui::Confirm::Logout(None))));
     shot(&out, "settings_logout", (800.0, 740.0), &theme, app.view_settings());
     let _ = app.update(UiMessage::Ask(None));
     {

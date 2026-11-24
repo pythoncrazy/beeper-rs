@@ -237,11 +237,11 @@ impl BeeperGuiApp {
                 let draft = self.new_chats.iter().find(|d| d.id == n).expect("the open draft");
                 let Some((account, user)) = draft.users.first().cloned() else { return Task::none() };
                 if draft.group {
-                    let asked = self.confirm.take_if(|d| *d == ASK_ROOM_ENCRYPTION).is_some();
+                    let asked = self.confirm.take_if(|d| *d == Confirm::RoomEncryption).is_some();
                     let bridge = self.bridge(&account);
                     let matrix = account == "hungryserv";
                     if matrix && draft.users.len() > 1 && !asked {
-                        self.confirm = Some(ASK_ROOM_ENCRYPTION);
+                        self.confirm = Some(Confirm::RoomEncryption);
                         return Task::none();
                     }
                     let users = draft.users.iter().map(|(_, u)| u.id.clone()).collect();

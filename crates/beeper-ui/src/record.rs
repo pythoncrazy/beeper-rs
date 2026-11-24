@@ -210,7 +210,7 @@ impl BeeperGuiApp {
                 // Desktop's privacy notice (`oL`) asks first.
                 if !st.settings.on("transcribeWithOpenai") {
                     drop(st);
-                    self.confirm = Some(crate::ASK_TRANSCRIBE);
+                    self.confirm = Some(Confirm::Transcribe);
                     return Task::none();
                 }
                 let name = st.settings.microphone.clone();
@@ -454,7 +454,7 @@ mod tests {
         plus.flags["features"]["*"]["voice-transcription"] = serde_json::json!(true);
         app.store.write().features = plus;
         let _ = app.update(UiMessage::Record(Msg::Talk));
-        assert!(app.confirm == Some(crate::ASK_TRANSCRIBE) && app.talk.is_none(), "the privacy notice comes first");
+        assert!(app.confirm == Some(Confirm::Transcribe) && app.talk.is_none(), "the privacy notice comes first");
         let notice = "Talk to Type works by sharing audio clips with OpenAI via our servers. You can always change this in Settings.";
         assert!(has(&app, notice));
         let _ = app.update(UiMessage::Voice(voice::Msg::Allow(true)));
