@@ -4622,11 +4622,18 @@ impl BeeperGuiApp {
                     return Task::future(beeper_core::matrix::reset_network_connections(self.store.clone())).discard();
                 }
             }
-            // Desktop's `powermonitor-on-resume`: the connections of before the sleep reset.
-            UiMessage::Resumed if self.store.read().matrix.is_some() => {
-                return Task::future(beeper_core::matrix::reset_network_connections(self.store.clone())).discard();
+            // Desktop's `powermonitor-on-resume`: the connections of before the sleep reset, and the reminders and the
+            // scheduled messages that came due during it go out, as the timers of the app do not count the sleep.
+            UiMessage::Resumed => {
+                let checks = [UiMessage::Reminders(reminders::Msg::Check), UiMessage::Scheduled(scheduled::Msg::Check)];
+                let checks = Task::batch(checks.map(Task::done));
+                return match self.store.read().matrix.is_some() {
+                    true => {
+                        Task::batch([checks, Task::future(beeper_core::matrix::reset_network_connections(self.store.clone())).discard()])
+                    }
+                    false => checks,
+                };
             }
-            UiMessage::Resumed => {}
             UiMessage::PillHover(on) => self.pill_hover = on,
             UiMessage::Login(m) => {
                 let screen = self.login.screen;
