@@ -3453,13 +3453,7 @@ impl BeeperGuiApp {
 
     /// [`Self::face`] at the opacity `alpha`.
     fn face_alpha<'a>(&self, url: Option<&str>, name: &str, size: f32, ls: f32, alpha: f32) -> El<'a> {
-        let loaded = url.and_then(|u| match self.avatars.get(u) {
-            Some(frames) => frames.as_ref(),
-            None => {
-                self.wants.ask(&self.wants.avatars, u);
-                None
-            }
-        });
+        let loaded = url.and_then(|u| self.wants.get(&self.wants.avatars, u, self.avatars.get(u)));
         match loaded {
             // `.redacted .redacted-region img`: `filter: brightness(0)` on a black background.
             Some(_) if crate::style::redacting() => {
