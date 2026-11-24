@@ -375,8 +375,8 @@ impl BeeperGuiApp {
         button(line).bare(p.strong).width(Fill).on_press(UiMessage::Merged(merged::Msg::Edit(MergeEdit::Toggle(c.id.clone())))).into()
     }
 
-    /// Desktop's pick step: the search row, then the selected chats and the Suggested, Recent Chats and Chats
-    /// sections, or the search results.
+    /// Desktop's pick step: the search row, then the selected chats and the Suggested, Frequently Contacted, Recent
+    /// Chats and Chats sections, or the search results.
     fn view_merge_pick<'a>(&'a self, d: &'a MergeDraft) -> El<'a> {
         let p = &self.pal;
         let st = self.store.read();
@@ -421,17 +421,23 @@ impl BeeperGuiApp {
                 .filter(|c| !taken(c) && !st.user_blocked(c) && merge_keys(c).iter().any(|k| keys.contains(k)))
                 .collect();
             let shown = |c: &Chat, v: &[&Chat]| taken(c) || suggested.iter().chain(v).any(|s| s.id == c.id);
+            // Desktop's `frecency` order, which lists chats without any activity too.
+            let mut frequent: Vec<&Chat> = pool.iter().copied().filter(|c| !shown(c, &[])).collect();
+            frequent.sort_by(|a, b| st.frecency(&b.id).total_cmp(&st.frecency(&a.id)));
+            frequent.truncate(SECTION);
             let recent: Vec<&Chat> = st
                 .recent_chat_ids
                 .iter()
                 .filter_map(|id| pool.iter().copied().find(|c| c.id == *id))
-                .filter(|c| !shown(c, &[]))
+                .filter(|c| !shown(c, &frequent))
                 .take(SECTION)
                 .collect();
-            let mut rest: Vec<&Chat> = pool.iter().copied().filter(|c| !shown(c, &recent)).collect();
+            let before: Vec<&Chat> = frequent.iter().chain(&recent).copied().collect();
+            let mut rest: Vec<&Chat> = pool.iter().copied().filter(|c| !shown(c, &before)).collect();
             rest.sort_by(|a, b| b.last_activity.cmp(&a.last_activity));
             rest.truncate(SECTION);
-            for (title, chats) in [("Suggested", suggested), ("Recent Chats", recent), ("Chats", rest)] {
+            for (title, chats) in [("Suggested", suggested), ("Frequently Contacted", frequent), ("Recent Chats", recent), ("Chats", rest)]
+            {
                 if !chats.is_empty() {
                     rows.push(header(title));
                     rows.extend(chats.into_iter().map(|c| self.merge_row(&st, c, false)));
@@ -569,6 +575,23 @@ mod tests {
         assert!(st.outbox.iter().any(|(_, chat, o)| *chat == c.id && union(o)), "the union room comes with its children");
         assert_eq!(app.status_banner, "You can now message Friends across 2 chats from one conversation.");
         assert!(st.settings.merge_intro_seen, "the intro shows once");
+    }
+
+    /// Desktop's "Frequently Contacted" in the pick step, by the sends and the dwells of each chat: a chat that stays
+    /// open 3 seconds counts.
+    #[test]
+    fn merge_pick_lists_frequently_contacted_chats_like_desktop() {
+        let mut app = demo_app("merge-editor-frequent");
+        let _ = app.update(UiMessage::SelectChat(SAM.into()));
+        let _ = app.update(UiMessage::Dwell(SAM.into()));
+        let _ = app.update(UiMessage::Dwell(KAI.into()));
+        let st = app.store.read();
+        assert!(st.frecency(SAM) > 0.6 && st.frecency(KAI) == 0.0, "only the open chat counts");
+        drop(st);
+        let _ = app.update(UiMessage::Merged(merged::Msg::Open(None, Vec::new())));
+        edit(&mut app, MergeEdit::Start);
+        let mut sim = view(&app);
+        assert!(sim.find("Frequently Contacted").is_ok());
     }
 
     /// Desktop's Edit of a merged chat from the Manage menu of Chat Info: its chats are picked, and the change of a

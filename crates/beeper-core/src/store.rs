@@ -215,6 +215,7 @@ const KEY_BRIDGES: &str = "bridges";
 const KEY_SETTINGS: &str = "settings";
 const KEY_PIN_RANK: &str = "pinRank";
 const KEY_RECENT_CHATS: &str = "recentChats";
+const KEY_ACTIVITY: &str = "threadActivity";
 const KEY_SCHEDULED: &str = "scheduledMessages";
 const KEY_CONTACTS: &str = "contacts";
 const KEY_SEQ: &str = "nextSeq";
@@ -437,6 +438,33 @@ struct ThreadRow {
     mention: bool,
 }
 
+/// Desktop's `ThreadActivity`: the interactions with a chat, decayed over 5 days, and the time of the last one.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+pub struct Activity {
+    pub freq: f64,
+    pub decay_ts: i64,
+    pub active_ts: i64,
+}
+
+impl Activity {
+    const DAY: f64 = 86_400_000.0;
+    /// Desktop's weights of a sent message and of a chat that stays open 3 seconds.
+    pub const SEND: f64 = 1.0;
+    pub const DWELL: f64 = 0.1;
+
+    /// Desktop's `addInteraction` and `updateLastActiveTs`.
+    pub fn record(&mut self, weight: f64, now: i64) {
+        self.freq = self.freq * (-((now - self.decay_ts) as f64) / (5.0 * Self::DAY)).exp() + weight;
+        (self.decay_ts, self.active_ts) = (now, self.active_ts.max(now));
+    }
+
+    /// Desktop's `frecencyScore`: 0.6 of the recency, which halves in under a day, and 0.4 of the frequency.
+    pub fn score(&self, now: i64) -> f64 {
+        let recency = if self.active_ts == 0 { 0.0 } else { (-((now - self.active_ts) as f64) / Self::DAY).exp() };
+        0.6 * recency + 0.4 * (self.freq / 4.0).tanh()
+    }
+}
+
 /// A network inside a bridged account, like a Discord server. Its chats have the same `network_id`.
 #[derive(Debug, Clone, Default)]
 pub struct NetworkSpace {
@@ -545,6 +573,8 @@ pub struct BeeperStore {
     /// Position of each pinned chat in the `com.beeper.favourites_order` account data.
     pub pin_rank: HashMap<String, usize>,
     pub recent_chat_ids: Vec<String>,
+    /// Desktop's `ThreadActivity` of each chat, which ranks the merge editor's "Frequently Contacted".
+    pub activity: HashMap<String, Activity>,
     pub network_spaces: Vec<NetworkSpace>,
     /// Desktop's `subAccounts` of each account: the servers of a Discord login.
     pub sub_accounts: HashMap<String, Vec<crate::matrix::SubAccount>>,
@@ -798,7 +828,7 @@ impl BeeperStore {
             account_overrides: serde_json::Value::Null,
             features,
             next_seq: 1000,
-        }, default: setup, settings, verification, bridge_accounts, pin_rank, recent_chat_ids, network_spaces,
+        }, default: setup, settings, verification, bridge_accounts, pin_rank, recent_chat_ids, activity, network_spaces,
             sub_accounts, demo_servers, contacts, bridge_sessions, accounts, labels, chats, chat_changes, chat_idx_by_id, chat_order,
             local_chat_idx_by_id, messages, msg_idx_by_id, chat_msg_indices, loaded, unloaded, shown,
             thread_msg_indices, timeline_revs, timeline_writes, moves, assets, assets_by_mxc, connect, matrix,
@@ -1277,6 +1307,10 @@ impl BeeperStore {
         if let Some(recents) = self.kv_json(KEY_RECENT_CHATS) {
             self.recent_chat_ids = recents;
         }
+        // Desktop's `evictIfUseless`: an activity that scores under 0.1 is dropped when it loads.
+        let now = crate::config::now_unix_millis();
+        self.activity = self.kv_json::<HashMap<String, Activity>>(KEY_ACTIVITY).unwrap_or_default();
+        self.activity.retain(|_, a| a.score(now) >= 0.1);
         if let Some(contacts) = self.kv_json(KEY_CONTACTS) {
             self.contacts = contacts;
         }
@@ -1373,6 +1407,17 @@ impl BeeperStore {
         self.recent_chat_ids.insert(0, id.to_string());
         self.recent_chat_ids.truncate(50);
         self.put_json(KEY_RECENT_CHATS, &self.recent_chat_ids);
+    }
+
+    /// Desktop's `recordSend` and `recordDwell`: an interaction of `weight` with chat `id` at `now`.
+    pub fn record_activity(&mut self, id: &str, weight: f64, now: i64) {
+        self.activity.entry(id.to_string()).or_insert(Activity { decay_ts: now, ..Activity::default() }).record(weight, now);
+        self.put_json(KEY_ACTIVITY, &self.activity);
+    }
+
+    /// Desktop's `frecency` of chat `id`.
+    pub fn frecency(&self, id: &str) -> f64 {
+        self.activity.get(id).map_or(0.0, |a| a.score(crate::config::now_unix_millis()))
     }
 
     pub fn persist_connect(&mut self) {
@@ -3812,6 +3857,30 @@ impl BeeperStore {
 #[cfg(test)]
 mod tests {
     use std::collections::HashSet;
+
+    /// Desktop's `ThreadActivity`: interactions decay over 5 days, the recency over a day, and an activity that
+    /// scores under 0.1 is gone at the next launch.
+    #[test]
+    fn activity_scores_like_desktop() {
+        use super::Activity;
+        let (day, e) = (86_400_000, std::f64::consts::E);
+        let mut a = Activity::default();
+        a.record(Activity::SEND, 0);
+        assert!((a.score(0) - (0.6 + 0.4 * 0.25f64.tanh())).abs() < 1e-9);
+        a.record(Activity::SEND, 5 * day);
+        assert!((a.freq - (1.0 / e + 1.0)).abs() < 1e-9, "five days decay a send to 1/e");
+        assert!((a.score(6 * day) - (0.6 / e + 0.4 * (a.freq / 4.0).tanh())).abs() < 1e-9);
+        let config = crate::config::CentralConfig::new(crate::testing::temp_dir("activity"), "127.0.0.1".into(), 23392, None);
+        let mut st = super::BeeperStore::from_config(config.clone());
+        let now = crate::config::now_unix_millis();
+        st.record_activity("!new:x", Activity::DWELL, now);
+        st.record_activity("!old:x", Activity::SEND, now - 30 * day);
+        assert!(st.frecency("!new:x") > st.frecency("!old:x") && st.frecency("!old:x") > 0.0);
+        drop(st);
+        let st = super::BeeperStore::from_config(config);
+        assert!(st.frecency("!new:x") > 0.6, "the activity stays after a restart");
+        assert!(!st.activity.contains_key("!old:x"), "a useless activity goes");
+    }
 
     /// Desktop's `applyAppLocale` at launch: a signed-out app keeps the system language after the sign-in, and a
     /// signed-in app without a language takes English.

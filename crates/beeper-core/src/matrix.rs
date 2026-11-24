@@ -2658,6 +2658,9 @@ async fn flush(store: SharedStore) -> Result<(), PushError> {
             Outgoing::Flag(f, on) => Some((chat.clone(), f, on)),
             _ => None,
         };
+        // Desktop's `recordSend` when the homeserver takes a message.
+        let sent = matches!(out, Outgoing::Send { .. } | Outgoing::Poll { .. } | Outgoing::Forward { .. } | Outgoing::Media { .. })
+            .then(|| chat.clone());
         let r = match push(&store, chat, out).await {
             Err(e) if !e.transient => Err(PushError { transient: unreachable(&store).await, ..e }),
             r => r,
@@ -2667,6 +2670,9 @@ async fn flush(store: SharedStore) -> Result<(), PushError> {
             (Ok(()), message) => {
                 if let Some((chat, f, on)) = flag {
                     st.flag_sent(chat, f, on);
+                }
+                if let Some(chat) = sent {
+                    st.record_activity(&chat, crate::store::Activity::SEND, now_unix_millis());
                 }
                 st.pushed(row, message.as_deref(), None);
             }
