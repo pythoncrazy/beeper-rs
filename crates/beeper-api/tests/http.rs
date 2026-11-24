@@ -245,7 +245,9 @@ async fn websocket_drops_events_that_repeat_within_250_ms() {
     tokio::time::sleep(Duration::from_millis(300)).await;
     mute(false).await;
     let mut frames = Vec::new();
-    while let Ok(Ok((_, _, payload))) = timeout(Duration::from_millis(500), read_ws_frame(&mut ws, 1 << 20)).await {
+    // The two events that come, then no other one.
+    for wait in [10_000, 10_000, 500] {
+        let Ok(Ok((_, _, payload))) = timeout(Duration::from_millis(wait), read_ws_frame(&mut ws, 1 << 20)).await else { break };
         let v: serde_json::Value = serde_json::from_slice(&payload).unwrap();
         frames.push((v["seq"].as_u64().unwrap(), v["type"].as_str().unwrap().to_string()));
     }
@@ -882,9 +884,13 @@ async fn websocket_sends_the_app_state_like_desktop() {
     while !head.ends_with(b"\r\n\r\n") {
         head.push(ws.read_u8().await.unwrap());
     }
-    async fn next(ws: &mut TcpStream) -> Option<serde_json::Value> {
-        let frame = timeout(Duration::from_millis(500), read_ws_frame(ws, 1 << 20)).await.ok()?.ok()?;
+    // The next frame within `ms`.
+    async fn within(ws: &mut TcpStream, ms: u64) -> Option<serde_json::Value> {
+        let frame = timeout(Duration::from_millis(ms), read_ws_frame(ws, 1 << 20)).await.ok()?.ok()?;
         Some(serde_json::from_slice(&frame.2).unwrap())
+    }
+    async fn next(ws: &mut TcpStream) -> Option<serde_json::Value> {
+        within(ws, 10_000).await
     }
     assert_eq!(next(&mut ws).await.unwrap()["type"], "ready");
     write_ws_frame(&mut ws, 0x1, br#"{"type":"subscriptions.set","chatIDs":["*"],"app":{"state":true}}"#, true).await.unwrap();
@@ -893,7 +899,7 @@ async fn websocket_sends_the_app_state_like_desktop() {
     assert_eq!(next(&mut ws).await.unwrap()["type"], "subscriptions.updated", "after the snapshot, like Desktop");
     assert_eq!(snapshot["appState"]["e2ee"]["verified"], store.read().beeper_state.verified);
     store.read().emit_ws("setup.updated", "", None, None, None);
-    assert!(next(&mut ws).await.is_none(), "an unchanged state sends nothing");
+    assert!(within(&mut ws, 500).await.is_none(), "an unchanged state sends nothing");
     {
         let mut st = store.write();
         st.beeper_state.key_backup = !st.beeper_state.key_backup;

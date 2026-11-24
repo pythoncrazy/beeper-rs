@@ -11118,9 +11118,9 @@ fn the_header_shows_the_disappearing_timer_like_desktop() {
 fn sidebar_slides_like_desktop() {
     let mut app = demo_app("sidebar-slide");
     assert!((crate::style::cubic_bezier(0.5, [0.165, 0.84, 0.44, 1.0]) - 0.92).abs() < 0.02, "an ease-out curve");
+    let before = std::time::Instant::now();
     let _ = app.update(UiMessage::RunHotkey("Toggle Sidebar"));
-    let started = app.sidebar_slide.expect("a slide").elapsed().as_secs_f32();
-    assert!(app.sidebar_hidden && (started >= 0.2 || app.sidebar_progress().is_some()), "it starts to slide out");
+    assert!(app.sidebar_hidden && app.sidebar_slide.is_some_and(|t| t >= before), "it starts to slide out");
     drop(simulator(app.view_main()));
     std::thread::sleep(std::time::Duration::from_millis(220));
     assert_eq!(app.sidebar_progress(), None, "and is gone after 0.2 s");
@@ -11134,9 +11134,9 @@ fn sidebar_slides_like_desktop() {
         sim.into_messages().any(|m| matches!(m, UiMessage::RunHotkey("Toggle Sidebar")))
     };
     assert!(show(&app), "the header shows the sidebar again");
+    let before = std::time::Instant::now();
     let _ = app.update(UiMessage::RunHotkey("Toggle Sidebar"));
-    // The slide starts at the toggle; a slow debug build can be past its 0.2 s by the time the update returns.
-    assert!(!app.sidebar_hidden && app.sidebar_slide.is_some_and(|t| t.elapsed().as_secs_f32() < 1.0));
+    assert!(!app.sidebar_hidden && app.sidebar_slide.is_some_and(|t| t >= before), "the slide starts at the toggle");
     drop(simulator(app.view_main()));
     std::thread::sleep(std::time::Duration::from_millis(220));
     assert!(!show(&app), "not while the sidebar shows");

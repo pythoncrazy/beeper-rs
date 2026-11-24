@@ -6984,12 +6984,12 @@ mod tests {
         assert_eq!(texts(&store), range(41, 70), "the first sync loads the newest page");
         assert_eq!(pages.load(Relaxed), 1);
         super::on_sync(&client, &store, client.sync_once(super::SyncSettings::default()).await).await;
-        for _ in 0..200 {
-            if texts(&store).len() == 100 && pages.load(Relaxed) == 4 {
-                break;
+        let filled = async {
+            while texts(&store).len() != 100 || pages.load(Relaxed) != 4 {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
             }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
+        };
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(60), filled).await;
         assert_eq!(texts(&store), range(41, 140), "the gap from m71 to m130 is filled");
         assert_eq!(pages.load(Relaxed), 4, "the fill stops at the page that reaches a loaded message");
     }

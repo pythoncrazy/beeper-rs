@@ -4266,8 +4266,9 @@ pub(crate) mod tests {
         let mut app = crate::fuzz::demo_app("reply-fade");
         let _ = app.update(UiMessage::SelectChat("!note_self:beeper.com".into()));
         let mid = app.timeline(&app.store.read()).0.last().expect("a message").id.clone();
+        let before = std::time::Instant::now();
         let _ = app.update(UiMessage::Message(Msg::ShowReplies(mid)));
-        assert!(app.pane.reply_opened.is_some_and(|t| t.elapsed() < REPLIES_RISE), "it starts to fade in");
+        assert!(app.pane.reply_opened.is_some_and(|t| t >= before), "it starts to fade in");
         let size = iced::Size::new(1000.0, 720.0);
         let mut sim = iced_test::simulator::Simulator::with_size(Default::default(), size, app.view_main());
         sim.point_at(Point::new(700.0, 250.0));
