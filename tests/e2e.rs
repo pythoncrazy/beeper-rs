@@ -177,7 +177,7 @@ async fn lifecycle() {
             icon::DOWNLOAD,
             icon::AUDIO_LINES,
             icon::PAINTBRUSH,
-            icon::PUZZLE,
+            icon::CHEVRON,
             icon::CLOSE,
         ] {
             assert_ne!(cmap.map(ch as u32), 0, "missing icon glyph for {ch:?}");
