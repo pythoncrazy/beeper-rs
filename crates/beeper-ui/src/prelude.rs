@@ -7,8 +7,8 @@ pub(crate) use crate::focus::{Keys, Look};
 pub(crate) use crate::login::{actions, heading, Login, LoginMsg};
 pub(crate) use crate::style::{
     bar, bold, bordered_box, bordered_btn, brand_svg, btn_style, clamp, clamped, done_btn, editor_style, ell, fill_box, fw, glow_box, hex,
-    hidden_slider, ic, icon, input_style, lh, med, mix, pad, pick, rem, scroll_style, semi, shadow_box, stable_bar, text_width, txt, Bare,
-    Palette, CLEAR, DELETE_RED, ERROR, GUTTER, ON_ERROR,
+    hidden_slider, ic, icon, input_style, lh, med, mix, pad, pick, rem, scroll_style, section_btn, semi, shadow_box, stable_bar,
+    text_width, txt, Bare, Palette, CLEAR, DELETE_RED, ERROR, GUTTER, ON_ERROR,
 };
 pub(crate) use crate::time::{day_num, format_short_ts, iso_millis, list_ts, today};
 pub(crate) use crate::units::human_size;

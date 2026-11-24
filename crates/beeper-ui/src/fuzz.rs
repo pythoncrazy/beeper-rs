@@ -1560,6 +1560,7 @@ fn threads_like_desktop() {
         for t in ["Thread", "4 replies", "Eric Migicovsky", "Also sent to the chat"] {
             assert!(sim.find(t).is_ok(), "the thread pane shows {t}");
         }
+        assert_eq!(sim.find("Thread").expect("the title").bounds().height, 18.0, "Desktop's 600 14/18 px title");
     }
     let in_thread = |m: UiMessage| UiMessage::InThread(Box::new(m));
     assert!(simulator(app.view_main()).find("Also send to chat").is_err(), "an empty composer hides the toggle");
@@ -5585,6 +5586,7 @@ fn hotkey_recorder_like_desktop() {
 
 #[test]
 fn profile_page_like_desktop() {
+    use crate::modals::Modal;
     use crate::profile::Msg;
     let mut app = demo_app("profile-page");
     let _ = app.update(UiMessage::Settings(settings::Msg::Open(SettingsTab::Profile)));
@@ -5617,7 +5619,14 @@ fn profile_page_like_desktop() {
     let _ = app.update(UiMessage::Profile(Msg::Delete(None)));
     let _ = app.update(UiMessage::Profile(Msg::Email("new@example.com".into())));
     let _ = app.update(UiMessage::Profile(Msg::Save));
-    assert!(shows(&app, "Change Email") && shows(&app, "Confirm New Email"));
+    // Desktop's `ChangeEmailBrowserWindow`: a frameless window of its own, not a prompt over Settings.
+    let email = app.modal_window(Modal::ChangeEmail).expect("Change Email opens its window");
+    assert!(!shows(&app, "Confirm New Email"));
+    assert_eq!(app.title(email), "Change Email");
+    let window = |app: &BeeperGuiApp, text: &str| simulator(app.view_modal(Modal::ChangeEmail)).find(text).is_ok();
+    assert!(window(&app, "Confirm New Email") && window(&app, "new@example.com"), "the new email is filled in");
+    let _ = app.update(UiMessage::Profile(Msg::Save));
+    assert_eq!(app.modals.len(), 1, "a second Save raises the open window");
     let _ = app.update(UiMessage::Profile(Msg::EmailField(0, "wrong@example.com".into())));
     let _ = app.update(UiMessage::Profile(Msg::EmailField(2, "new@example.com".into())));
     let _ = app.update(UiMessage::Profile(Msg::SaveEmail));
@@ -5626,6 +5635,10 @@ fn profile_page_like_desktop() {
     let _ = app.update(UiMessage::Profile(Msg::EmailField(0, current.to_uppercase())));
     let _ = app.update(UiMessage::Profile(Msg::SaveEmail));
     assert_eq!(app.profile.change_email.as_ref().map(|c| c.1), Some(true), "the email saves");
+    let _ = app.update(UiMessage::Profile(Msg::EmailSaved(Err("Email is taken".into()))));
+    assert!(window(&app, "Email is taken"));
+    let _ = app.update(UiMessage::Window(windows::Msg::Closed(email)));
+    assert!(app.profile.change_email.is_none() && app.modals.is_empty(), "the window forgets its fields as it closes");
     let hits = search_settings(&app.store.read(), "recovery code");
     assert_eq!(hits.first(), Some(&SettingsHit::Section(SettingsTab::Profile, true)));
 }
@@ -5634,6 +5647,7 @@ fn profile_page_like_desktop() {
 /// device..." over the chat list, and the key typed again after its copy marks it backed up.
 #[test]
 fn recovery_key_backup_like_desktop() {
+    use crate::modals::Modal;
     use crate::profile::{KeyStep, Msg};
     let mut app = demo_app("recovery-backup");
     let key = "EsTc LW2K PGiF wKEo 9bCn nYwJ 3bR7 jAxZ hLoh 6Ycm Nkx5 YTqh";
@@ -5647,9 +5661,13 @@ fn recovery_key_backup_like_desktop() {
     let banner = |app: &BeeperGuiApp| simulator(app.view_sidebar()).find("If you lose your device...").is_ok();
     assert!(banner(&app), "an unsaved key a day old shows the banner");
     let _ = app.update(UiMessage::Profile(Msg::SaveKeyNow));
-    assert!(!banner(&app) && app.settings_window.is_some(), "Save key now opens the key and closes the banner");
-    let shows = |app: &BeeperGuiApp, text: &str| simulator(app.view_settings()).find(text).is_ok();
+    // Desktop's `SHOW_RECOVERY_KEY` modal window, over the main window, without Settings.
+    let window = app.modal_window(Modal::RecoveryKey).expect("Save key now opens the Recovery Key window");
+    assert!(!banner(&app) && app.settings_window.is_none(), "Save key now opens the key and closes the banner");
+    assert_eq!(app.title(window), "Recovery Key");
+    let shows = |app: &BeeperGuiApp, text: &str| simulator(app.view_modal(Modal::RecoveryKey)).find(text).is_ok();
     assert!(shows(&app, "Copy to Clipboard"));
+    assert!(shows(&app, "EsTc-LW2K-PGiF\nwKEo-9bCn-nYwJ\n3bR7-jAxZ-hLoh\n6Ycm-Nkx5-YTqh"), "the key in Desktop's lines");
     let _ = app.update(UiMessage::Profile(Msg::CopyRecoveryKey));
     assert!(shows(&app, "Next"), "an unsaved key goes on to its check");
     let _ = app.update(UiMessage::Profile(Msg::KeyNext));
@@ -5661,6 +5679,14 @@ fn recovery_key_backup_like_desktop() {
     assert!(matches!(app.profile.recovery_key, Some(KeyStep::Verify(_, true, None))), "the right key verifies");
     let _ = app.update(UiMessage::Profile(Msg::KeyVerified(Ok(()))));
     assert!(shows(&app, "Verified") && app.store.read().beeper_state.has_backed_up_code);
+    let _ = app.update(UiMessage::Window(windows::Msg::Closed(window)));
+    assert!(app.profile.recovery_key.is_none(), "the window forgets its step as it closes");
+    // A key that is backed up shows "Copied", and "Copy to Clipboard" again after two seconds.
+    let _ = app.update(UiMessage::Profile(Msg::RecoveryKey(true)));
+    let _ = app.update(UiMessage::Profile(Msg::CopyRecoveryKey));
+    assert!(shows(&app, "Copied") && !shows(&app, "Next"));
+    let _ = app.update(UiMessage::Profile(Msg::CopiedOver));
+    assert!(shows(&app, "Copy to Clipboard"));
 }
 
 #[test]
@@ -5890,6 +5916,9 @@ fn polls_like_desktop() {
     {
         let mut sim = simulator(app.view_main());
         assert!(sim.find("Select one option").is_ok() && sim.find("2 votes").is_ok());
+        // The poll is as wide as its question, which stays on one line like in a browser.
+        let question = sim.find("Which default dark theme do you prefer?").expect("the question");
+        assert_eq!(question.bounds().height, 20.0, "one line");
         let st = app.store.read();
         let m = st.message(mid);
         assert_eq!(
@@ -10514,6 +10543,35 @@ fn requests_dot_like_desktop() {
     assert_eq!(new(&app), 1, "a request created after the view is new");
 }
 
+/// Desktop's tray menu offers "Show Window" while the main window is minimized (`isMinimized() || !isVisible()`), and
+/// "Minimize to Tray" again once the window comes back.
+#[test]
+fn tray_menu_follows_a_minimized_window_like_desktop() {
+    let mut app = demo_app("tray-minimized");
+    let id = app.main_window.expect("a main window");
+    let _ = app.update(UiMessage::Window(windows::Msg::Minimize(id)));
+    assert_eq!(app.tray_sent.0.map(|s| s.1), Some(false), "minimized: Show Window");
+    let _ = app.update(UiMessage::Window(windows::Msg::Focused(true)));
+    assert_eq!(app.tray_sent.0.map(|s| s.1), Some(true), "back: Minimize to Tray");
+}
+
+/// `.BrandTooltip-module__tooltip` keeps its 6 px margin from the trigger: under a 40 px trigger at y 100, the card
+/// starts at y 146.
+#[test]
+fn tooltips_keep_a_6px_margin_like_desktop() {
+    let app = demo_app("tooltip-margin");
+    let trigger = container(Space::new()).width(40).height(40).into();
+    let tip = app.tip(trigger, "Archive", vec![], tooltip::Position::Bottom);
+    let view = container(tip).padding(100).width(Fill).height(Fill).style(fill_box(Color::BLACK, 0.0));
+    let mut sim = Simulator::with_size(Default::default(), Size::new(400.0, 300.0), view);
+    sim.point_at(Point::new(120.0, 120.0));
+    let _ = sim.simulate([iced::Event::Mouse(mouse::Event::CursorMoved { position: Point::new(120.0, 120.0) })]);
+    let shot = crate::focus::tests::pixels(&mut sim, &iced::Theme::Light, "tooltip-margin");
+    let k = shot.width() / 400;
+    let top = (140 * k..shot.height()).find(|&y| shot.get_pixel(120 * k, y).0 == [255; 4]).expect("the tooltip card");
+    assert_eq!(top / k, 146);
+}
+
 /// Desktop's `.hoverActions` sit 6 px over `.actions` whatever their size, also in the compact list where the 32 px
 /// button runs out of the bottom of the row: the icon of a 26 px Archive and of a 32 px Mark Read starts 28 px under
 /// the top of the row.
@@ -10621,6 +10679,32 @@ fn row_hover_actions_fade_like_desktop() {
     let off = app.unhovered.as_ref().map(|u| u.1).expect("the leave starts the fade");
     assert!(app.hover_progress_at(&id, off).is_some_and(|t| t > 0.5), "they fade back out");
     assert_eq!(app.hover_progress_at(&id, off + fade), None, "and are gone after it");
+}
+
+/// Desktop's `proIndicators` keep their place under the hover action, and fade and shrink away while it grows in.
+#[test]
+fn unread_counts_give_way_to_hover_actions_like_desktop() {
+    use iced_test::selector::Candidate;
+    let mut app = demo_app("count-hover");
+    let id = "!wa_family:beeper.com".to_string();
+    let accent = |app: &BeeperGuiApp| {
+        let mut sim = Simulator::with_size(Default::default(), Size::new(400.0, 800.0), app.view_sidebar());
+        let title = sim.find("Family").expect("the title").bounds();
+        let near = move |c: Candidate<'_>| match c {
+            Candidate::Text { content: "2", bounds, .. } if bounds.x > title.x && (bounds.y - title.y).abs() < 30.0 => Some(bounds),
+            _ => None,
+        };
+        let count = sim.find(near).expect("the count keeps its place");
+        let shot = crate::focus::tests::pixels(&mut sim, &iced::Theme::Light, "count-hover");
+        let k = shot.width() / 400;
+        // The pill's edge, left of its digit.
+        let [r, g, b, _] = shot.get_pixel((count.x as u32 - 2) * k, count.center_y() as u32 * k).0;
+        Color::from_rgb8(r, g, b) == app.pal.accent
+    };
+    assert!(accent(&app), "the count shows");
+    let _ = app.update(UiMessage::ChatList(chat_list::Msg::Hover(id, true)));
+    app.hover_at = Some(std::time::Instant::now() - std::time::Duration::from_secs(1));
+    assert!(!accent(&app), "and is gone under the hover action");
 }
 
 /// Desktop's view-limited media: a pill in place of the media, the viewer that counts a view, the Play queue of the

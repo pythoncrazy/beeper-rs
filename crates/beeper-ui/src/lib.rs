@@ -52,6 +52,7 @@ mod merge_editor;
 mod merge_suggest;
 mod merged;
 mod message;
+mod modals;
 pub mod networks;
 pub mod new_chat;
 mod nickname;
@@ -1372,6 +1373,8 @@ macro_rules! svg_static {
     };
 }
 
+// Desktop's `ExternalLinkIcon`, after the network of Chat Info.
+svg_static!(EXTERNAL_LINK, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 8 8"><path d="M1 7L7 1M7 1V5.5M7 1H2.5" fill="none" stroke="#000" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>"##);
 svg_static!(CHEVRON_LEFT, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="m15 18-6-6 6-6" fill="none" stroke="#000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>"##);
 svg_static!(TIMER, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><path fill="currentColor" d="M6.5 1.553a.58.58 0 0 1-.426-.173A.57.57 0 0 1 5.9.954q0-.252.174-.427a.57.57 0 0 1 .425-.175q.251 0 .426.174A.57.57 0 0 1 7.1.952q0 .251-.173.426a.57.57 0 0 1-.425.175m0 8.1a.58.58 0 0 1-.426-.174.57.57 0 0 1-.175-.424q0-.252.174-.427a.57.57 0 0 1 .425-.175q.251 0 .426.174a.57.57 0 0 1 .175.425q0 .251-.173.426a.57.57 0 0 1-.425.175m2.1-6.3a.58.58 0 0 1-.426-.174A.57.57 0 0 1 8 2.756q0-.252.174-.427a.57.57 0 0 1 .425-.175q.251 0 .426.174a.57.57 0 0 1 .175.425q0 .251-.173.426a.57.57 0 0 1-.425.175m0 4.5a.58.58 0 0 1-.426-.173A.57.57 0 0 1 8 7.255q0-.252.174-.427a.57.57 0 0 1 .425-.175q.251 0 .426.174a.57.57 0 0 1 .175.425q0 .251-.173.426a.57.57 0 0 1-.425.175m.6-2.25a.58.58 0 0 1-.426-.173.57.57 0 0 1-.175-.425q0-.252.174-.427a.57.57 0 0 1 .425-.175q.251 0 .426.174a.57.57 0 0 1 .175.425q0 .251-.173.426a.57.57 0 0 1-.425.175M5 9.803a4.7 4.7 0 0 1-1.866-.375 4.84 4.84 0 0 1-2.56-2.562A4.7 4.7 0 0 1 .2 4.997q0-.993.375-1.863A4.86 4.86 0 0 1 3.134.578 4.7 4.7 0 0 1 5 .203v.9q-1.625 0-2.762 1.138T1.099 5.003t1.138 2.763 2.762 1.137zm1.674-2.675L4.55 5.003v-3h.9v2.625l1.863 1.863z"/></svg>"##);
 svg_static!(CALL, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path fill="currentColor" d="M16.193 17.842q-2.605 0-5.146-1.136t-4.625-3.218q-2.083-2.084-3.219-4.625T2.068 3.717q0-.375.25-.625a.85.85 0 0 1 .625-.25h3.375q.292 0 .52.198a.76.76 0 0 1 .272.468l.541 2.917q.042.333-.02.563a.9.9 0 0 1-.23.395l-2.02 2.042q.416.77.989 1.49.573.718 1.26 1.385.645.646 1.355 1.198.708.552 1.5 1.01l1.958-1.958q.187-.188.49-.281.301-.094.593-.052l2.875.583a.97.97 0 0 1 .48.302.73.73 0 0 1 .187.49v3.375q0 .375-.25.625a.85.85 0 0 1-.625.25"/></svg>"##);
@@ -2778,6 +2781,8 @@ pub(crate) struct Timers {
     username: Debounce,
     emoji: Debounce,
     media: Debounce,
+    /// The "Copy to Clipboard" again of the Recovery Key window.
+    key_copied: Debounce,
 }
 
 /// Values that views compute from the store, kept until the next write to the store.
@@ -3135,6 +3140,8 @@ pub struct BeeperGuiApp {
     how_window: Option<window::Id>,
     /// Desktop's Account Nickname windows, one for each account.
     pub nickname_windows: Vec<nickname::NicknameDraft>,
+    /// Desktop's windows that open once each, like its modal windows.
+    pub(crate) modals: Vec<(window::Id, modals::Modal)>,
     pub add_accounts: Vec<add_account::AddAccount>,
     /// The browser of the cookie logins. The tests find none, so that they never start one.
     pub find_browser: fn() -> Option<std::path::PathBuf>,
@@ -3295,7 +3302,7 @@ impl BeeperGuiApp {
         }, default: chat_windows, space_windows, carousel_windows, drawing, drawing_thread, open_threads, thread_area,
             thread_drag, unread_view, unread_menu, hidden, unmapped, opened, unmapped_focus, activation_token,
             system_dark, zoom_drag, maximize_when_placed, seen_requests, pip, pip_wanted, pip_manual, pip_menu,
-            hotkey_query, hotkey_rec, profile, hotkeys_modal, dropping, drop_send, dropped, hotkeys_scrolled, chat_sub,
+            hotkey_query, hotkey_rec, profile, modals, hotkeys_modal, dropping, drop_send, dropped, hotkeys_scrolled, chat_sub,
             reminded, search_room, search_filters, search_select, cursor, image_clipboard, pressing, forward,
             media_window, in_media, emoji_gen, emoji_hovered, focused, idle, notified, retried, notifications,
             gif_query, gifs, gif_loading, gif_error, gif_next, gif_sel, gif_view, command_palette_query,
@@ -3620,6 +3627,7 @@ impl BeeperGuiApp {
             _ if Some(id) == self.verify.window => "Beeper",
             _ if Some(id) == self.reauth.window => tr("Authentication Required"),
             _ if Some(id) == self.enter_key.window => self.enter_key_title(),
+            _ if let Some(m) = self.modal_at(id) => m.title(),
             _ if let Some(title) = self.add_account_title(id) => return title,
             _ if let Some((_, _, mid)) = self.vote_windows.iter().find(|w| w.0 == id) => {
                 let st = self.store.read();
@@ -4329,7 +4337,8 @@ impl BeeperGuiApp {
         if !std::mem::take(&mut self.tray_sent.1) {
             return task;
         }
-        let now = (self.badge_count(), !self.hidden);
+        // Desktop's tray menu offers Show Window while the window hides or is minimized.
+        let now = (self.badge_count(), self.shows());
         if self.tray_sent.0.replace(now) == Some(now) {
             return task;
         }
@@ -5246,6 +5255,8 @@ impl BeeperGuiApp {
             self.view_reauth()
         } else if Some(id) == self.enter_key.window {
             self.view_enter_key()
+        } else if let Some(m) = self.modal_at(id) {
+            self.view_modal(m)
         } else if let Some(a) = self.add_accounts.iter().find(|a| a.id == id) {
             self.view_add_account(a)
         } else if Some(id) == self.networks.window {
@@ -5860,8 +5871,7 @@ impl BeeperGuiApp {
         let (cid, uid) = key.split_once(' ').expect("a chat and a user");
         let c = &st.chats[st.resolve_chat_idx(cid).expect("chat exists")];
         let u = c.participants.items.iter().find(|u| u.id == uid).expect("a member of the chat");
-        let bg = if self.dark { Color::BLACK } else { Color::WHITE };
-        let shade = Color { a: 0.1, ..p.strong };
+        let (bg, shade) = (p.card, p.hover);
         let lifted = move |r: f32| {
             move |_: &Theme| container::Style {
                 background: Some(bg.into()),
@@ -5875,7 +5885,7 @@ impl BeeperGuiApp {
         let face = container(self.face(crate::user_img(u).as_deref(), &name, 80.0, 0.0)).padding(4).style(lifted(44.0));
         let high = CARD_H + if id.is_some() { 15.0 } else { 0.0 };
         let info = column![semi(name, 14.0).line_height(lh(18.0)).color(p.strong).width(Fill).align_x(Center)]
-            .push(id.map(|i| txt(i, 12.0).color(p.sub).width(Fill).align_x(Center)));
+            .push(id.map(|i| txt(i, 12.0).color(p.muted).width(Fill).align_x(Center)));
         let muted = btn_style([p.chip; 3], [p.strong; 3], 9999.0);
         let actions = (u.is_self != Some(true) && self.can(&c.account_id, "create_dm")).then(|| {
             let label = txt(tr("Send Message"), 11.0);
@@ -6385,7 +6395,8 @@ impl BeeperGuiApp {
             return tooltip(el, Space::new(), at);
         }
         let body = row![med(label, 13.0).color(p.strong)].push(keys).spacing(8).align_y(Center);
-        tooltip(el, self.tip_card(body), at)
+        // `.BrandTooltip-module__tooltip`'s 6 px margin, from the trigger and from the edges of the window.
+        tooltip(el, self.tip_card(body), at).padding(6)
     }
 
     /// The box of Desktop's `BrandTooltip`: `8px 11px` inside, the bubble radius and `--shadow-large-15`.
@@ -6499,7 +6510,7 @@ impl BeeperGuiApp {
         let mut items: Vec<El> = details
             .into_iter()
             .filter_map(|(title, value, kind)| {
-                let title = txt(tr(title), 13.0).color(p.sub);
+                let title = txt(tr(title), 13.0).color(p.muted);
                 let menu = UiMessage::ChatList(chat_list::Msg::OpenMenu(format!("contact:{} {kind}", chat.id)));
                 let value = button(txt(value?, 13.0).color(p.strong)).bare(p.strong).on_press(menu.clone());
                 let value = mouse_area(value).on_right_press(menu);
@@ -6512,7 +6523,7 @@ impl BeeperGuiApp {
         let alts = if u.phone_number.is_some() { alt_chats(st, chat, u) } else { Vec::new() };
         if !alts.is_empty() {
             let accounts: Vec<String> = st.accounts.iter().map(|a| a.account_id.clone()).collect();
-            let title = txt(tr("Message Other Accounts"), 13.0).color(p.sub);
+            let title = txt(tr("Message Other Accounts"), 13.0).color(p.muted);
             let rows = alts.iter().map(|c| {
                 let icon = svg(crate::style::brand_svg(brand_key(&c.account_id))).width(16).height(16);
                 let name = txt(account_display_name(st, &c.account_id, &accounts), 13.0);
