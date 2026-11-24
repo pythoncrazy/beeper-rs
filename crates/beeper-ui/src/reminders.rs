@@ -228,11 +228,11 @@ impl BeeperGuiApp {
         let set = |at: i64| can.then(|| close(UiMessage::Reminders(Msg::Message(mid.into(), Some(at)))));
         let upgrade = (!can).then(|| {
             let open = close(UiMessage::Settings(settings::Msg::Open(SettingsTab::BeeperPlus)));
-            [item(tr("Upgrade to Beeper Plus").into(), String::new(), Some(open)), (menu_rule(p), 11.0)]
+            [item(tr("Upgrade to Beeper Plus").into(), String::new(), Some(open)), (menu_rule(p), MENU_RULE)]
         });
         let done = st.message_reminders.contains_key(mid).then(|| {
             let done = close(UiMessage::Reminders(Msg::Message(mid.into(), None)));
-            [item(trx("Mark as Done", "message reminder menu action").into(), String::new(), Some(done)), (menu_rule(p), 11.0)]
+            [item(trx("Mark as Done", "message reminder menu action").into(), String::new(), Some(done)), (menu_rule(p), MENU_RULE)]
         });
         let last = last_used(st, now).map(|at| item(tr("Last Used").into(), last_used_label(at, h24), set(at)));
         let presets = remind_presets(&st.settings, now).into_iter().map(|(label, at)| {
@@ -242,7 +242,7 @@ impl BeeperGuiApp {
         let custom = close(UiMessage::CommandBar(commands::Msg::OpenSubMenu(commands::SubMenu::RemindMessage(mid.into()))));
         let custom = item(tr("Custom…").into(), String::new(), can.then_some(custom));
         (upgrade.into_iter().flatten().chain(done.into_iter().flatten()).chain(last).chain(presets))
-            .chain([(menu_rule(p), 11.0), custom])
+            .chain([(menu_rule(p), MENU_RULE), custom])
             .collect()
     }
 
@@ -257,7 +257,7 @@ impl BeeperGuiApp {
         let snooze = |at: Option<i64>| UiMessage::Reminders(Msg::Snooze(ids.to_vec(), at));
         let upgrade = snooze_upgrade(st, &chats).then(|| {
             let open = UiMessage::Settings(settings::Msg::Open(SettingsTab::BeeperPlus));
-            [item(tr("Upgrade to Beeper Plus").into(), String::new(), Some(open)), (menu_rule(p), 11.0)]
+            [item(tr("Upgrade to Beeper Plus").into(), String::new(), Some(open)), (menu_rule(p), MENU_RULE)]
         });
         let until = chats.first().filter(|_| chats.len() == 1).and_then(|c| snoozed_until(st, c));
         let heading = until.map(|at| (menu_heading(p, snoozed_label(at, h24)), menu_pitch()));
@@ -270,8 +270,8 @@ impl BeeperGuiApp {
         let custom = UiMessage::CommandBar(commands::Msg::OpenSubMenu(commands::SubMenu::Snooze(ids.to_vec())));
         let dismiss = can_dismiss_snooze(st, &chats).then(|| snooze(None));
         (upgrade.into_iter().flatten().chain(heading).chain(last).chain(presets))
-            .chain([(menu_rule(p), 11.0), item(tr("Custom…").into(), String::new(), can.then_some(custom))])
-            .chain([(menu_rule(p), 11.0), item(tr("Dismiss Snooze").into(), String::new(), dismiss)])
+            .chain([(menu_rule(p), MENU_RULE), item(tr("Custom…").into(), String::new(), can.then_some(custom))])
+            .chain([(menu_rule(p), MENU_RULE), item(tr("Dismiss Snooze").into(), String::new(), dismiss)])
             .collect()
     }
 }

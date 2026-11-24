@@ -981,7 +981,7 @@ impl BeeperGuiApp {
             item(tr("Copy").into(), UiMessage::Message(Msg::CopyText(selection.to_string()))),
         ];
         let menu = crate::menu_card(p, items, MESSAGE_MENU_W);
-        (menu.into(), 8.0 + 2.0 * menu_pitch() + 11.0, 0.0)
+        (menu.into(), 8.0 + 2.0 * menu_pitch() + MENU_RULE, 0.0)
     }
 
     /// Desktop's `Yit` for several selected messages: the items that act on the whole selection.
@@ -1006,7 +1006,7 @@ impl BeeperGuiApp {
             let unread = UiMessage::Message(Msg::MarkUnreadFromHere(m.chat_id.clone(), m.id.clone()));
             item(tr("Mark as Unread").into(), "", Some(unread))
         }));
-        rows.push((menu_rule(p), 11.0));
+        rows.push((menu_rule(p), MENU_RULE));
         rows.push(item(tr("Copy").into(), if stamp { "" } else { "Ctrl C" }, Some(UiMessage::Message(Msg::CopySelected(false)))));
         rows.push(item(
             tr("Copy with Timestamp").into(),
@@ -1021,7 +1021,7 @@ impl BeeperGuiApp {
         if delete_dialog(&st, &picked).is_some() {
             rows.push(item(tr("Delete…").into(), "", Some(UiMessage::Message(Msg::AskDelete(ids)))));
         }
-        rows.push((menu_rule(p), 11.0));
+        rows.push((menu_rule(p), MENU_RULE));
         rows.push(item(tr("Report a Problem").into(), &key("Report a Problem"), Some(UiMessage::OpenUrl(ISSUES_URL.into()))));
         let (menu, h) = crate::menu_rows(p, rows, MESSAGE_MENU_W);
         (menu.into(), h, 0.0)
@@ -1049,7 +1049,7 @@ impl BeeperGuiApp {
         let address = clicked.and_then(|h| h.strip_prefix("mailto:")).map(str::to_string);
         let link = clicked.filter(|h| h.starts_with("https://")).map(str::to_string);
         let entire = link.is_some();
-        let rule = || (menu_rule(p), 11.0);
+        let rule = || (menu_rule(p), MENU_RULE);
         let key = |name| hotkey_text(st.settings.hotkey_keys(name));
         let item = |label: String, hotkey: &str, msg: Option<UiMessage>| {
             (menu_item(p, None, label, hotkey.to_string(), msg.map(|m| UiMessage::Message(Msg::Menu(Box::new(m))))), menu_pitch())

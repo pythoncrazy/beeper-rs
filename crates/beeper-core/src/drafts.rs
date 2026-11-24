@@ -557,7 +557,7 @@ mod tests {
         assert_eq!(push_decision(Some(&local), Some(&synced(a.clone(), true)), false), Push::InSync);
         assert_eq!(push_decision(Some(&text("b", "r2")), Some(&synced(a.clone(), true)), false), Push::Draft);
         assert_eq!(push_decision(Some(&local), Some(&synced(a.clone(), true)), true), Push::Clear, "an edit");
-        let file = ChatDraftAttachment { upload_id: "u".into(), file_name: None, mime_type: None };
+        let file = ChatDraftAttachment { id: String::new(), upload_id: "u".into(), file_name: None, mime_type: None };
         let with_file = ChatDraft { attachments: vec![file], ..local.clone() };
         assert_eq!(push_decision(Some(&with_file), Some(&synced(a.clone(), true)), false), Push::Clear, "a file");
         assert_eq!(push_decision(None, Some(&synced(a, true)), false), Push::Clear);

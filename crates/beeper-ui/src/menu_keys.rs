@@ -13,6 +13,29 @@ pub fn row<'a>(content: impl Into<El<'a>>, msg: Option<UiMessage>) -> El<'a> {
     crate::delegate::marked(content, None, Mark(msg))
 }
 
+/// Desktop's `.menu-item .hotkey`: `--color-text-translucent-subtle` (`dim`), and `--color-text-on-accent-weak`
+/// on the selected row, which is the row whose button gives its content white text.
+pub fn hotkey<'a>(content: impl Into<El<'a>>, dim: Color) -> El<'a> {
+    El::new(Hotkey { content: content.into(), dim })
+}
+
+struct Hotkey<'a> {
+    content: El<'a>,
+    dim: Color,
+}
+
+impl Widget<UiMessage, Theme, Renderer> for Hotkey<'_> {
+    crate::delegate::delegate!(children, diff, size, layout, operate);
+
+    fn draw(
+        &self, tree: &advanced::Tree, renderer: &mut Renderer, theme: &Theme, style: &renderer::Style, layout: Layout<'_>,
+        cursor: mouse::Cursor, viewport: &Rectangle,
+    ) {
+        let text_color = if style.text_color == Color::WHITE { Color::WHITE.scale_alpha(0.7) } else { self.dim };
+        self.content.as_widget().draw(&tree.children[0], renderer, theme, &renderer::Style { text_color }, layout, cursor, viewport);
+    }
+}
+
 /// A menu whose rows the keyboard selects and runs.
 pub fn menu<'a>(content: impl Into<El<'a>>) -> El<'a> {
     El::new(Menu { content: content.into() })
@@ -150,6 +173,49 @@ mod tests {
         assert_eq!(step(&enabled, Some(0), Named::ArrowUp), Some(3), "↑ wraps around");
         assert_eq!(step(&enabled, Some(2), Named::Home), Some(0));
         assert_eq!(step(&enabled, Some(0), Named::End), Some(3));
+    }
+
+    /// Desktop's hotkey is `--color-text-translucent-subtle`, and `--color-text-on-accent-weak` on the selected row,
+    /// and its submenu chevron is in the color of the row's text: white on the selected row.
+    #[test]
+    fn menu_asides_take_the_selection_like_desktop() {
+        crate::style::ensure_fonts_loaded();
+        let p = crate::style::palette(false, None, 0);
+        let menu = |at: Option<f32>| {
+            let rows = Column::new().push(menu_item(&p, None, "Mute".into(), "Ctrl Shift M", Some(UiMessage::Noop))).push(menu_item(
+                &p,
+                None,
+                "Copy".into(),
+                SUBMENU,
+                Some(UiMessage::Noop),
+            ));
+            let size = Size::new(240.0, 2.0 * menu_pitch());
+            let mut sim = iced_test::Simulator::with_size(Default::default(), size, menu_card(&p, rows, 240.0));
+            if let Some(y) = at {
+                sim.point_at(Point::new(20.0, y));
+            }
+            crate::focus::tests::pixels(&mut sim, &iced::Theme::Light, "menu-asides")
+        };
+        // The lightest and the darkest pixel of the right end of each row.
+        let ends = |shot: &::image::RgbaImage| {
+            let k = shot.width() as f32 / 240.0;
+            let range = |row: f32| {
+                let ys = (k * (row * menu_pitch() + 8.0)) as u32..(k * (row + 1.0) * menu_pitch()) as u32;
+                let xs = (k * 150.0) as u32..(k * 228.0) as u32;
+                let lum = ys
+                    .flat_map(|y| xs.clone().map(move |x| (x, y)))
+                    .map(|(x, y)| shot.get_pixel(x, y).0[..3].iter().map(|&c| u32::from(c)).sum::<u32>());
+                lum.fold((u32::MAX, 0), |(lo, hi), l| (lo.min(l), hi.max(l)))
+            };
+            [range(0.0), range(1.0)]
+        };
+        let [hotkey, chevron] = ends(&menu(None));
+        assert!(hotkey.0 > 3 * 100, "an idle hotkey is half transparent: {hotkey:?}");
+        assert!(chevron.0 < 3 * 60, "the chevron has the text color: {chevron:?}");
+        let [hotkey, _] = ends(&menu(Some(menu_pitch() / 2.0 + 4.0)));
+        assert!(hotkey.1 > 3 * 200, "the selected row's hotkey is light: {hotkey:?}");
+        let [_, chevron] = ends(&menu(Some(1.5 * menu_pitch() + 4.0)));
+        assert!(chevron.1 > 3 * 240, "the selected row's chevron is white: {chevron:?}");
     }
 
     /// The chat menu takes ↓ and Enter: ↓ ↓ selects its second row, which Enter runs.

@@ -197,7 +197,12 @@ pub(crate) fn save_draft(st: &mut BeeperStore, pane: &Pane) {
             .iter()
             .map(|f| {
                 let a = st.store_uploaded_asset(f.name.clone(), f.mime.clone(), &f.bytes);
-                ChatDraftAttachment { upload_id: a.upload_id, file_name: Some(a.file_name), mime_type: Some(a.mime_type) }
+                ChatDraftAttachment {
+                    id: String::new(),
+                    upload_id: a.upload_id,
+                    file_name: Some(a.file_name),
+                    mime_type: Some(a.mime_type),
+                }
             })
             .collect(),
     };
@@ -928,7 +933,7 @@ impl BeeperGuiApp {
             item("Paste", edit(MenuEdit::Paste)),
         ]);
         let rules = word.map_or(0, |_| 2) + usize::from(has);
-        let h = 8.0 + (items.len() - rules) as f32 * menu_pitch() + rules as f32 * 11.0;
+        let h = 8.0 + (items.len() - rules) as f32 * menu_pitch() + rules as f32 * MENU_RULE;
         let menu = crate::menu_card(p, Column::with_children(items.into_iter().flatten()), MESSAGE_MENU_W);
         (menu.into(), h)
     }

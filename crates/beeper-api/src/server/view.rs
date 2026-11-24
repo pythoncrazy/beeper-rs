@@ -486,13 +486,9 @@ pub(super) fn chat<'a>(st: &'a BeeperStore, c: &'a Chat, max_participants: Optio
             .attachments
             .iter()
             .map(|a| {
-                let file = DraftAttachment {
-                    id: &a.upload_id,
-                    kind: "file",
-                    mime_type: a.mime_type.as_deref(),
-                    file_name: a.file_name.as_deref(),
-                };
-                (a.upload_id.as_str(), file)
+                let id = if a.id.is_empty() { &a.upload_id } else { &a.id };
+                let file = DraftAttachment { id, kind: "file", mime_type: a.mime_type.as_deref(), file_name: a.file_name.as_deref() };
+                (id.as_str(), file)
             })
             .collect(),
     });
